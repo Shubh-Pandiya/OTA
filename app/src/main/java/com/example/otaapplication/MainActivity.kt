@@ -85,6 +85,9 @@ enum class Screen(val title: String) {
     SyncSettings("Sync Settings")
 }
 
+private const val KEY_ORDER_SERIAL_DATE = "order_serial_date"
+private const val KEY_ORDER_SERIAL = "order_serial"
+
 private val screenIcons = mapOf(
     Screen.OrderEntry to Icons.Default.EditNote,
     Screen.OrderHistory to Icons.Default.History,
@@ -97,6 +100,16 @@ private fun AnimatedContentTransitionScope<Screen>.fadeThrough(): ContentTransfo
         .togetherWith(fadeOut(tween(90)))
 
 class MainActivity : ComponentActivity() {
+
+    private val orderNumberLock = Any()
+
+    // Bumped on every resume so the previewed order number follows a change of day.
+    private var resumeTick by mutableIntStateOf(0)
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick++
+    }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +128,15 @@ class MainActivity : ComponentActivity() {
                 var formData by remember { mutableStateOf(OrderFormData()) }
                 var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
                 var isGenerating by remember { mutableStateOf(false) }
+                var nextOfferNo by remember { mutableStateOf("") }
+                var offerNoRefresh by remember { mutableIntStateOf(0) }
+                val resumed = resumeTick
+
+                LaunchedEffect(currentScreen, offerNoRefresh, resumed) {
+                    if (currentScreen == Screen.OrderEntry) {
+                        nextOfferNo = withContext(Dispatchers.IO) { peekNextOrderNumber() }
+                    }
+                }
 
                 fun navigate(screen: Screen) {
                     currentScreen = screen
@@ -164,15 +186,26 @@ class MainActivity : ComponentActivity() {
                         ) { screen ->
                             when (screen) {
                                 Screen.OrderEntry -> OrderFormScreen(
-                                    formData = focusedOrderState ?: formData,
+                                    // New orders show the next auto-generated number; orders reopened
+                                    // from history keep their original one.
+                                    formData = focusedOrderState ?: formData.copy(offerNo = nextOfferNo),
                                     onFormChange = { if (focusedOrderState != null) focusedOrderState = it else formData = it },
+                                    isNewOrder = focusedOrderState == null,
                                     isGenerating = isGenerating,
                                     onGeneratePdf = { data ->
                                         if (!isGenerating) {
                                             isGenerating = true
+                                            val isNewOrder = focusedOrderState == null
                                             scope.launch {
-                                                val (ok, message) = withContext(Dispatchers.IO) { generateOrderPdf(data) }
+                                                val (ok, message) = withContext(Dispatchers.IO) {
+                                                    if (isNewOrder) generateNewOrderPdf(data) else generateOrderPdf(data)
+                                                }
                                                 Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                                                if (ok) {
+                                                    focusedOrderState = null
+                                                    formData = OrderFormData()
+                                                    offerNoRefresh++
+                                                }
                                                 isGenerating = false
                                             }
                                         }
@@ -311,6 +344,42 @@ class MainActivity : ComponentActivity() {
 
     private fun createStaticLayout(text: String, width: Int, textPaint: TextPaint): StaticLayout {
         return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, width).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1f).setIncludePad(false).build()
+    }
+
+    private fun nextOrderSerial(prefix: String): Int {
+        val prefs = getSharedPreferences("OTA_Prefs", MODE_PRIVATE)
+        return OrderNumber.nextSerial(
+            prefix = prefix,
+            storedPrefix = prefs.getString(KEY_ORDER_SERIAL_DATE, null),
+            storedSerial = prefs.getInt(KEY_ORDER_SERIAL, 0),
+            existingOfferNos = loadOrderHistory().map { it.offerNo }
+        )
+    }
+
+    /** Runs on a background thread; the number a new order will get if saved now. */
+    private fun peekNextOrderNumber(): String = synchronized(orderNumberLock) {
+        val prefix = OrderNumber.prefix(LocalDate.now())
+        OrderNumber.format(prefix, nextOrderSerial(prefix))
+    }
+
+    /**
+     * Runs on a background thread. Assigns today's next order number at save time and only
+     * consumes it when the PDF was written, so abandoned or failed attempts don't use up numbers.
+     */
+    private fun generateNewOrderPdf(data: OrderFormData): Pair<Boolean, String> = synchronized(orderNumberLock) {
+        val prefix = OrderNumber.prefix(LocalDate.now())
+        val serial = nextOrderSerial(prefix)
+        val offerNo = OrderNumber.format(prefix, serial)
+        val (ok, message) = generateOrderPdf(data.copy(offerNo = offerNo))
+        if (ok) {
+            getSharedPreferences("OTA_Prefs", MODE_PRIVATE).edit()
+                .putString(KEY_ORDER_SERIAL_DATE, prefix)
+                .putInt(KEY_ORDER_SERIAL, serial)
+                .commit()
+            true to "Order $offerNo saved. $message"
+        } else {
+            false to message
+        }
     }
 
     /** Runs on a background thread; returns (success, user message). */

@@ -40,7 +40,8 @@ fun OrderFormScreen(
     onFormChange: (OrderFormData) -> Unit,
     onGeneratePdf: (OrderFormData) -> Unit,
     modifier: Modifier = Modifier,
-    isGenerating: Boolean = false
+    isGenerating: Boolean = false,
+    isNewOrder: Boolean = true
 ) {
     // Rows present on first composition appear instantly; rows added later animate in.
     var rowsAnimateIn by remember { mutableStateOf(false) }
@@ -86,10 +87,11 @@ fun OrderFormScreen(
                 }
                 FormTextField(
                     value = formData.offerNo,
-                    onValueChange = { onFormChange(formData.copy(offerNo = it)) },
+                    onValueChange = {},
                     label = "Offer No",
-                    placeholder = "Enter Offer Number",
-                    icon = Icons.Default.Tag
+                    icon = Icons.Default.Tag,
+                    readOnly = true,
+                    supportingText = if (isNewOrder) "Auto-generated, assigned when the PDF is saved" else "Existing order number"
                 )
             }
 
@@ -435,7 +437,8 @@ fun FormTextField(
     readOnly: Boolean = false,
     enabled: Boolean = true,
     minLines: Int = 1,
-    imeAction: ImeAction = ImeAction.Next
+    imeAction: ImeAction = ImeAction.Next,
+    supportingText: String? = null
 ) {
     OutlinedTextField(
         value = value,
@@ -447,6 +450,7 @@ fun FormTextField(
         readOnly = readOnly,
         enabled = enabled,
         minLines = minLines,
+        supportingText = supportingText?.let { { Text(it) } },
         shape = MaterialTheme.shapes.small,
         colors = formFieldColors(),
         keyboardOptions = KeyboardOptions(
