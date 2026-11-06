@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">OTA Application</string>
+    <string name="label_date">Date</string>
+    <string name="hint_offer_no">Offer No</string>
+    <string name="hint_buyer_details">Buyer Name &amp; Address</string>
+    <string name="hint_supplier_details">Supplier Name &amp; Address</string>
+    <string name="hint_serial_number">Serial Number</string>
+    <string name="hint_particulars">Particulars</string>
+    <string name="hint_quantity">Quantity</string>
+    <string name="hint_rates">Rates</string>
+    <string name="hint_remarks">Remarks</string>
+    <string name="hint_delivery_details">Delivery Ready / Challan By</string>
+    <string name="hint_transport">Transport To</string>
+    <string name="hint_payment_terms">Cash Payment Terms</string>
+    <string name="hint_discount">Less / Discount</string>
+    <string name="hint_margin">Side</string>
+    <string name="btn_generate_pdf">Generate PDF Order</string>
+</resources>
