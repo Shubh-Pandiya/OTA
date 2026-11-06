@@ -1,10 +1,8 @@
 package com.example.otaapplication.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
@@ -35,32 +33,6 @@ private val LightColorScheme = lightColorScheme(
     surfaceContainerHighest = BrandSurfaceContainerHighestLight,
 )
 
-private val DarkColorScheme = darkColorScheme(
-    primary = BrandPrimaryDark,
-    onPrimary = BrandOnPrimaryDark,
-    primaryContainer = BrandPrimaryContainerDark,
-    onPrimaryContainer = BrandOnPrimaryContainerDark,
-    secondary = BrandSecondaryDark,
-    onSecondary = BrandOnSecondaryDark,
-    secondaryContainer = BrandSecondaryContainerDark,
-    onSecondaryContainer = BrandOnSecondaryContainerDark,
-    tertiary = BrandTertiaryDark,
-    background = BrandBackgroundDark,
-    onBackground = BrandOnBackgroundDark,
-    surface = BrandSurfaceDark,
-    onSurface = BrandOnBackgroundDark,
-    surfaceVariant = BrandSurfaceVariantDark,
-    onSurfaceVariant = BrandOnSurfaceVariantDark,
-    surfaceTint = BrandPrimaryDark,
-    outline = BrandOutlineDark,
-    outlineVariant = BrandOutlineVariantDark,
-    surfaceContainerLowest = BrandSurfaceContainerLowestDark,
-    surfaceContainerLow = BrandSurfaceContainerLowDark,
-    surfaceContainer = BrandSurfaceContainerDark,
-    surfaceContainerHigh = BrandSurfaceContainerHighDark,
-    surfaceContainerHighest = BrandSurfaceContainerHighestDark,
-)
-
 private val AppShapes = Shapes(
     extraSmall = RoundedCornerShape(6.dp),
     small = RoundedCornerShape(10.dp),
@@ -70,16 +42,15 @@ private val AppShapes = Shapes(
 )
 
 /**
- * Brand theme. Dynamic (wallpaper) colour is intentionally not used so the
- * saffron brand identity stays consistent on every device.
+ * Brand theme. The app is light-only and does not use dynamic (wallpaper)
+ * colour, so the saffron brand looks the same regardless of system settings.
  */
 @Composable
 fun OTAApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme,
+        colorScheme = LightColorScheme,
         typography = Typography,
         shapes = AppShapes,
         content = content
