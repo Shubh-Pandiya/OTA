@@ -1,7 +1,6 @@
 package com.example.otaapplication
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.RectF
@@ -14,33 +13,52 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -66,78 +84,94 @@ enum class Screen(val title: String) {
     SyncSettings("Sync Settings")
 }
 
+private val screenIcons = mapOf(
+    Screen.OrderEntry to Icons.Default.EditNote,
+    Screen.OrderHistory to Icons.Default.History,
+    Screen.SyncSettings to Icons.Default.Settings
+)
+
+// Material "fade through" used for top-level destination changes.
+private fun AnimatedContentTransitionScope<Screen>.fadeThrough(): ContentTransform =
+    (fadeIn(tween(220, delayMillis = 90)) + scaleIn(initialScale = 0.96f, animationSpec = tween(220, delayMillis = 90)))
+        .togetherWith(fadeOut(tween(90)))
+
 class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {
             OTAApplicationTheme {
                 val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
                 val scope = rememberCoroutineScope()
-                var currentScreen by remember { mutableStateOf(Screen.OrderEntry) }
+                var currentScreen by rememberSaveable { mutableStateOf(Screen.OrderEntry) }
 
                 var formData by remember { mutableStateOf(OrderFormData()) }
                 var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
+                var isGenerating by remember { mutableStateOf(false) }
 
-                val bhagvaOrangeCompose = Color(0xFFFF6F00)
+                fun navigate(screen: Screen) {
+                    currentScreen = screen
+                    scope.launch { drawerState.close() }
+                }
+
+                BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
+                BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.OrderEntry) { currentScreen = Screen.OrderEntry }
 
                 ModalNavigationDrawer(
                     drawerState = drawerState,
                     gesturesEnabled = true,
-                    drawerContent = {
-                        ModalDrawerSheet {
-                            Spacer(Modifier.height(12.dp))
-                            Column(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
-                                Text(text = "ONKAR", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = bhagvaOrangeCompose)
-                                Text(text = "TEXTILE AGENCY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = bhagvaOrangeCompose)
-                                HorizontalDivider(modifier = Modifier.padding(top = 16.dp))
-                            }
-
-                            NavigationDrawerItem(
-                                label = { Text("Order Entry", fontWeight = FontWeight.SemiBold) },
-                                selected = currentScreen == Screen.OrderEntry,
-                                onClick = { currentScreen = Screen.OrderEntry; scope.launch { drawerState.close() } },
-                                icon = { Icon(Icons.Default.EditNote, contentDescription = null) },
-                                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                            )
-                            NavigationDrawerItem(
-                                label = { Text("Order History", fontWeight = FontWeight.SemiBold) },
-                                selected = currentScreen == Screen.OrderHistory,
-                                onClick = { currentScreen = Screen.OrderHistory; scope.launch { drawerState.close() } },
-                                icon = { Icon(Icons.Default.History, contentDescription = null) },
-                                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                            )
-                            NavigationDrawerItem(
-                                label = { Text("Sync Settings", fontWeight = FontWeight.SemiBold) },
-                                selected = currentScreen == Screen.SyncSettings,
-                                onClick = { currentScreen = Screen.SyncSettings; scope.launch { drawerState.close() } },
-                                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                            )
-                        }
-                    }
+                    drawerContent = { AppDrawer(currentScreen = currentScreen, onNavigate = ::navigate) }
                 ) {
                     Scaffold(
-                        modifier = Modifier.fillMaxSize().imePadding().navigationBarsPadding(),
+                        modifier = Modifier.fillMaxSize(),
+                        containerColor = MaterialTheme.colorScheme.background,
                         topBar = {
                             CenterAlignedTopAppBar(
-                                title = { Text(text = currentScreen.title, fontWeight = FontWeight.Bold) },
+                                title = {
+                                    AnimatedContent(
+                                        targetState = currentScreen.title,
+                                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
+                                        label = "title"
+                                    ) { title -> Text(text = title, style = MaterialTheme.typography.titleLarge) }
+                                },
                                 navigationIcon = {
                                     IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                         Icon(Icons.Default.Menu, contentDescription = "Menu")
                                     }
-                                }
+                                },
+                                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                                    containerColor = MaterialTheme.colorScheme.background
+                                )
                             )
                         },
                         contentWindowInsets = WindowInsets(0, 0, 0, 0)
                     ) { innerPadding ->
-                        Surface(modifier = Modifier.fillMaxSize().padding(innerPadding), color = MaterialTheme.colorScheme.background) {
-                            when (currentScreen) {
+                        AnimatedContent(
+                            targetState = currentScreen,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .consumeWindowInsets(innerPadding),
+                            transitionSpec = { fadeThrough() },
+                            label = "screen"
+                        ) { screen ->
+                            when (screen) {
                                 Screen.OrderEntry -> OrderFormScreen(
                                     formData = focusedOrderState ?: formData,
                                     onFormChange = { if (focusedOrderState != null) focusedOrderState = it else formData = it },
-                                    onGeneratePdf = { data -> generateOrderPdf(data) }
+                                    isGenerating = isGenerating,
+                                    onGeneratePdf = { data ->
+                                        if (!isGenerating) {
+                                            isGenerating = true
+                                            scope.launch {
+                                                val (ok, message) = withContext(Dispatchers.IO) { generateOrderPdf(data) }
+                                                Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                                                isGenerating = false
+                                            }
+                                        }
+                                    }
                                 )
                                 Screen.OrderHistory -> OrderHistoryScreen(
                                     activity = this@MainActivity,
@@ -147,7 +181,12 @@ class MainActivity : ComponentActivity() {
                                         currentScreen = Screen.OrderEntry
                                     }
                                 )
-                                Screen.SyncSettings -> SyncControlScreen(totalOrders = countTotalOrders())
+                                Screen.SyncSettings -> {
+                                    val totalOrders by produceState<Int?>(initialValue = null) {
+                                        value = withContext(Dispatchers.IO) { countTotalOrders() }
+                                    }
+                                    SyncControlScreen(totalOrders = totalOrders)
+                                }
                             }
                         }
                     }
@@ -172,6 +211,7 @@ class MainActivity : ComponentActivity() {
         return syncDir.listFiles { file -> file.isFile && file.extension == "json" }?.size ?: 0
     }
 
+    @Synchronized
     private fun writeToInternalHistoryCache(orderRoot: JSONObject) {
         try {
             val historyFile = File(filesDir, "internal_order_history_db.json")
@@ -190,6 +230,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) { e.printStackTrace() }
     }
 
+    @Synchronized
     internal fun loadOrderHistory(): List<OrderHistoryItem> {
         val historyList = mutableListOf<OrderHistoryItem>()
         try {
@@ -216,6 +257,7 @@ class MainActivity : ComponentActivity() {
         return historyList
     }
 
+    @Synchronized
     internal fun getOrderFromHistory(uuid: String?): OrderFormData? {
         if (uuid == null) return null
         try {
@@ -241,6 +283,7 @@ class MainActivity : ComponentActivity() {
         return OrderFormData(json.optString("date", ""), json.optString("offerNo", ""), json.optString("buyer", ""), json.optString("supplier", ""), itemsList, json.optString("remarks", ""), json.optString("deliveryReady", ""), json.optString("transportTo", ""), json.optString("cashPayment", ""), json.optString("lessDisc", ""), json.optString("side", ""))
     }
 
+    @Synchronized
     internal fun deleteOrderPermanently(uuid: String?, syncFilePath: String, pdfName: String?): Boolean {
         var success = true
         try {
@@ -265,7 +308,8 @@ class MainActivity : ComponentActivity() {
         return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, width).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1f).setIncludePad(false).build()
     }
 
-    private fun generateOrderPdf(data: OrderFormData) {
+    /** Runs on a background thread; returns (success, user message). */
+    private fun generateOrderPdf(data: OrderFormData): Pair<Boolean, String> {
         val now = LocalDateTime.now(); val year = now.year.toString(); val monthName = now.month.name.lowercase().replaceFirstChar { it.uppercase() }
         val dateStamp = now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
         val sharedPrefs = getSharedPreferences("OTA_Prefs", MODE_PRIVATE)
@@ -346,132 +390,493 @@ class MainActivity : ComponentActivity() {
                     itemObj.put("serialNo", item.serialNo); itemObj.put("particulars", item.particulars); itemObj.put("quantity", item.quantity); itemObj.put("rate", item.rate); itemsArray.put(itemObj) }
                 jsonRoot.put("items", itemsArray); val writer = FileWriter(jsonFile); writer.write(jsonRoot.toString()); writer.close(); writeToInternalHistoryCache(jsonRoot)
             } catch (e: Exception) { e.printStackTrace() }
-            Toast.makeText(this, "PDF Generated: ${pdfFile.absolutePath}", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) { e.printStackTrace(); Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+            return true to "PDF Generated: ${pdfFile.absolutePath}"
+        } catch (e: Exception) { e.printStackTrace(); return false to "Error: ${e.message}" }
     }
+}
+
+
+@Composable
+private fun AppDrawer(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
+    ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .clip(MaterialTheme.shapes.large)
+                .background(MaterialTheme.colorScheme.primary)
+                .padding(20.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onPrimary),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("OTA", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.height(14.dp))
+            Text(text = "ONKAR", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimary)
+            Text(text = "TEXTILE AGENCY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f))
+            Spacer(Modifier.height(4.dp))
+            Text(text = "OTA Business", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f))
+        }
+        Spacer(Modifier.height(4.dp))
+        Screen.entries.forEach { screen ->
+            NavigationDrawerItem(
+                label = { Text(screen.title, fontWeight = FontWeight.SemiBold) },
+                selected = currentScreen == screen,
+                onClick = { onNavigate(screen) },
+                icon = { Icon(screenIcons.getValue(screen), contentDescription = null) },
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                colors = NavigationDrawerItemDefaults.colors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            )
+        }
+    }
+}
+
+private val historyDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("dd-MM-yyyy")
+
+private fun historyDateKey(date: String): LocalDate =
+    runCatching { LocalDate.parse(date, historyDateFormat) }.getOrDefault(LocalDate.MIN)
+
+/** Sorts by the real calendar date (string sort put 01-12 before 31-01); same-day orders keep save order. */
+private fun sortHistory(items: List<OrderHistoryItem>, newestFirst: Boolean): List<Pair<String, OrderHistoryItem>> {
+    val uuids = items.mapNotNull { it.uuid?.takeIf(String::isNotBlank) }
+    val uuidsUnique = uuids.size == items.size && uuids.toSet().size == uuids.size
+    val keyed = items.mapIndexed { index, item ->
+        Triple(if (uuidsUnique) "u:${item.uuid}" else "f:${item.fileName}", index, item)
+    }
+    val comparator = compareBy<Triple<String, Int, OrderHistoryItem>>({ historyDateKey(it.third.date) }, { it.second })
+    val sorted = if (newestFirst) keyed.sortedWith(comparator.reversed()) else keyed.sortedWith(comparator)
+    return sorted.map { it.first to it.third }
+}
+
+private sealed interface DetailLoad {
+    data object Loading : DetailLoad
+    data class Loaded(val data: OrderFormData?) : DetailLoad
 }
 
 @Composable
 fun OrderHistoryScreen(activity: MainActivity, onOrderFocused: (OrderFormData) -> Unit) {
-    val historyItems = remember { mutableStateListOf<OrderHistoryItem>() }
-    var isLoading by remember { mutableStateOf(true) }; var isNewestFirst by remember { mutableStateOf(true) }; var selectedItemForDetail by remember { mutableStateOf<OrderHistoryItem?>(null) }
-    fun refreshHistory() { isLoading = true; val history = activity.loadOrderHistory(); historyItems.clear(); historyItems.addAll(history); isLoading = false }
+    val scope = rememberCoroutineScope()
+    var historyItems by remember { mutableStateOf<List<OrderHistoryItem>?>(null) }
+    var isNewestFirst by rememberSaveable { mutableStateOf(true) }
+    var selectedItemForDetail by remember { mutableStateOf<OrderHistoryItem?>(null) }
+    val listState = rememberLazyListState()
+
+    suspend fun refreshHistory() {
+        historyItems = withContext(Dispatchers.IO) { activity.loadOrderHistory() }
+    }
     LaunchedEffect(Unit) { refreshHistory() }
-    val sortedItems = remember(historyItems.size, isNewestFirst) { if (isNewestFirst) historyItems.sortedByDescending { it.date } else historyItems.sortedBy { it.date } }
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(text = "BOOKED ORDER LOGS", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(bottom = 8.dp))
-        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(8.dp)) {
-                Text(text = "Total Orders: ${historyItems.size}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+
+    val sortedItems = remember(historyItems, isNewestFirst) { sortHistory(historyItems.orEmpty(), isNewestFirst) }
+
+    BackHandler(enabled = selectedItemForDetail != null) { selectedItemForDetail = null }
+
+    AnimatedContent(
+        targetState = selectedItemForDetail,
+        transitionSpec = {
+            if (targetState != null) {
+                (slideInHorizontally(tween(280)) { it / 3 } + fadeIn(tween(220))) togetherWith fadeOut(tween(120))
+            } else {
+                fadeIn(tween(220)) togetherWith (slideOutHorizontally(tween(260)) { it / 3 } + fadeOut(tween(180)))
             }
-            FilterChip(selected = true, onClick = { isNewestFirst = !isNewestFirst }, label = { Text(text = if (isNewestFirst) "Newest First" else "Oldest First") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp)) })
-        }
-        if (isLoading) { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
-        else if (sortedItems.isEmpty()) {
-            Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-                Spacer(modifier = Modifier.height(16.dp)); Text(text = "No Previous Orders Found", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                Text(text = "Your booked customer invoices will be securely tracked and logged here chronologically.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp))
-            }
+        },
+        contentKey = { it?.fileName },
+        label = "historyDetail"
+    ) { selected ->
+        if (selected == null) {
+            HistoryList(
+                historyItems = historyItems,
+                sortedItems = sortedItems,
+                isNewestFirst = isNewestFirst,
+                onToggleSort = { isNewestFirst = !isNewestFirst },
+                listState = listState,
+                onItemClick = { selectedItemForDetail = it }
+            )
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(sortedItems) { item ->
-                    ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), onClick = { selectedItemForDetail = item }, elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)) {
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "Offer No: ${item.offerNo}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Text(text = item.buyer, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurface)
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)).padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Spacer(modifier = Modifier.width(4.dp)); Text(text = item.date, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Icon(imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.padding(start = 8.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+            val load by produceState<DetailLoad>(initialValue = DetailLoad.Loading, selected.uuid) {
+                value = DetailLoad.Loaded(withContext(Dispatchers.IO) { activity.getOrderFromHistory(selected.uuid) })
+            }
+            OrderDetailScreen(
+                load = load,
+                onDismiss = { selectedItemForDetail = null },
+                onDelete = {
+                    scope.launch {
+                        val success = withContext(Dispatchers.IO) {
+                            activity.deleteOrderPermanently(selected.uuid, selected.filePath, selected.pdfFileName)
+                        }
+                        if (success) {
+                            Toast.makeText(activity, "Data Erased Successfully", Toast.LENGTH_SHORT).show()
+                            refreshHistory()
+                            selectedItemForDetail = null
+                        } else {
+                            Toast.makeText(activity, "Error deleting files", Toast.LENGTH_SHORT).show()
                         }
                     }
-                }
-            }
-        }
-    }
-    selectedItemForDetail?.let { item ->
-        val fullData = activity.getOrderFromHistory(item.uuid)
-        if (fullData != null) {
-            OrderDetailOverlay(order = fullData, onDismiss = { selectedItemForDetail = null }, onDelete = {
-                val success = activity.deleteOrderPermanently(item.uuid, item.filePath, item.pdfFileName)
-                if (success) { Toast.makeText(activity, "Data Erased Successfully", Toast.LENGTH_SHORT).show(); refreshHistory(); selectedItemForDetail = null }
-                else { Toast.makeText(activity, "Error deleting files", Toast.LENGTH_SHORT).show() }
-            }, onFocus = { onOrderFocused(fullData); selectedItemForDetail = null })
+                },
+                onFocus = { data -> onOrderFocused(data); selectedItemForDetail = null }
+            )
         }
     }
 }
 
 @Composable
-fun OrderDetailOverlay(order: OrderFormData, onDismiss: () -> Unit, onDelete: () -> Unit, onFocus: () -> Unit) {
+private fun HistoryList(
+    historyItems: List<OrderHistoryItem>?,
+    sortedItems: List<Pair<String, OrderHistoryItem>>,
+    isNewestFirst: Boolean,
+    onToggleSort: () -> Unit,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    onItemClick: (OrderHistoryItem) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = "BOOKED ORDER LOGS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AnimatedContent(
+                    targetState = historyItems?.size,
+                    transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
+                    label = "count"
+                ) { count ->
+                    Text(
+                        text = if (count == null) "Loading…" else "Total Orders: $count",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                }
+            }
+            val arrowRotation by animateFloatAsState(if (isNewestFirst) 0f else 180f, tween(250), label = "sortArrow")
+            FilterChip(
+                selected = true,
+                onClick = onToggleSort,
+                label = {
+                    AnimatedContent(
+                        targetState = isNewestFirst,
+                        transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) },
+                        label = "sortLabel"
+                    ) { newest -> Text(text = if (newest) "Newest First" else "Oldest First") }
+                },
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = null, modifier = Modifier.size(18.dp).rotate(arrowRotation))
+                },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            )
+        }
+
+        val state = when {
+            historyItems == null -> 0
+            sortedItems.isEmpty() -> 1
+            else -> 2
+        }
+        AnimatedContent(
+            targetState = state,
+            transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+            modifier = Modifier.fillMaxSize(),
+            label = "historyState"
+        ) { s ->
+            when (s) {
+                0 -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                1 -> EmptyHistory()
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = WindowInsets.navigationBars.asPaddingValues().let {
+                        PaddingValues(start = 16.dp, end = 16.dp, top = 0.dp, bottom = it.calculateBottomPadding() + 16.dp)
+                    },
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(sortedItems, key = { it.first }) { (_, item) ->
+                        HistoryCard(item = item, onClick = { onItemClick(item) }, modifier = Modifier.animateItem())
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyHistory() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(bottom = 64.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Box(
+            modifier = Modifier.size(96.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(imageVector = Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+        Spacer(modifier = Modifier.height(20.dp))
+        Text(text = "No Previous Orders Found", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            text = "Your booked customer invoices will be securely tracked and logged here chronologically.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 40.dp, vertical = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun HistoryCard(item: OrderHistoryItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = item.buyer.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "#",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Offer No: ${item.offerNo}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = item.buyer.lineSequence().firstOrNull().orEmpty(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(text = item.date, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun OrderDetailScreen(load: DetailLoad, onDismiss: () -> Unit, onDelete: () -> Unit, onFocus: (OrderFormData) -> Unit) {
     var showDeleteConfirmation by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(text = "Order Details", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    TextButton(onClick = onDismiss) { Text("Close") }
+    val order = (load as? DetailLoad.Loaded)?.data
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close") }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "Order Details", style = MaterialTheme.typography.titleLarge)
+                if (order != null) {
+                    Text(text = "Offer No ${order.offerNo}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-                    DetailSection("General Information"); DetailRow("Date", order.date); DetailRow("Offer No", order.offerNo); DetailRow("Buyer", order.buyer); DetailRow("Supplier", order.supplier)
-                    DetailSection("Terms & Logistics"); DetailRow("Delivery", order.deliveryReady); DetailRow("Transport", order.transportTo); DetailRow("Payment", order.cashPayment); DetailRow("Less/Disc", order.lessDisc); DetailRow("Side", order.side)
-                    DetailSection("Remarks"); Text(text = order.remarks, style = MaterialTheme.typography.bodyMedium); DetailSection("Items List")
-                    order.items.forEach { item ->
-                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                    Text(text = "S.No: ${item.serialNo}", style = MaterialTheme.typography.labelSmall); Text(text = "Qty: ${item.quantity}", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+
+        when {
+            load is DetailLoad.Loading -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            order == null -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("Order data not found", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            else -> {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    DetailCard("General Information", Icons.Default.Description) {
+                        DetailRow("Date", order.date); DetailRow("Offer No", order.offerNo); DetailRow("Buyer", order.buyer); DetailRow("Supplier", order.supplier)
+                    }
+                    DetailCard("Items List", Icons.Default.Inventory2) {
+                        order.items.forEachIndexed { i, item ->
+                            if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
+                                Box(
+                                    modifier = Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(item.serialNo, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                                 }
-                                Text(text = item.particulars, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold); Text(text = "Rate: ${item.rate}", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = item.particulars, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                        Text(text = "Qty: ${item.quantity}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(text = "Rate: ${item.rate}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(32.dp))
+                    DetailCard("Terms & Logistics", Icons.Default.LocalShipping) {
+                        DetailRow("Delivery", order.deliveryReady); DetailRow("Transport", order.transportTo); DetailRow("Payment", order.cashPayment); DetailRow("Less/Disc", order.lessDisc); DetailRow("Side", order.side)
+                    }
+                    DetailCard("Remarks", Icons.Default.RateReview) {
+                        Text(
+                            text = order.remarks.ifBlank { "—" },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (order.remarks.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
-                HorizontalDivider()
-                Row(modifier = Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = onFocus, modifier = Modifier.weight(1f)) { Text("Reuse / Edit") }
-                    Button(onClick = { showDeleteConfirmation = true }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("Delete")
+                Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shadowElevation = 12.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showDeleteConfirmation = true },
+                            modifier = Modifier.weight(1f).height(50.dp),
+                            shape = MaterialTheme.shapes.medium,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f))
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("Delete")
+                        }
+                        Button(onClick = { onFocus(order) }, modifier = Modifier.weight(1f).height(50.dp), shape = MaterialTheme.shapes.medium) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("Reuse / Edit")
+                        }
                     }
                 }
             }
         }
-        if (showDeleteConfirmation) {
-            AlertDialog(onDismissRequest = { showDeleteConfirmation = false }, title = { Text("Permanently Delete?") }, text = { Text("Are you absolutely sure you want to permanently delete Offer No ${order.offerNo}? This action will completely erase the sync record from your system storage.") }, confirmButton = { TextButton(onClick = onDelete, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("PERMANENTLY DELETE") } }, dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text("CANCEL") } })
-        }
+    }
+
+    if (showDeleteConfirmation && order != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Permanently Delete?") },
+            text = { Text("Are you absolutely sure you want to permanently delete Offer No ${order.offerNo}? This action will completely erase the sync record from your system storage.") },
+            confirmButton = { TextButton(onClick = { showDeleteConfirmation = false; onDelete() }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("PERMANENTLY DELETE") } },
+            dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text("CANCEL") } }
+        )
     }
 }
 
 @Composable
-fun DetailSection(title: String) {
-    Text(text = title.uppercase(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+private fun DetailCard(title: String, icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
+    FormSection(title = title, icon = icon) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp), content = content)
+    }
 }
 
 @Composable
 fun DetailRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(text = "$label:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); Text(text = value, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.End, modifier = Modifier.weight(2f))
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(text = label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+        Text(
+            text = value.ifBlank { "—" },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = if (value.isBlank()) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(2f)
+        )
     }
 }
 
 @Composable
-fun SyncControlScreen(totalOrders: Int) {
-    val context = LocalContext.current; val sharedPrefs = remember { context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE) }
+fun SyncControlScreen(totalOrders: Int?) {
+    val context = LocalContext.current
+    val sharedPrefs = remember { context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE) }
     var deviceId by remember { mutableStateOf(sharedPrefs.getString("device_id", "") ?: "") }
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(text = "LAPTOP SYNCHRONIZATION DATA", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.padding(bottom = 8.dp))
-        OutlinedTextField(value = deviceId, onValueChange = { deviceId = it; sharedPrefs.edit().putString("device_id", it).apply() }, label = { Text("Device / Salesman Identifier") }, placeholder = { Text("e.g., Phone_A, Sales_Onkar") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(text = "Sync Status", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
-                Spacer(modifier = Modifier.height(8.dp)); Text(text = "Total Orders Ready for Sync: $totalOrders", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier.padding(top = 8.dp).size(72.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+        Text(text = "LAPTOP SYNCHRONIZATION DATA", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, letterSpacing = MaterialTheme.typography.labelMedium.letterSpacing)
+
+        FormSection(title = "Sync Status", icon = Icons.Default.CloudUpload) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Total Orders Ready for Sync",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                AnimatedContent(
+                    targetState = totalOrders,
+                    transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+                    label = "syncCount"
+                ) { count ->
+                    if (count == null) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                    } else {
+                        Text(text = "$count", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
             }
         }
-        Text(text = "System Architecture: Live JSON Autogeneration Active. Connect to laptop to pull data safely.", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
-        Text(text = "Your laptop software will read this clean data directly when connected. Please ensure all orders are generated before initiating the synchronization process from your laptop application.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        FormSection(title = "Device", icon = Icons.Default.PhoneAndroid) {
+            FormTextField(
+                value = deviceId,
+                onValueChange = { deviceId = it; sharedPrefs.edit().putString("device_id", it).apply() },
+                label = "Device / Salesman Identifier",
+                placeholder = "e.g., Phone_A, Sales_Onkar",
+                icon = Icons.Default.Badge,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done
+            )
+        }
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+        ) {
+            Row(modifier = Modifier.padding(16.dp)) {
+                Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(text = "System Architecture: Live JSON Autogeneration Active. Connect to laptop to pull data safely.", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                    Text(text = "Your laptop software will read this clean data directly when connected. Please ensure all orders are generated before initiating the synchronization process from your laptop application.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
     }
 }

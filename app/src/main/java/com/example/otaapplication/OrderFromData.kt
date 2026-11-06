@@ -2,12 +2,18 @@ package com.example.otaapplication
 
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.atomic.AtomicLong
+
+private val orderItemKeys = AtomicLong(0)
 
 data class OrderItem(
     val serialNo: String = "",
     val particulars: String = "",
     val quantity: String = "",
-    val rate: String = ""
+    val rate: String = "",
+    // UI-only identity so rows keep their state/animations when others are added or removed.
+    // Never persisted to JSON or the PDF.
+    val key: Long = orderItemKeys.incrementAndGet()
 )
 
 data class OrderFormData(
