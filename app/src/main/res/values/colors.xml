@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="ota_brand">#FFFF6F00</color>
+    <color name="ota_window_background">#FFFBF8F6</color>
 </resources>
