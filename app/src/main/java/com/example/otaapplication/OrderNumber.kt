@@ -5,8 +5,9 @@ import java.time.format.DateTimeFormatter
 
 /**
  * Auto-generated order (Offer No) numbers, unique per staff member:
- * {staff digit}{yyyyMMdd}{serial}, e.g. 1202611071, 1202611072 … 12026110710 for staff 1.
- * The serial is not padded and restarts at 1 every day.
+ * {staff digit}{yyyyMMdd}{serial}, e.g. 120261107001, 120261107002 … for staff 1.
+ * The serial is padded to 3 digits (it simply grows past 999) and restarts at 1 every day.
+ * Early unpadded numbers (e.g. 1202611071) are still read, so they keep counting towards the serial.
  */
 object OrderNumber {
     private val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd")
@@ -17,7 +18,7 @@ object OrderNumber {
         return staffCode.toString() + date.format(dateFormat)
     }
 
-    fun format(prefix: String, serial: Int): String = prefix + serial
+    fun format(prefix: String, serial: Int): String = prefix + serial.toString().padStart(SERIAL_DIGITS, '0')
 
     /** Returns the serial of [offerNo] if it was generated for [prefix], otherwise null. */
     fun serialOf(offerNo: String, prefix: String): Int? {
@@ -43,6 +44,7 @@ object OrderNumber {
     }
 
     private const val PREFIX_LENGTH = 9
+    private const val SERIAL_DIGITS = 3
     // Same pattern as the cloud's unique index on order_no.
     private val PER_STAFF = Regex("^[1-9]20[0-9]{6}[0-9]+$")
 }

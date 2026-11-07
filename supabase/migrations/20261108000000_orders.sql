@@ -19,7 +19,7 @@
 
 -- ---------------------------------------------------------------- staff codes
 -- One digit per staff login; it is the first digit of every order number they create
--- ({code}{yyyyMMdd}{serial}, e.g. 1202611071). Rows are added by the owner in the SQL Editor.
+-- ({code}{yyyyMMdd}{3-digit serial}, e.g. 120261107001). Rows are added by the owner in the SQL Editor.
 create table if not exists public.staff (
   user_id uuid primary key references auth.users (id) on delete cascade,
   code     smallint not null unique check (code between 1 and 9),

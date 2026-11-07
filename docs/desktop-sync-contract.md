@@ -37,7 +37,9 @@ Bill and link ids are deterministic, so the same bill typed on two devices is on
 These use Java's MD5-based UUIDs over UTF-8 bytes. `billKey` is the bill number trimmed, with whitespace runs collapsed to one space,
 upper-cased.
 
-Order numbers are `{staff code}{yyyyMMdd}{daily serial}` (e.g. `1202611071`), unique in the cloud.
+Order numbers are `{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g. `120261107001`), unique in the cloud.
+A few early test numbers have an unpadded serial (e.g. `9202611071`); treat the digits after the
+date as the serial in both cases.
 Older numbers (`yyyyMMdd` + 2 digits) and manual numbers may repeat.
 
 ## Pulling (delta sync)

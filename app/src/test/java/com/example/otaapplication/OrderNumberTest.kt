@@ -11,12 +11,28 @@ class OrderNumberTest {
     private val pawan = OrderNumber.prefix(2, day)
 
     @Test
-    fun formatsStaffDigitDateAndUnpaddedSerial() {
+    fun formatsStaffDigitDateAndThreeDigitSerial() {
         assertEquals("120261107", varun)
-        assertEquals("1202611071", OrderNumber.format(varun, 1))
-        assertEquals("1202611072", OrderNumber.format(varun, 2))
-        assertEquals("12026110712", OrderNumber.format(varun, 12))
-        assertEquals("2202611071", OrderNumber.format(pawan, 1))
+        assertEquals("120261107001", OrderNumber.format(varun, 1))
+        assertEquals("120261107002", OrderNumber.format(varun, 2))
+        assertEquals("120261107012", OrderNumber.format(varun, 12))
+        assertEquals("120261107999", OrderNumber.format(varun, 999))
+        assertEquals("1202611071000", OrderNumber.format(varun, 1000))
+        assertEquals("220261107001", OrderNumber.format(pawan, 1))
+    }
+
+    @Test
+    fun paddedSerialsAreReadBack() {
+        assertEquals(1, OrderNumber.serialOf("120261107001", varun))
+        assertEquals("120261107", OrderNumber.prefixOf("120261107001"))
+        assertEquals(13, OrderNumber.nextSerial(varun, null, 0, listOf("120261107009", "120261107012", "120261107002")))
+    }
+
+    @Test
+    fun earlyUnpaddedNumbersStillCountSoNothingIsReused() {
+        // Test orders 1202611071..3 were made before padding; the next padded number is 004.
+        assertEquals(4, OrderNumber.nextSerial(varun, null, 0, listOf("1202611071", "1202611072", "1202611073")))
+        assertEquals(6, OrderNumber.nextSerial(varun, null, 0, listOf("1202611073", "120261107005")))
     }
 
     @Test(expected = IllegalArgumentException::class)

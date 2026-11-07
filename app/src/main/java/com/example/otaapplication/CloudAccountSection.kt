@@ -209,7 +209,7 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 
         val code = staff?.code
         if (code != null) {
-            StatusLine(Icons.Default.Tag, "Your order numbers: ${code}YYYYMMDD + serial, e.g. ${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}1")
+            StatusLine(Icons.Default.Tag, "Your order numbers: ${code}YYYYMMDD + serial, e.g. ${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}001")
         } else {
             StatusLine(
                 Icons.Default.Tag,

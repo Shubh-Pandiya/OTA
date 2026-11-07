@@ -173,7 +173,7 @@ class OrderSyncTest {
         assertEquals(3, cloud.tables.getValue("orders").size)
         assertEquals(2, cloud.tables.getValue("bills").size)
         assertEquals(3, cloud.tables.getValue("order_bills").size)
-        assertEquals(listOf("1202611071", "1202611072", "1202611073"), cloud.tables.getValue("orders").values.map { it.getString("order_no") }.sorted())
+        assertEquals(listOf("120261107001", "120261107002", "120261107003"), cloud.tables.getValue("orders").values.map { it.getString("order_no") }.sorted())
         // Compact item arrays only.
         assertEquals("[[\"1\",\"Shirting\",\"120 m\",\"245\"],[\"2\",\"Suiting\",\"60 m\",\"410\"]]",
             cloud.tables.getValue("orders").getValue(o1).getJSONArray("items").toString())
@@ -227,12 +227,12 @@ class OrderSyncTest {
         assertNull(b.local.get(o1))
         assertTrue(b.repo.search(OrderQuery()).isEmpty())
         // The deleted number is never handed out again.
-        assertEquals("1202611072", b.numbers.peek(1))
+        assertEquals("120261107002", b.numbers.peek(1))
     }
 
     @Test
     fun numberTakenOnAnotherPhoneIsRenumbered() {
-        // Same staff login, two phones, both offline: both pick 1202611071.
+        // Same staff login, two phones, both offline: both pick 120261107001.
         val fromA = a.newOrder(1, "Ram")
         val fromB = b.newOrder(1, "Shyam")
         assertEquals(a.local.get(fromA)!!.offerNo, b.local.get(fromB)!!.offerNo)
@@ -240,12 +240,12 @@ class OrderSyncTest {
         a.syncNow()
         val result = b.syncNow()
         assertEquals(1, result.notices.size)
-        assertEquals("1202611072", b.local.get(fromB)!!.offerNo)
+        assertEquals("120261107002", b.local.get(fromB)!!.offerNo)
         assertEquals(0, b.repo.pendingCount())
-        assertEquals(setOf("1202611071", "1202611072"), cloud.tables.getValue("orders").values.map { it.getString("order_no") }.toSet())
+        assertEquals(setOf("120261107001", "120261107002"), cloud.tables.getValue("orders").values.map { it.getString("order_no") }.toSet())
         // B's counter moved on too, and other staff codes are untouched.
-        assertEquals("1202611073", b.numbers.peek(1))
-        assertEquals("2202611071", b.numbers.peek(2))
+        assertEquals("120261107003", b.numbers.peek(1))
+        assertEquals("220261107001", b.numbers.peek(2))
     }
 
     @Test

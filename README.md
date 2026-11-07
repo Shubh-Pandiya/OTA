@@ -18,11 +18,14 @@ Requirements: Android Studio (or JDK 21 + Android SDK), minSdk 35 (Android 15+).
 ./gradlew connectedDebugAndroidTest   # device/emulator tests
 ```
 
-`local.properties` is **not** committed (it holds machine paths and the cloud keys). Android Studio
-creates it with `sdk.dir`; add the cloud keys below yourself.
+A fresh clone builds an app that already connects to the agency's cloud: the project URL and the
+public *publishable* key are committed in [`supabase.properties`](supabase.properties). The
+publishable key is meant to be public; row-level security lets only signed-in staff read or write.
 
-> Note: after pulling the commit that stopped tracking `local.properties`, git removes your old copy.
-> Open the project in Android Studio once (it recreates `sdk.dir`) and add the two Supabase lines again.
+`local.properties` is **not** committed: it holds `sdk.dir`, which differs per machine, and Android
+Studio creates it by itself. To point one machine at a different Supabase project, put
+`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` in `local.properties`; those win over
+`supabase.properties`.
 
 ## Cloud (Supabase) setup
 
@@ -53,7 +56,7 @@ Done once by the owner.
      using (email)
    on conflict (user_id) do update set code = excluded.code, name = excluded.name, is_admin = excluded.is_admin;
    ```
-5. **Copy the keys into `local.properties`.** **Project Settings → Data API** for the Project URL and
+5. **Put the keys in `supabase.properties`** (committed). **Project Settings → Data API** for the Project URL and
    **Project Settings → API Keys** for the *publishable* key (`sb_publishable_…`, or the legacy
    `anon` key):
 
@@ -62,8 +65,8 @@ Done once by the owner.
    SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
    ```
 
-   Rebuild the app. **Never** put the `service_role` / secret key or the database password in the
-   app or in this repository; if one leaks, rotate it in the dashboard.
+   Commit it and rebuild the app. **Never** put the `service_role` / secret key or the database
+   password in the app or in this repository; if one leaks, rotate it in the dashboard.
 
 Staff then open **Sync Settings** in the app, sign in, and everything syncs.
 
@@ -93,7 +96,8 @@ Staff then open **Sync Settings** in the app, sign in, and everything syncs.
 ### Orders, bills and order numbers
 
 - **Order numbers** are per person, not per phone: `{staff digit}{YYYYMMDD}{serial of the day}`,
-  e.g. Varun (1) → `1202611071`, `1202611072`, … The serial restarts every day and has no padding.
+  e.g. Varun (1) → `120261107001`, `120261107002`, … The serial is 3 digits (001–999, it keeps
+  growing past 999 if ever needed) and restarts every day.
   The digit is read at sign-in and remembered, so orders can be made offline afterwards; a phone
   that has never been signed in asks the user to sign in once. The day's counter is matched with
   the cloud on every sync, and if two phones of the same person used the same number offline, the
