@@ -3,8 +3,10 @@
 Android app for **Onkar Textile Agency**: take shirting/suiting orders, share them as PDF,
 track bills against orders, and keep a buyer/supplier catalog.
 
-Everything is stored on the phone first and works offline. When staff sign in, the **buyer and
-supplier catalog**, **orders** and **bills** are shared between phones through
+Staff must sign in before they can use the app (the sign-in screen is the first thing a new install
+shows). After that everything is stored on the phone first and works offline; a phone only returns
+to the sign-in screen after **Sign out** or when the cloud rejects its session (e.g. the account was
+removed). The **buyer and supplier catalog**, **orders** and **bills** are shared between phones through
 [Supabase](https://supabase.com). PDFs are never uploaded; each phone regenerates them from the
 order data.
 
@@ -68,7 +70,7 @@ Done once by the owner.
    Commit it and rebuild the app. **Never** put the `service_role` / secret key or the database
    password in the app or in this repository; if one leaks, rotate it in the dashboard.
 
-Staff then open **Sync Settings** in the app, sign in, and everything syncs.
+Staff then open the app, sign in on the first screen, and everything syncs.
 
 ### How sync works
 
@@ -98,8 +100,7 @@ Staff then open **Sync Settings** in the app, sign in, and everything syncs.
 - **Order numbers** are per person, not per phone: `{staff digit}{YYYYMMDD}{serial of the day}`,
   e.g. Varun (1) → `120261107001`, `120261107002`, … The serial is 3 digits (001–999, it keeps
   growing past 999 if ever needed) and restarts every day.
-  The digit is read at sign-in and remembered, so orders can be made offline afterwards; a phone
-  that has never been signed in asks the user to sign in once. The day's counter is matched with
+  The digit is read at sign-in and remembered, so orders can be made offline afterwards. The day's counter is matched with
   the cloud on every sync, and if two phones of the same person used the same number offline, the
   later upload is renumbered and the user is told. Older orders keep their old numbers.
 - Reopening an order from history and saving updates that order in place (same number, bills kept,

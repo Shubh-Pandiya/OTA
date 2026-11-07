@@ -46,6 +46,9 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+internal const val NOT_CONFIGURED_MESSAGE =
+    "Cloud is not set up in this build, so staff can't sign in. Rebuild from the latest code: supabase.properties holds the keys (see README)."
+
 /** Current time that ticks every [periodMillis], for "synced 3 min ago" labels. */
 @Composable
 private fun rememberNow(periodMillis: Long = 30_000): Long {
@@ -81,7 +84,7 @@ fun CloudAccountSection(cloud: CloudSync, modifier: Modifier = Modifier) {
         ) { state ->
             when (state) {
                 0 -> Text(
-                    "Cloud is not set up in this build. Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to local.properties and rebuild (see README).",
+                    NOT_CONFIGURED_MESSAGE,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -93,14 +96,18 @@ fun CloudAccountSection(cloud: CloudSync, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SignInForm(cloud: CloudSync) {
+internal fun SignInForm(
+    cloud: CloudSync,
+    intro: String? = "Sign in with your staff account to share buyers, suppliers, orders and bills across phones. Signing in once also gives you your own order numbers.",
+    initialError: String? = null
+) {
     val scope = rememberCoroutineScope()
     val focus = LocalFocusManager.current
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf(initialError) }
     val canSubmit = email.isNotBlank() && password.isNotEmpty() && !busy
 
     fun submit() {
@@ -121,11 +128,9 @@ private fun SignInForm(cloud: CloudSync) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            "Sign in with your staff account to share buyers, suppliers, orders and bills across phones. Signing in once also gives you your own order numbers.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (intro != null) {
+            Text(intro, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         OutlinedTextField(
             value = email,
             onValueChange = { email = it; error = null },
@@ -268,7 +273,7 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
                 Text("Sync now")
             }
             OutlinedButton(
-                onClick = { if (status.pending > 0) confirmSignOut = true else scope.launch { cloud.signOut() } },
+                onClick = { confirmSignOut = true },
                 modifier = Modifier.height(46.dp),
                 shape = MaterialTheme.shapes.medium
             ) {
@@ -284,7 +289,12 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             onDismissRequest = { confirmSignOut = false },
             icon = { Icon(Icons.Default.CloudOff, contentDescription = null) },
             title = { Text("Sign out?") },
-            text = { Text("${status.pending} change(s) are not uploaded yet. They stay on this phone and upload after you sign in again. New orders need you to sign in again.") },
+            text = {
+                Text(
+                    if (status.pending > 0) "${status.pending} change(s) are not uploaded yet. They stay on this phone and upload after you sign in again. You need to sign in again to use the app."
+                    else "You need to sign in again to use the app. Orders on this phone are kept."
+                )
+            },
             confirmButton = {
                 TextButton(onClick = { confirmSignOut = false; scope.launch { cloud.signOut() } }) { Text("Sign out") }
             },

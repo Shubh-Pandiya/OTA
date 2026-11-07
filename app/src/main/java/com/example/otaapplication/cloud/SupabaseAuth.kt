@@ -65,13 +65,7 @@ class SupabaseAuth(
     suspend fun signIn(email: String, password: String): CloudSession = lock.withLock {
         val body = JSONObject().put("email", email.trim()).put("password", password).toString()
         val response = withContext(Dispatchers.IO) { Http.send("POST", "${config.url}/auth/v1/token?grant_type=password", headers(), body) }
-        if (!response.ok) {
-            val message = Http.errorMessage(response)
-            throw CloudException(
-                if (response.status == 400 && message.contains("invalid", ignoreCase = true)) "Wrong email or password" else message,
-                response.status
-            )
-        }
+        if (!response.ok) throw CloudException(signInErrorMessage(response.status, response.body), response.status)
         parseSession(response.body).also(::store)
     }
 
@@ -131,7 +125,27 @@ class SupabaseAuth(
         )
     }
 
-    private companion object {
-        const val REFRESH_MARGIN_MS = 60_000L
+    companion object {
+        private const val REFRESH_MARGIN_MS = 60_000L
+
+        /** What the sign-in screen shows for a failed sign-in response from Supabase Auth. */
+        fun signInErrorMessage(status: Int, body: String): String {
+            val response = HttpResponse(status, body)
+            val code = runCatching { JSONObject(body) }.getOrNull()
+                ?.let { json -> json.optString("error_code").ifBlank { json.optString("code") } }
+                .orEmpty()
+            val message = Http.errorMessage(response)
+            return when {
+                code == "email_not_confirmed" || message.contains("not confirmed", ignoreCase = true) ->
+                    "Email not confirmed. Ask the owner to confirm this account in Supabase (Authentication → Users)."
+                code == "invalid_credentials" || (status == 400 && message.contains("invalid", ignoreCase = true)) ->
+                    "Wrong email or password"
+                code == "user_banned" || message.contains("banned", ignoreCase = true) ->
+                    "This account has been blocked. Ask the owner."
+                status == 429 || code.contains("rate_limit") -> "Too many attempts. Wait a minute and try again."
+                status >= 500 -> "The cloud is not responding (${status}). Try again shortly."
+                else -> message
+            }
+        }
     }
 }

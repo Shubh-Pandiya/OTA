@@ -149,135 +149,150 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) { syncOrderIndex() }
         setContent {
             OTAApplicationTheme {
-                val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-                val scope = rememberCoroutineScope()
-                var currentScreen by rememberSaveable { mutableStateOf(Screen.OrderEntry) }
-
-                var formData by remember { mutableStateOf(OrderFormData()) }
-                var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
-                // uuid of the order reopened from history; saving updates that order in place.
-                var focusedUuid by remember { mutableStateOf<String?>(null) }
-                var isGenerating by remember { mutableStateOf(false) }
-                var nextOfferNo by remember { mutableStateOf("") }
-                var offerNoRefresh by remember { mutableIntStateOf(0) }
-                val resumed = resumeTick
-                val cloudStatus by cloud.status.collectAsState()
-                val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
-                val remoteOrderChanges by cloud.orderChanges.collectAsState()
-                val staff by cloud.staff.collectAsState()
-                val staffCode = staff?.code
-
-                LaunchedEffect(currentScreen, offerNoRefresh, resumed, staffCode, remoteOrderChanges) {
-                    if (currentScreen == Screen.OrderEntry) {
-                        nextOfferNo = staffCode?.let { code -> withContext(Dispatchers.IO) { numberAllocator.peek(code) } }.orEmpty()
-                    }
+                val authStatus by cloud.status.collectAsState()
+                // Staff must sign in before anything else is shown. Once signed in the app opens offline
+                // too; only signing out or the server rejecting the session brings this screen back.
+                AnimatedContent(
+                    targetState = authStatus.configured && authStatus.signedIn,
+                    transitionSpec = { fadeIn(tween(320, delayMillis = 60)) togetherWith fadeOut(tween(160)) },
+                    label = "authGate"
+                ) { signedIn ->
+                    if (signedIn) SignedInApp() else SignInScreen(cloud = cloud, status = authStatus)
                 }
+            }
+        }
+    }
 
-                fun navigate(screen: Screen) {
-                    currentScreen = screen
-                    scope.launch { drawerState.close() }
-                }
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun SignedInApp() {
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        val scope = rememberCoroutineScope()
+        var currentScreen by rememberSaveable { mutableStateOf(Screen.OrderEntry) }
 
-                BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
-                BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.OrderEntry) { currentScreen = Screen.OrderEntry }
+        var formData by remember { mutableStateOf(OrderFormData()) }
+        var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
+        // uuid of the order reopened from history; saving updates that order in place.
+        var focusedUuid by remember { mutableStateOf<String?>(null) }
+        var isGenerating by remember { mutableStateOf(false) }
+        var nextOfferNo by remember { mutableStateOf("") }
+        var offerNoRefresh by remember { mutableIntStateOf(0) }
+        val resumed = resumeTick
+        val cloudStatus by cloud.status.collectAsState()
+        val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
+        val remoteOrderChanges by cloud.orderChanges.collectAsState()
+        val staff by cloud.staff.collectAsState()
+        val staffCode = staff?.code
 
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    gesturesEnabled = true,
-                    drawerContent = { AppDrawer(currentScreen = currentScreen, cloudStatus = cloudStatus, onNavigate = ::navigate) }
-                ) {
-                    Scaffold(
-                        modifier = Modifier.fillMaxSize(),
-                        containerColor = MaterialTheme.colorScheme.background,
-                        topBar = {
-                            CenterAlignedTopAppBar(
-                                title = {
-                                    AnimatedContent(
-                                        targetState = currentScreen.title,
-                                        transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
-                                        label = "title"
-                                    ) { title -> Text(text = title, style = MaterialTheme.typography.titleLarge) }
-                                },
-                                navigationIcon = {
-                                    IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                                        Icon(Icons.Default.Menu, contentDescription = "Menu")
-                                    }
-                                },
-                                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                                    containerColor = MaterialTheme.colorScheme.background
-                                )
-                            )
+        LaunchedEffect(currentScreen, offerNoRefresh, resumed, staffCode, remoteOrderChanges) {
+            if (currentScreen == Screen.OrderEntry) {
+                nextOfferNo = staffCode?.let { code -> withContext(Dispatchers.IO) { numberAllocator.peek(code) } }.orEmpty()
+            }
+        }
+
+        fun navigate(screen: Screen) {
+            currentScreen = screen
+            scope.launch { drawerState.close() }
+        }
+
+        BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
+        BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.OrderEntry) { currentScreen = Screen.OrderEntry }
+
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = true,
+            drawerContent = { AppDrawer(currentScreen = currentScreen, cloudStatus = cloudStatus, onNavigate = ::navigate) }
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = MaterialTheme.colorScheme.background,
+                topBar = {
+                    CenterAlignedTopAppBar(
+                        title = {
+                            AnimatedContent(
+                                targetState = currentScreen.title,
+                                transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(120)) },
+                                label = "title"
+                            ) { title -> Text(text = title, style = MaterialTheme.typography.titleLarge) }
                         },
-                        contentWindowInsets = WindowInsets(0, 0, 0, 0)
-                    ) { innerPadding ->
-                        AnimatedContent(
-                            targetState = currentScreen,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(innerPadding)
-                                .consumeWindowInsets(innerPadding),
-                            transitionSpec = { fadeThrough() },
-                            label = "screen"
-                        ) { screen ->
-                            when (screen) {
-                                Screen.OrderEntry -> OrderFormScreen(
-                                    // New orders show the next auto-generated number; orders reopened
-                                    // from history keep their original one.
-                                    formData = focusedOrderState ?: formData.copy(offerNo = nextOfferNo),
-                                    onFormChange = { if (focusedOrderState != null) focusedOrderState = it else formData = it },
-                                    isNewOrder = focusedOrderState == null,
-                                    isGenerating = isGenerating,
-                                    catalog = catalogRepository,
-                                    numberMissingMessage = if (focusedOrderState == null && staffCode == null) staffCodeMessage(cloudStatus.signedIn) else null,
-                                    onOpenSyncSettings = { currentScreen = Screen.SyncSettings },
-                                    onGeneratePdf = { data ->
-                                        val isNewOrder = focusedOrderState == null
-                                        val code = staffCode
-                                        if (isNewOrder && code == null) {
-                                            Toast.makeText(this@MainActivity, staffCodeMessage(cloudStatus.signedIn), Toast.LENGTH_LONG).show()
-                                        } else if (!isGenerating) {
-                                            isGenerating = true
-                                            val existingUuid = focusedUuid
-                                            scope.launch {
-                                                val (ok, message) = withContext(Dispatchers.IO) {
-                                                    if (isNewOrder) generateNewOrderPdf(data, code!!) else generateOrderPdf(data, existingUuid)
-                                                }
-                                                Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
-                                                if (ok) {
-                                                    focusedOrderState = null
-                                                    focusedUuid = null
-                                                    formData = OrderFormData()
-                                                    offerNoRefresh++
-                                                }
-                                                isGenerating = false
-                                            }
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "Menu")
+                            }
+                        },
+                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
+                    )
+                },
+                contentWindowInsets = WindowInsets(0, 0, 0, 0)
+            ) { innerPadding ->
+                AnimatedContent(
+                    targetState = currentScreen,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                        .consumeWindowInsets(innerPadding),
+                    transitionSpec = { fadeThrough() },
+                    label = "screen"
+                ) { screen ->
+                    when (screen) {
+                        Screen.OrderEntry -> OrderFormScreen(
+                            // New orders show the next auto-generated number; orders reopened
+                            // from history keep their original one.
+                            formData = focusedOrderState ?: formData.copy(offerNo = nextOfferNo),
+                            onFormChange = { if (focusedOrderState != null) focusedOrderState = it else formData = it },
+                            isNewOrder = focusedOrderState == null,
+                            isGenerating = isGenerating,
+                            catalog = catalogRepository,
+                            numberMissingMessage = if (focusedOrderState == null && staffCode == null) staffCodeMessage(cloudStatus.signedIn) else null,
+                            onOpenSyncSettings = { currentScreen = Screen.SyncSettings },
+                            onGeneratePdf = { data ->
+                                val isNewOrder = focusedOrderState == null
+                                val code = staffCode
+                                if (isNewOrder && code == null) {
+                                    Toast.makeText(this@MainActivity, staffCodeMessage(cloudStatus.signedIn), Toast.LENGTH_LONG).show()
+                                } else if (!isGenerating) {
+                                    isGenerating = true
+                                    val existingUuid = focusedUuid
+                                    scope.launch {
+                                        val (ok, message) = withContext(Dispatchers.IO) {
+                                            if (isNewOrder) generateNewOrderPdf(data, code!!) else generateOrderPdf(data, existingUuid)
                                         }
+                                        Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                                        if (ok) {
+                                            focusedOrderState = null
+                                            focusedUuid = null
+                                            formData = OrderFormData()
+                                            offerNoRefresh++
+                                        }
+                                        isGenerating = false
                                     }
-                                )
-                                Screen.OrderHistory -> OrderHistoryScreen(
-                                    activity = this@MainActivity,
-                                    orders = orderRepository,
-                                    remoteChanges = remoteOrderChanges,
-                                    onOrderFocused = { selected, uuid ->
-                                        focusedOrderState = selected
-                                        focusedUuid = uuid
-                                        Toast.makeText(this@MainActivity, "Order Focused: ${selected.offerNo}", Toast.LENGTH_SHORT).show()
-                                        currentScreen = Screen.OrderEntry
-                                    }
-                                )
-                                Screen.Catalog -> CatalogScreen(
-                                    catalog = catalogRepository,
-                                    cloudStatus = cloudStatus,
-                                    remoteChanges = remoteCatalogChanges,
-                                    onOpenCloudSettings = { currentScreen = Screen.SyncSettings }
-                                )
-                                Screen.SyncSettings -> {
-                                    val totalOrders by produceState<Int?>(initialValue = null) {
-                                        value = withContext(Dispatchers.IO) { countTotalOrders() }
-                                    }
-                                    SyncControlScreen(totalOrders = totalOrders, cloud = cloud)
                                 }
                             }
+                        )
+                        Screen.OrderHistory -> OrderHistoryScreen(
+                            activity = this@MainActivity,
+                            orders = orderRepository,
+                            remoteChanges = remoteOrderChanges,
+                            onOrderFocused = { selected, uuid ->
+                                focusedOrderState = selected
+                                focusedUuid = uuid
+                                Toast.makeText(this@MainActivity, "Order Focused: ${selected.offerNo}", Toast.LENGTH_SHORT).show()
+                                currentScreen = Screen.OrderEntry
+                            }
+                        )
+                        Screen.Catalog -> CatalogScreen(
+                            catalog = catalogRepository,
+                            cloudStatus = cloudStatus,
+                            remoteChanges = remoteCatalogChanges,
+                            onOpenCloudSettings = { currentScreen = Screen.SyncSettings }
+                        )
+                        Screen.SyncSettings -> {
+                            val totalOrders by produceState<Int?>(initialValue = null) {
+                                value = withContext(Dispatchers.IO) { countTotalOrders() }
+                            }
+                            SyncControlScreen(totalOrders = totalOrders, cloud = cloud)
                         }
                     }
                 }
