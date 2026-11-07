@@ -1,6 +1,8 @@
 package com.example.otaapplication.cloud
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import androidx.core.content.edit
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.OtaDatabase
@@ -18,6 +20,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 
@@ -27,6 +32,8 @@ data class CloudStatus(
     val syncing: Boolean = false,
     val lastSyncAt: Long? = null,
     val lastError: String? = null,
+    /** The last attempt failed only because there was no network; edits upload when it returns. */
+    val offline: Boolean = false,
     val pending: Int = 0
 ) {
     val signedIn: Boolean get() = email != null
@@ -60,6 +67,15 @@ class CloudSync private constructor(context: Context) {
 
     init {
         scope.launch { refreshPending() }
+        // Retry as soon as the phone is back online after an offline failure.
+        context.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    val s = _status.value
+                    if (s.offline || s.pending > 0) requestSync(delayMillis = 2_000)
+                }
+            }
+        )
     }
 
     suspend fun signIn(email: String, password: String) {
@@ -77,7 +93,7 @@ class CloudSync private constructor(context: Context) {
             PartyType.entries.forEach { cursors.set(it, null) }
             prefs.edit { remove(KEY_LAST_SYNC) }
         }
-        _status.update { it.copy(email = null, lastSyncAt = null, lastError = null) }
+        _status.update { it.copy(email = null, lastSyncAt = null, lastError = null, offline = false) }
     }
 
     /** Schedules a sync; repeated requests within [delayMillis] collapse into one. */
@@ -106,17 +122,18 @@ class CloudSync private constructor(context: Context) {
                 val result = engine.syncAll()
                 val now = System.currentTimeMillis()
                 prefs.edit { putLong(KEY_LAST_SYNC, now) }
-                _status.update { it.copy(lastSyncAt = now, lastError = null) }
+                _status.update { it.copy(lastSyncAt = now, lastError = null, offline = false) }
                 if (result.pulledChanges > 0) _catalogChanges.update { it + 1 }
             } catch (e: CloudException) {
                 _status.update {
                     it.copy(
                         lastError = e.message,
+                        offline = false,
                         email = if (e.authFailed && auth.session.value == null) null else it.email
                     )
                 }
             } catch (e: Exception) {
-                _status.update { it.copy(lastError = friendlyError(e)) }
+                _status.update { it.copy(lastError = friendlyError(e), offline = isOffline(e)) }
             } finally {
                 _status.update { it.copy(syncing = false, pending = repository.pendingCount()) }
             }
@@ -141,9 +158,13 @@ class CloudSync private constructor(context: Context) {
             instance ?: CloudSync(context.applicationContext).also { instance = it }
         }
 
+        private fun isOffline(e: Throwable) =
+            e is UnknownHostException || e is ConnectException || e is SocketTimeoutException || e is NoRouteToHostException
+
         fun friendlyError(e: Throwable): String = when (e) {
             is CloudException -> e.message ?: "Cloud error"
-            is UnknownHostException -> "No internet connection"
+            is UnknownHostException, is ConnectException, is NoRouteToHostException -> "No internet connection"
+            is SocketTimeoutException -> "Connection timed out"
             is SSLException -> "Secure connection failed (${e.message})"
             is IOException -> "Network error: ${e.message ?: e.javaClass.simpleName}"
             else -> e.message ?: e.javaClass.simpleName

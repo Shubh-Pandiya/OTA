@@ -199,7 +199,11 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             if (status.pending == 0) "All changes uploaded" else "${status.pending} change${if (status.pending == 1) "" else "s"} waiting to upload"
         )
         AnimatedVisibility(visible = status.lastError != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-            StatusLine(Icons.Default.ErrorOutline, status.lastError.orEmpty(), isError = true)
+            if (status.offline) {
+                StatusLine(Icons.Default.CloudOff, "Offline. Changes upload automatically when back online.")
+            } else {
+                StatusLine(Icons.Default.ErrorOutline, status.lastError.orEmpty(), isError = true)
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -261,6 +265,11 @@ fun CatalogCloudStatusRow(status: CloudStatus, onClick: () -> Unit, modifier: Mo
         !status.configured -> Triple(Icons.Default.CloudOff, "Saved on this phone only", false)
         !status.signedIn -> Triple(Icons.Default.CloudOff, "Not signed in. Tap to sign in and sync", false)
         status.syncing -> Triple(Icons.Default.Sync, "Syncing…", false)
+        status.offline -> Triple(
+            Icons.Default.CloudOff,
+            if (status.pending > 0) "Offline. ${status.pending} change(s) will upload when back online" else "Offline. Showing the catalog saved on this phone",
+            false
+        )
         status.lastError != null -> Triple(Icons.Default.ErrorOutline, "Sync failed: ${status.lastError}", true)
         status.pending > 0 -> Triple(Icons.Default.CloudUpload, "${status.pending} change(s) waiting to upload", false)
         else -> Triple(Icons.Default.CloudDone, lastSyncText(status.lastSyncAt, now), false)
