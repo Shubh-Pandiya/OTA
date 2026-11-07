@@ -7,6 +7,7 @@ import androidx.core.content.edit
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PartyType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -39,8 +41,10 @@ data class CloudStatus(
     val signedIn: Boolean get() = email != null
 }
 
+enum class SyncOutcome { SKIPPED, SUCCESS, OFFLINE, FAILED, SIGNED_OUT }
+
 /** App-wide cloud state: staff sign-in and the buyer/supplier catalog sync with Supabase. */
-class CloudSync private constructor(context: Context) {
+class CloudSync private constructor(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val config = SupabaseConfig.fromBuildConfig()
     private val repository = CatalogRepository(OtaDatabase.get(context))
@@ -50,6 +54,7 @@ class CloudSync private constructor(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncLock = Mutex()
     private var scheduled: Job? = null
+    private var foregroundPoll: Job? = null
     @Volatile private var lastAttemptAt = 0L
 
     private val _status = MutableStateFlow(
@@ -67,6 +72,7 @@ class CloudSync private constructor(context: Context) {
 
     init {
         scope.launch { refreshPending() }
+        if (config.isConfigured && auth.session.value != null) CatalogSyncWorker.schedule(context)
         // Retry as soon as the phone is back online after an offline failure.
         context.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
             object : ConnectivityManager.NetworkCallback() {
@@ -82,11 +88,13 @@ class CloudSync private constructor(context: Context) {
         check(config.isConfigured) { "Cloud is not set up in this build" }
         val session = auth.signIn(email, password)
         _status.update { it.copy(email = session.email, lastError = null) }
+        CatalogSyncWorker.schedule(context)
         requestSync()
     }
 
     suspend fun signOut() {
         scheduled?.cancel()
+        CatalogSyncWorker.cancel(context)
         syncLock.withLock {
             auth.signOut()
             // Next sign-in pulls the whole catalog again; local rows and pending edits are kept.
@@ -108,14 +116,40 @@ class CloudSync private constructor(context: Context) {
         }
     }
 
-    /** Called when the app comes to the foreground; syncs at most once a minute. */
+    /**
+     * Called when the app becomes visible: syncs right away (unless one just ran) and then keeps
+     * pulling every [FOREGROUND_POLL_MS] while visible, so edits from other phones show up quickly.
+     */
     fun onAppForeground() {
-        if (System.currentTimeMillis() - lastAttemptAt > FOREGROUND_INTERVAL_MS) requestSync()
+        if (System.currentTimeMillis() - lastAttemptAt > FOREGROUND_MIN_GAP_MS) requestSync()
+        if (foregroundPoll?.isActive == true) return
+        foregroundPoll = scope.launch {
+            while (isActive) {
+                delay(FOREGROUND_POLL_MS)
+                // Skip a round if another sync (edit, reconnect, manual) ran recently.
+                if (System.currentTimeMillis() - lastAttemptAt >= FOREGROUND_POLL_MS - FOREGROUND_MIN_GAP_MS) {
+                    // Separate job: leaving the app must not cut a round off halfway.
+                    scope.launch { syncNow() }.join()
+                }
+            }
+        }
     }
 
-    suspend fun syncNow() {
-        if (!config.isConfigured || auth.session.value == null) return
-        syncLock.withLock {
+    /** Called when the app is no longer visible; background sync is left to WorkManager. */
+    fun onAppBackground() {
+        foregroundPoll?.cancel()
+        foregroundPoll = null
+    }
+
+    /**
+     * Runs one sync round. Manual, automatic and background syncs share [syncLock], so they never
+     * overlap; a caller that arrives while a round is running waits and then runs its own round.
+     */
+    suspend fun syncNow(): SyncOutcome {
+        if (!config.isConfigured || auth.session.value == null) return SyncOutcome.SKIPPED
+        return syncLock.withLock {
+            // Signed out while waiting for the running round.
+            if (auth.session.value == null) return@withLock SyncOutcome.SKIPPED
             lastAttemptAt = System.currentTimeMillis()
             _status.update { it.copy(syncing = true) }
             try {
@@ -124,16 +158,24 @@ class CloudSync private constructor(context: Context) {
                 prefs.edit { putLong(KEY_LAST_SYNC, now) }
                 _status.update { it.copy(lastSyncAt = now, lastError = null, offline = false) }
                 if (result.pulledChanges > 0) _catalogChanges.update { it + 1 }
+                SyncOutcome.SUCCESS
             } catch (e: CloudException) {
+                val sessionLost = e.authFailed && auth.session.value == null
                 _status.update {
-                    it.copy(
-                        lastError = e.message,
-                        offline = false,
-                        email = if (e.authFailed && auth.session.value == null) null else it.email
-                    )
+                    it.copy(lastError = e.message, offline = false, email = if (sessionLost) null else it.email)
                 }
+                if (sessionLost) {
+                    CatalogSyncWorker.cancel(context)
+                    SyncOutcome.SIGNED_OUT
+                } else {
+                    SyncOutcome.FAILED
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _status.update { it.copy(lastError = friendlyError(e), offline = isOffline(e)) }
+                val offline = isOffline(e)
+                _status.update { it.copy(lastError = friendlyError(e), offline = offline) }
+                if (offline) SyncOutcome.OFFLINE else SyncOutcome.FAILED
             } finally {
                 _status.update { it.copy(syncing = false, pending = repository.pendingCount()) }
             }
@@ -150,7 +192,10 @@ class CloudSync private constructor(context: Context) {
     companion object {
         private const val PREFS = "ota_cloud"
         private const val KEY_LAST_SYNC = "last_sync_at"
-        private const val FOREGROUND_INTERVAL_MS = 60_000L
+        /** A foreground sync is skipped if any sync started less than this long ago. */
+        private const val FOREGROUND_MIN_GAP_MS = 5_000L
+        /** Pull interval while the app is on screen (two small requests when nothing changed). */
+        private const val FOREGROUND_POLL_MS = 30_000L
 
         @Volatile private var instance: CloudSync? = null
 

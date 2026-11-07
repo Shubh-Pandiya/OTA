@@ -55,9 +55,14 @@ Staff then open **Sync Settings** in the app, sign in, and the catalog syncs.
 ### How catalog sync works
 
 - The phone's local database is always the source for the screens; everything works offline.
-- Sync runs on app start/return (at most once a minute), a moment after any catalog edit, right
-  after sign-in, and from **Sync Settings → Sync now** (which shows last sync time, pending changes
-  and errors).
+- Sync is automatic while signed in:
+  - whenever the app comes to the foreground, then every 30 seconds while it stays open (a pull with
+    nothing new is two small requests);
+  - every 15 minutes in the background via WorkManager (unique periodic work `catalog-sync`, only
+    with a network connection, exponential backoff on failure; cancelled on sign-out);
+  - a moment after any catalog edit, right after sign-in, and when the phone comes back online.
+- **Sync Settings → Sync now** still syncs on demand and shows last sync time, pending changes and
+  errors. Manual, automatic and background rounds share one lock, so they never run at the same time.
 - Each round pulls rows changed on the server since the last pull (using the server's `updated_at`,
   so phone clocks don't matter for this), then uploads rows changed on the phone.
 - Conflicts: the most recent edit wins (`client_updated_at`). The server trigger refuses to replace a

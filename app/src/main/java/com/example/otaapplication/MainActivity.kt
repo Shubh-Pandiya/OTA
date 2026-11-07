@@ -127,8 +127,17 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick++
-        // Catalog sync on app start / return to foreground (throttled to once a minute).
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Catalog sync whenever the app becomes visible, then a light poll while it stays visible.
         cloud.onAppForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        cloud.onAppBackground()
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

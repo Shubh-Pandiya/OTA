@@ -2,6 +2,7 @@ package com.example.otaapplication
 
 import android.text.format.DateUtils
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -53,8 +54,8 @@ private fun rememberNow(periodMillis: Long = 30_000): Long {
 
 private fun lastSyncText(lastSyncAt: Long?, now: Long): String = when {
     lastSyncAt == null -> "Not synced yet"
-    now - lastSyncAt < DateUtils.MINUTE_IN_MILLIS -> "Synced just now"
-    else -> "Synced " + DateUtils.getRelativeTimeSpanString(lastSyncAt, now, DateUtils.MINUTE_IN_MILLIS)
+    now - lastSyncAt < DateUtils.MINUTE_IN_MILLIS -> "Last synced just now"
+    else -> "Last synced " + DateUtils.getRelativeTimeSpanString(lastSyncAt, now, DateUtils.MINUTE_IN_MILLIS)
 }
 
 /** Staff sign-in and catalog sync controls (Sync Settings screen). */
@@ -193,7 +194,12 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-        StatusLine(Icons.Default.Schedule, if (status.syncing) "Syncing…" else lastSyncText(status.lastSyncAt, now))
+        StatusLine(
+            Icons.Default.Schedule,
+            lastSyncText(status.lastSyncAt, now),
+            busy = status.syncing
+        )
+        StatusLine(Icons.Default.Autorenew, "Auto-sync on: when the app opens, every 30 s while open, every 15 min in the background")
         StatusLine(
             Icons.Default.CloudUpload,
             if (status.pending == 0) "All changes uploaded" else "${status.pending} change${if (status.pending == 1) "" else "s"} waiting to upload"
@@ -248,10 +254,15 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 }
 
 @Composable
-private fun StatusLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, isError: Boolean = false) {
+private fun StatusLine(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    text: String,
+    isError: Boolean = false,
+    busy: Boolean = false
+) {
     val color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        SyncIcon(icon, busy, color, 18.dp)
         Spacer(Modifier.width(10.dp))
         Text(text, style = MaterialTheme.typography.bodyMedium, color = color)
     }
@@ -264,7 +275,6 @@ fun CatalogCloudStatusRow(status: CloudStatus, onClick: () -> Unit, modifier: Mo
     val (icon, text, isError) = when {
         !status.configured -> Triple(Icons.Default.CloudOff, "Saved on this phone only", false)
         !status.signedIn -> Triple(Icons.Default.CloudOff, "Not signed in. Tap to sign in and sync", false)
-        status.syncing -> Triple(Icons.Default.Sync, "Syncing…", false)
         status.offline -> Triple(
             Icons.Default.CloudOff,
             if (status.pending > 0) "Offline. ${status.pending} change(s) will upload when back online" else "Offline. Showing the catalog saved on this phone",
@@ -283,8 +293,20 @@ fun CatalogCloudStatusRow(status: CloudStatus, onClick: () -> Unit, modifier: Mo
             .clickable(enabled = status.configured, onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 6.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+        SyncIcon(icon, status.syncing, color, 16.dp)
         Spacer(Modifier.width(8.dp))
         Text(text, style = MaterialTheme.typography.labelMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+    }
+}
+
+/** Status icon that turns into a small spinner while a sync is running. */
+@Composable
+private fun SyncIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, busy: Boolean, color: androidx.compose.ui.graphics.Color, size: androidx.compose.ui.unit.Dp) {
+    Crossfade(targetState = busy, animationSpec = tween(180), label = "syncIcon") { spinning ->
+        if (spinning) {
+            CircularProgressIndicator(modifier = Modifier.size(size).padding(2.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+        } else {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(size))
+        }
     }
 }
