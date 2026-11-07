@@ -32,7 +32,23 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.Party
+import com.example.otaapplication.data.PartyType
+import com.example.otaapplication.data.SearchText
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Composable
 fun OrderFormScreen(
@@ -41,7 +57,8 @@ fun OrderFormScreen(
     onGeneratePdf: (OrderFormData) -> Unit,
     modifier: Modifier = Modifier,
     isGenerating: Boolean = false,
-    isNewOrder: Boolean = true
+    isNewOrder: Boolean = true,
+    catalog: CatalogRepository? = null
 ) {
     // Rows present on first composition appear instantly; rows added later animate in.
     var rowsAnimateIn by remember { mutableStateOf(false) }
@@ -96,23 +113,21 @@ fun OrderFormScreen(
             }
 
             FormSection(title = "Party Configurations", icon = Icons.Default.Groups) {
-                FormTextField(
+                PartyField(
+                    type = PartyType.BUYER,
                     value = formData.buyer,
                     onValueChange = { onFormChange(formData.copy(buyer = it)) },
                     label = "Buyer Name & Address",
                     placeholder = "Enter Buyer Details",
-                    icon = Icons.Default.Person,
-                    minLines = 3,
-                    imeAction = ImeAction.Default
+                    catalog = catalog
                 )
-                FormTextField(
+                PartyField(
+                    type = PartyType.SUPPLIER,
                     value = formData.supplier,
                     onValueChange = { onFormChange(formData.copy(supplier = it)) },
                     label = "Supplier Name & Address",
                     placeholder = "Enter Supplier Details",
-                    icon = Icons.Default.Store,
-                    minLines = 3,
-                    imeAction = ImeAction.Default
+                    catalog = catalog
                 )
             }
 
@@ -372,6 +387,133 @@ private fun OrderItemRow(
     }
 }
 
+/** Name & address field with type-ahead from the buyer/supplier catalog; free typing still works. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PartyField(
+    type: PartyType,
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    catalog: CatalogRepository?
+) {
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    var suggestions by remember { mutableStateOf<List<Party>>(emptyList()) }
+    var canAdd by remember { mutableStateOf(false) }
+    var adding by remember { mutableStateOf<Party?>(null) }
+    var catalogVersion by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(value, focused, catalogVersion) {
+        if (!focused || catalog == null || SearchText.firstLine(value).isEmpty()) {
+            suggestions = emptyList(); canAdd = false
+            return@LaunchedEffect
+        }
+        delay(150)
+        val (found, exists) = withContext(Dispatchers.IO) {
+            catalog.suggest(type, value) to (catalog.findByName(type, SearchText.firstLine(value)) != null)
+        }
+        // Hide suggestions once the field already holds a picked entry.
+        suggestions = if (found.any { it.toFieldText() == value.trim() }) emptyList() else found
+        canAdd = !exists
+    }
+
+    val visible = focused && (suggestions.isNotEmpty() || canAdd)
+    val bringIntoView = remember { BringIntoViewRequester() }
+    LaunchedEffect(visible) { if (visible) { delay(240); bringIntoView.bringIntoView() } }
+
+    Column {
+        FormTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = label,
+            placeholder = placeholder,
+            icon = type.icon(),
+            minLines = 3,
+            imeAction = ImeAction.Default,
+            modifier = Modifier.onFocusChanged { focused = it.isFocused }
+        )
+        AnimatedVisibility(
+            visible = visible,
+            enter = expandVertically(tween(220)) + fadeIn(tween(200)),
+            exit = shrinkVertically(tween(180)) + fadeOut(tween(120))
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp).bringIntoViewRequester(bringIntoView),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    suggestions.forEach { party ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onValueChange(party.toFieldText())
+                                    focusManager.clearFocus()
+                                }
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(type.icon(), contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(party.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                val meta = listOf(party.city, party.phone).filter { it.isNotBlank() }.joinToString(" · ")
+                                if (meta.isNotEmpty()) {
+                                    Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            Icon(Icons.Default.NorthWest, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (canAdd) {
+                        if (suggestions.isNotEmpty()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                        val (name, address) = SearchText.splitNameAndAddress(value)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { adding = Party(type = type, name = name, address = address) }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                "Add \u201C$name\u201D as new ${type.label.lowercase()}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    adding?.let { party ->
+        if (catalog != null) {
+            PartyEditDialog(
+                initial = party,
+                catalog = catalog,
+                onDismiss = { adding = null },
+                onSaved = { saved ->
+                    adding = null
+                    catalogVersion++
+                    onValueChange(saved.toFieldText())
+                    focusManager.clearFocus()
+                    Toast.makeText(context, "${saved.name} added to ${type.pluralLabel.lowercase()}", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+    }
+}
+
 @Composable
 fun FormSection(
     title: String,
@@ -438,7 +580,8 @@ fun FormTextField(
     enabled: Boolean = true,
     minLines: Int = 1,
     imeAction: ImeAction = ImeAction.Next,
-    supportingText: String? = null
+    supportingText: String? = null,
+    modifier: Modifier = Modifier
 ) {
     OutlinedTextField(
         value = value,
@@ -446,7 +589,7 @@ fun FormTextField(
         label = { Text(label) },
         placeholder = placeholder?.let { { Text(it) } },
         leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         readOnly = readOnly,
         enabled = enabled,
         minLines = minLines,
