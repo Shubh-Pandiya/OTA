@@ -765,7 +765,7 @@ private fun OrderDetailScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(text = item.particulars, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                        Text(text = "Qty: ${item.quantity}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(text = "Qty: ${Units.display(item)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         Text(text = "Rate: ${item.rate}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }

@@ -394,4 +394,28 @@ class OrderSyncTest {
         assertTrue(cloud.tables.getValue("bills").containsKey(inv.id))
         assertEquals(1, cloud.tables.getValue("advice_lines").size)
     }
+
+    @Test
+    fun itemUnitsRoundTripCompactlyAndOldRowsLoadUnchanged() {
+        val items = listOf(
+            OrderItem("1", "Cotton", "250", "120", unit = "M"),
+            OrderItem("2", "Suiting", "10", "900", unit = "T"),
+            OrderItem("3", "Old row", "5 kg", "40")
+        )
+        val cloud = OrderTable.itemsToJson(items)
+        assertEquals("""[["1","Cotton","250","120","M"],["2","Suiting","10","900","T"],["3","Old row","5 kg","40"]]""", cloud.toString())
+        assertEquals(items.map { it.copy(key = 0) }, OrderTable.itemsFromJson(cloud).map { it.copy(key = 0) })
+
+        val oldCloudRow = org.json.JSONArray("""[["1","Poly","20m","250"]]""")
+        assertEquals(listOf(OrderItem("1", "Poly", "20m", "250", key = 0)), OrderTable.itemsFromJson(oldCloudRow).map { it.copy(key = 0) })
+
+        val data = OrderFormData(date = "08-11-2026", offerNo = "1", items = items)
+        val local = OrderJson.historyEntry(data, "u", "", null)
+        assertEquals(items.map { it.copy(key = 0) }, OrderJson.parse(local).items.map { it.copy(key = 0) })
+        assertTrue(!local.getJSONArray("items").getJSONObject(2).has("unit"))
+
+        // Content keys of orders saved before units existed must not change.
+        val old = OrderFormData(date = "08-11-2026", offerNo = "1", items = listOf(OrderItem("1", "Poly", "20m", "250")))
+        assertEquals(listOf("08-11-2026", "1", "", "", "", "", "", "", "", "", "1", "Poly", "20m", "250").joinToString("\u0001"), OrderJson.contentKey(old))
+    }
 }

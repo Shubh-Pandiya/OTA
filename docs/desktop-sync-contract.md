@@ -24,7 +24,7 @@ and `client_updated_at bigint` (the editing device's clock in epoch ms).
 | Table | Columns (besides the sync columns) |
 |---|---|
 | `buyers`, `suppliers` | name, address, city, phone, gstin, bank fields (see the catalog migration) |
-| `orders` | order_no, order_date (`dd-MM-yyyy` text, as printed), buyer, supplier (text as printed), items (`[[s.no, particulars, qty, rate], …]`), remarks, delivery_ready, transport_to, cash_payment, less_disc, side, created_by, archived_at |
+| `orders` | order_no, order_date (`dd-MM-yyyy` text, as printed), buyer, supplier (text as printed), items (`[[s.no, particulars, qty, rate, unit?], …]`, see *Item units* below), remarks, delivery_ready, transport_to, cash_payment, less_disc, side, created_by, archived_at |
 | `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), archived_at |
 | `order_bills` | order_id, bill_id, archived_at. Many-to-many. **No foreign keys**, see below. |
 | `payment_advices` | advice_no, pay_date (`date`), buyer (paid by), supplier (paid to), mode (`CHEQUE`/`ONLINE`/`CASH`), reference (cheque no / txn id), balance (`numeric(14,2)`, Dr/Cr balance as entered), balance_side (`DR`/`CR`/null), remarks, created_by, archived_at |
@@ -150,3 +150,22 @@ later. Never drop it.
 An order takes about 1 KB including one bill and its link (row data plus indexes). Items are
 stored as compact JSON, and no PDFs are stored. A payment advice with two lines is under 1 KB. With about 450 MB usable, the cloud could hold
 roughly 400 000 orders; with 30-day retention it only ever holds one month's worth.
+
+## Item units
+
+Each item array may carry a fifth element: the quantity's unit as a one-letter code.
+
+| Code | Unit |
+|------|------|
+| `M` | Mtr |
+| `T` | Than |
+| `P` | Pcs |
+| `S` | Set |
+| `B` | Bale |
+
+- Items saved before units existed have only four elements: show their quantity text exactly as typed (it may already contain a unit, e.g. `"20m"` or `"5 kg"`).
+- The phone splits such a trailing unit (`"100 mtr"` → `"100"` + `M`) only when the order is opened for editing, so old rows are rewritten only if they are edited and saved.
+- Quantities are text; with a unit they are plain numbers (decimals allowed).
+- Print as `"{qty} {unit label}"`. Any quantity total is per unit (e.g. `250 Mtr + 10 Than`); units are never added together.
+- No SQL change: `items` is already `jsonb`.
+

@@ -86,7 +86,9 @@ object OrderJson {
 
     fun itemsArray(items: List<OrderItem>): JSONArray = JSONArray().apply {
         for (item in items) {
-            put(JSONObject().put("serialNo", item.serialNo).put("particulars", item.particulars).put("quantity", item.quantity).put("rate", item.rate))
+            val json = JSONObject().put("serialNo", item.serialNo).put("particulars", item.particulars).put("quantity", item.quantity).put("rate", item.rate)
+            if (item.unit.isNotEmpty()) json.put("unit", item.unit)
+            put(json)
         }
     }
 
@@ -103,7 +105,7 @@ object OrderJson {
         val itemsArray = json.optJSONArray("items") ?: JSONArray()
         val items = (0 until itemsArray.length()).map { i ->
             val item = itemsArray.getJSONObject(i)
-            OrderItem(item.optString("serialNo", ""), item.optString("particulars", ""), item.optString("quantity", ""), item.optString("rate", ""))
+            OrderItem(item.optString("serialNo", ""), item.optString("particulars", ""), item.optString("quantity", ""), item.optString("rate", ""), item.optString("unit", ""))
         }
         return OrderFormData(
             json.optString("date", ""), json.optString("offerNo", ""), json.optString("buyer", ""), json.optString("supplier", ""),
@@ -116,6 +118,7 @@ object OrderJson {
     fun contentKey(data: OrderFormData): String = buildList {
         add(data.date); add(data.offerNo); add(data.buyer); add(data.supplier); add(data.remarks)
         add(data.deliveryReady); add(data.transportTo); add(data.cashPayment); add(data.lessDisc); add(data.side)
-        data.items.forEach { add(it.serialNo); add(it.particulars); add(it.quantity); add(it.rate) }
+        // The unit is appended to the quantity only when set, so keys of orders saved before units are unchanged.
+        data.items.forEach { add(it.serialNo); add(it.particulars); add(if (it.unit.isEmpty()) it.quantity else it.quantity + "\u0002" + it.unit); add(it.rate) }
     }.joinToString("\u0001")
 }

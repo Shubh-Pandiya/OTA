@@ -288,7 +288,7 @@ class MainActivity : ComponentActivity() {
                             paymentDeps = paymentDeps,
                             remoteChanges = remoteOrderChanges,
                             onOrderFocused = { selected, uuid ->
-                                focusedOrderState = selected
+                                focusedOrderState = Units.splitLegacy(selected)
                                 focusedUuid = uuid
                                 Toast.makeText(this@MainActivity, "Order Focused: ${selected.offerNo}", Toast.LENGTH_SHORT).show()
                                 currentScreen = Screen.OrderEntry
@@ -387,9 +387,8 @@ class MainActivity : ComponentActivity() {
         val otaDir = File(baseDir, "OTA Orders/$year/$monthName")
         if (!otaDir.exists()) otaDir.mkdirs()
         val ordersToday = otaDir.listFiles { file -> file.name.contains("Order") && file.name.contains(dateStamp) }?.size ?: 0
-        val nextIndex = ordersToday + 1
-        val fileName = "Order_${nextIndex}_${dateStamp}_${deviceId}.pdf"
-        val pdfFile = File(otaDir, fileName)
+        val pdfFile = PublicFiles.orderPdf(otaDir, ordersToday + 1) { "Order_${it}_${dateStamp}_${deviceId}.pdf" }
+        val fileName = pdfFile.name
         try {
             writeOrderPdf(data, pdfFile)
             try {
@@ -404,7 +403,7 @@ class MainActivity : ComponentActivity() {
                 if (previous != null) removeReplacedFiles(previous, jsonFile, pdfFile)
             } catch (e: Exception) { e.printStackTrace() }
             return@locked true to "PDF Generated: ${pdfFile.absolutePath}"
-        } catch (e: Exception) { e.printStackTrace(); return@locked false to "Error: ${e.message}" }
+        } catch (e: Exception) { e.printStackTrace(); if (pdfFile.length() == 0L) pdfFile.delete(); return@locked false to "Error: ${e.message}" }
     }
 
     /** Draws the order form PDF into [pdfFile]. Throws if it can't be written. */
@@ -448,7 +447,7 @@ class MainActivity : ComponentActivity() {
         currentY += 22f; val sidebarEndPage1 = sidebarStartY + sidebarTotalHeight
         for (item in data.items) {
             textPaint.textSize = 10f; textPaint.typeface = Typeface.DEFAULT; textPaint.color = android.graphics.Color.BLACK
-            val partL = createStaticLayout(item.particulars, 210, textPaint); val qtyL = createStaticLayout(item.quantity, 75, textPaint); val rateL = createStaticLayout(item.rate, 60, textPaint); val rowH = maxOf(20f, partL.height.toFloat(), qtyL.height.toFloat(), rateL.height.toFloat()) + 10f
+            val partL = createStaticLayout(item.particulars, 210, textPaint); val qtyL = createStaticLayout(Units.display(item), 75, textPaint); val rateL = createStaticLayout(item.rate, 60, textPaint); val rowH = maxOf(20f, partL.height.toFloat(), qtyL.height.toFloat(), rateL.height.toFloat()) + 10f
             if (currentY + rowH > 780f) startNewPage()
             paint.style = Paint.Style.FILL; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.DEFAULT; paint.textSize = 10f; canvas.drawText(item.serialNo, 45f, currentY + 15f, paint)
             canvas.save(); canvas.translate(90f, currentY + 5f); partL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(305f, currentY + 5f); qtyL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(385f, currentY + 5f); rateL.draw(canvas); canvas.restore(); currentY += rowH; paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK; canvas.drawLine(40f, currentY, 445f, currentY, paint)
@@ -461,7 +460,8 @@ class MainActivity : ComponentActivity() {
         paint.style = Paint.Style.FILL; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); paint.textSize = 11f; paint.textAlign = Paint.Align.CENTER; canvas.drawText(warningText, 297.5f, currentY, paint); paint.textAlign = Paint.Align.LEFT; currentY += 25f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 11f; canvas.drawText("REMARKS / TERMS:", 40f, currentY, paint); currentY += 10f; canvas.save(); canvas.translate(40f, currentY); remarksL.draw(canvas); canvas.restore(); currentY += remarksL.height + 25f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; canvas.drawText(termsTitle, 40f, currentY, paint); currentY += 5f; canvas.save(); canvas.translate(40f, currentY); rulesL.draw(canvas); canvas.restore(); currentY += rulesL.height
         val sigY = currentY + 120f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; paint.style = Paint.Style.STROKE; canvas.drawLine(40f, sigY, 180f, sigY, paint); paint.style = Paint.Style.FILL; canvas.drawText("Signature of Indenter", 40f, sigY + 15f, paint); paint.style = Paint.Style.STROKE; canvas.drawLine(415f, sigY, 555f, sigY, paint); paint.style = Paint.Style.FILL; canvas.drawText("Agent's Signature", 445f, sigY + 15f, paint)
         PdfMarks.drawStamp(this, canvas, RectF(410f, sigY - 105f, 510f, sigY - 5f))
-        pdfDocument.finishPage(page); FileOutputStream(pdfFile).use { pdfDocument.writeTo(it) }; pdfDocument.close()
+        pdfDocument.finishPage(page)
+        try { FileOutputStream(pdfFile).use { pdfDocument.writeTo(it) } } finally { pdfDocument.close() }
     }
 
     /**

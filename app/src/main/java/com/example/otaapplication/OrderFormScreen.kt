@@ -165,10 +165,19 @@ fun OrderFormScreen(
                     }
                 }
 
+                Units.totals(formData.items)?.let { total ->
+                    Text(
+                        "Total: $total",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                    )
+                }
+
                 FilledTonalButton(
                     onClick = {
                         val newList = formData.items.toMutableList()
-                        val newItem = OrderItem(serialNo = (newList.size + 1).toString())
+                        val newItem = OrderItem(serialNo = (newList.size + 1).toString(), unit = Units.forNewRow(newList))
                         newList.add(newItem)
                         lastAddedKey = newItem.key
                         onFormChange(formData.copy(items = newList))
@@ -375,8 +384,10 @@ private fun OrderItemRow(
                             modifier = Modifier.weight(1f),
                             shape = MaterialTheme.shapes.small,
                             colors = formFieldColors(),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next)
                         )
+                        UnitField(unit = item.unit, onUnitChange = { onItemChange(item.copy(unit = it)) })
                         OutlinedTextField(
                             value = item.rate,
                             onValueChange = { onItemChange(item.copy(rate = it)) },
@@ -388,6 +399,35 @@ private fun OrderItemRow(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Compact unit picker shown next to the quantity. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UnitField(unit: String, onUnitChange: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.width(104.dp)) {
+        OutlinedTextField(
+            value = QtyUnit.ofCode(unit)?.label.orEmpty(),
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text("Unit") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+            shape = MaterialTheme.shapes.small,
+            colors = formFieldColors()
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            QtyUnit.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    onClick = { onUnitChange(option.code); expanded = false },
+                    contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
+                )
             }
         }
     }

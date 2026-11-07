@@ -11,6 +11,8 @@ data class OrderItem(
     val particulars: String = "",
     val quantity: String = "",
     val rate: String = "",
+    // QtyUnit code ("M", "T", …); empty for items saved before units existed.
+    val unit: String = "",
     // UI-only identity so rows keep their state/animations when others are added or removed.
     // Never persisted to JSON or the PDF.
     val key: Long = orderItemKeys.incrementAndGet()
@@ -21,7 +23,7 @@ data class OrderFormData(
     val offerNo: String = "",
     val buyer: String = "",
     val supplier: String = "",
-    val items: List<OrderItem> = listOf(OrderItem(serialNo = "1")), // Starts with one row
+    val items: List<OrderItem> = listOf(OrderItem(serialNo = "1", unit = QtyUnit.DEFAULT.code)), // Starts with one row
     val remarks: String = "",
     val deliveryReady: String = "",
     val transportTo: String = "",

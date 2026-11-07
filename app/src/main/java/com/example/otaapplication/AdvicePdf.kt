@@ -59,8 +59,7 @@ object AdvicePdf {
 
     /** Writes the PDF; runs on a background thread. */
     fun write(context: Context, advice: PaymentAdvice): File {
-        val file = fileFor(advice)
-        file.parentFile?.mkdirs()
+        val file = fileFor(advice).let { it.parentFile?.mkdirs(); PublicFiles.writable(it) }
         val doc = PdfDocument()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         var pageNo = 1

@@ -176,16 +176,20 @@ class OrderTable<T>(
             }
         )
 
-        /** Items as compact arrays: [s.no, particulars, qty, rate]. */
+        /** Items as compact arrays: [s.no, particulars, qty, rate] plus the unit code when set. */
         fun itemsToJson(items: List<OrderItem>) = JSONArray().apply {
-            items.forEach { put(JSONArray().put(it.serialNo).put(it.particulars).put(it.quantity).put(it.rate)) }
+            items.forEach {
+                val row = JSONArray().put(it.serialNo).put(it.particulars).put(it.quantity).put(it.rate)
+                if (it.unit.isNotEmpty()) row.put(it.unit)
+                put(row)
+            }
         }
 
         fun itemsFromJson(array: JSONArray?): List<OrderItem> {
             if (array == null) return emptyList()
             return (0 until array.length()).mapNotNull { i ->
                 val item = array.optJSONArray(i) ?: return@mapNotNull null
-                OrderItem(item.optString(0, ""), item.optString(1, ""), item.optString(2, ""), item.optString(3, ""))
+                OrderItem(item.optString(0, ""), item.optString(1, ""), item.optString(2, ""), item.optString(3, ""), item.optString(4, ""))
             }
         }
 
