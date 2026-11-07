@@ -31,6 +31,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
                     city TEXT NOT NULL DEFAULT '',
                     phone TEXT NOT NULL DEFAULT '',
                     gstin TEXT NOT NULL DEFAULT '',
+                    $BANK_COLUMNS,
                     search_key TEXT NOT NULL DEFAULT '',
                     $SYNC_COLUMNS
                 )
@@ -86,11 +87,24 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         db.execSQL("CREATE INDEX idx_order_bills_bill ON order_bills(bill_id)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // v2: bank details on buyers and suppliers.
+            for (party in PartyType.entries) {
+                for (column in BANK_COLUMN_NAMES) {
+                    db.execSQL("ALTER TABLE ${party.table} ADD COLUMN $column TEXT NOT NULL DEFAULT ''")
+                }
+            }
+        }
+    }
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        private const val VERSION = 1
+        const val VERSION = 2
+        val BANK_COLUMN_NAMES = listOf(
+            "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
+        )
+        private val BANK_COLUMNS = BANK_COLUMN_NAMES.joinToString(",\n") { "$it TEXT NOT NULL DEFAULT ''" }
         private const val SYNC_COLUMNS = """
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,

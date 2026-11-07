@@ -15,7 +15,8 @@ data class Party(
     val address: String = "",
     val city: String = "",
     val phone: String = "",
-    val gstin: String = ""
+    val gstin: String = "",
+    val bank: BankDetails = BankDetails()
 ) {
     /**
      * Text placed in the order form's "Name & Address" field when this entry is picked:
@@ -26,6 +27,48 @@ data class Party(
         if (address.isNotBlank()) lines += address.trim()
         if (city.isNotBlank() && !address.contains(city.trim(), ignoreCase = true)) lines += city.trim()
         return lines.joinToString("\n")
+    }
+}
+
+/** Bank account of a buyer or supplier. All fields are optional. */
+data class BankDetails(
+    val accountName: String = "",
+    val bankName: String = "",
+    val accountNo: String = "",
+    val ifsc: String = "",
+    val branch: String = "",
+    val upi: String = ""
+) {
+    val isEmpty: Boolean
+        get() = listOf(accountName, bankName, accountNo, ifsc, branch, upi).all { it.isBlank() }
+
+    fun cleaned() = BankDetails(
+        accountName = accountName.trim(),
+        bankName = bankName.trim(),
+        accountNo = accountNo.filterNot { it.isWhitespace() },
+        ifsc = ifsc.trim().uppercase(),
+        branch = branch.trim(),
+        upi = upi.trim()
+    )
+
+    /** Multi-line text for copying/sharing, skipping empty fields. */
+    fun toShareText(partyName: String): String = listOf(
+        "Account name" to accountName.ifBlank { partyName },
+        "Bank" to bankName,
+        "A/c no" to accountNo,
+        "IFSC" to ifsc,
+        "Branch" to branch,
+        "UPI" to upi
+    ).filter { it.second.isNotBlank() }.joinToString("\n") { "${it.first}: ${it.second.trim()}" }
+
+    companion object {
+        private val ifscPattern = Regex("^[A-Z]{4}0[A-Z0-9]{6}$")
+        private val accountNoPattern = Regex("^[0-9A-Z]{6,20}$")
+        private val upiPattern = Regex("^[A-Za-z0-9._-]{2,}@[A-Za-z][A-Za-z0-9.-]*$")
+
+        fun isValidIfsc(value: String) = value.isBlank() || ifscPattern.matches(value.trim().uppercase())
+        fun isValidAccountNo(value: String) = value.isBlank() || accountNoPattern.matches(value.filterNot { it.isWhitespace() }.uppercase())
+        fun isValidUpi(value: String) = value.isBlank() || upiPattern.matches(value.trim())
     }
 }
 

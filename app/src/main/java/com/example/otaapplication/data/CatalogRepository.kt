@@ -51,7 +51,8 @@ class CatalogRepository(
             address = party.address.trim(),
             city = party.city.trim(),
             phone = party.phone.trim(),
-            gstin = party.gstin.trim().uppercase()
+            gstin = party.gstin.trim().uppercase(),
+            bank = party.bank.cleaned()
         )
         require(clean.name.isNotEmpty()) { "Name is required" }
         val now = clock()
@@ -62,7 +63,21 @@ class CatalogRepository(
             put("city", clean.city)
             put("phone", clean.phone)
             put("gstin", clean.gstin)
-            put("search_key", SearchText.normalize(listOf(clean.name, clean.city, clean.phone, clean.gstin, clean.address).joinToString(" ")))
+            put("bank_account_name", clean.bank.accountName)
+            put("bank_name", clean.bank.bankName)
+            put("bank_account_no", clean.bank.accountNo)
+            put("bank_ifsc", clean.bank.ifsc)
+            put("bank_branch", clean.bank.branch)
+            put("bank_upi", clean.bank.upi)
+            put(
+                "search_key",
+                SearchText.normalize(
+                    listOf(
+                        clean.name, clean.city, clean.phone, clean.gstin, clean.address,
+                        clean.bank.accountName, clean.bank.bankName, clean.bank.accountNo, clean.bank.ifsc, clean.bank.upi
+                    ).joinToString(" ")
+                )
+            )
             put("updated_at", now)
             put("sync_pending", 1)
         }
@@ -100,13 +115,17 @@ class CatalogRepository(
         while (moveToNext()) {
             out += Party(
                 id = getString(0), type = type, name = getString(1), address = getString(2),
-                city = getString(3), phone = getString(4), gstin = getString(5)
+                city = getString(3), phone = getString(4), gstin = getString(5),
+                bank = BankDetails(
+                    accountName = getString(6), bankName = getString(7), accountNo = getString(8),
+                    ifsc = getString(9), branch = getString(10), upi = getString(11)
+                )
             )
         }
         return out
     }
 
     private companion object {
-        const val COLUMNS = "id, name, address, city, phone, gstin"
+        val COLUMNS = "id, name, address, city, phone, gstin, " + OtaDatabase.BANK_COLUMN_NAMES.joinToString(", ")
     }
 }

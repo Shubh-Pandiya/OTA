@@ -2,14 +2,18 @@
 
 package com.example.otaapplication
 
+import android.content.ClipData
 import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -29,7 +33,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -41,6 +49,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.otaapplication.data.BankDetails
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.Party
 import com.example.otaapplication.data.PartyType
@@ -88,7 +97,7 @@ fun CatalogScreen(catalog: CatalogRepository) {
                 value = query,
                 onValueChange = { query = it },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                placeholder = { Text("Search name, city, phone or GSTIN") },
+                placeholder = { Text("Search name, city, phone, GSTIN or bank") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     AnimatedVisibility(visible = query.isNotEmpty(), enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
@@ -174,7 +183,7 @@ private fun PartyList(type: PartyType, query: String, version: Int, catalog: Cat
             )
             Text(
                 if (query.isBlank()) "Add them here or straight from the order form. They show up as suggestions while typing an order."
-                else "Try a different name, city or phone number.",
+                else "Try a different name, city, phone or bank detail.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -226,10 +235,32 @@ private fun PartyCard(party: Party, onClick: () -> Unit, modifier: Modifier = Mo
                 if (meta.isNotEmpty()) {
                     Text(meta.joinToString(" · "), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                bankSummary(party.bank)?.let { summary ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.AccountBalance, contentDescription = "Bank",
+                            modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(summary, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
             Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
         }
     }
+}
+
+/** One-line bank hint for list rows, e.g. "HDFC Bank · A/c ••4321 · HDFC0001234". */
+private fun bankSummary(bank: BankDetails): String? {
+    if (bank.isEmpty) return null
+    val parts = listOfNotNull(
+        bank.bankName.takeIf { it.isNotBlank() },
+        bank.accountNo.takeIf { it.isNotBlank() }?.let { "A/c ••" + it.takeLast(4) },
+        bank.ifsc.takeIf { it.isNotBlank() },
+        bank.upi.takeIf { it.isNotBlank() && bank.accountNo.isBlank() }
+    )
+    return parts.joinToString(" · ").ifBlank { "Bank details saved" }
 }
 
 /** Add / edit dialog shared by the catalog screen and the order form's "Add as new" shortcut. */
@@ -247,6 +278,13 @@ fun PartyEditDialog(
     var city by rememberSaveable { mutableStateOf(initial.city) }
     var phone by rememberSaveable { mutableStateOf(initial.phone) }
     var gstin by rememberSaveable { mutableStateOf(initial.gstin) }
+    var accountName by rememberSaveable { mutableStateOf(initial.bank.accountName) }
+    var bankName by rememberSaveable { mutableStateOf(initial.bank.bankName) }
+    var accountNo by rememberSaveable { mutableStateOf(initial.bank.accountNo) }
+    var ifsc by rememberSaveable { mutableStateOf(initial.bank.ifsc) }
+    var branch by rememberSaveable { mutableStateOf(initial.bank.branch) }
+    var upi by rememberSaveable { mutableStateOf(initial.bank.upi) }
+    var bankExpanded by rememberSaveable { mutableStateOf(!initial.bank.isEmpty) }
     var duplicate by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -256,7 +294,14 @@ fun PartyEditDialog(
         duplicate = name.isNotBlank() && withContext(Dispatchers.IO) { catalog.findByName(initial.type, name, initial.id) != null }
     }
     val gstinError = gstin.isNotBlank() && !gstinPattern.matches(gstin.trim().uppercase())
-    val canSave = name.isNotBlank() && !duplicate && !gstinError && !saving
+    val bank = BankDetails(accountName, bankName, accountNo, ifsc, branch, upi)
+    val ifscError = !BankDetails.isValidIfsc(ifsc)
+    val accountNoError = !BankDetails.isValidAccountNo(accountNo)
+    val upiError = !BankDetails.isValidUpi(upi)
+    val bankError = ifscError || accountNoError || upiError
+    // Keep an invalid bank field visible so the disabled Save button is explained.
+    LaunchedEffect(bankError) { if (bankError) bankExpanded = true }
+    val canSave = name.isNotBlank() && !duplicate && !gstinError && !bankError && !saving
     val isNew = initial.id.isBlank()
 
     AlertDialog(
@@ -303,9 +348,66 @@ fun PartyEditDialog(
                     singleLine = true,
                     isError = gstinError,
                     supportingText = if (gstinError) { { Text("GSTIN has 15 letters/digits") } } else null,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
                     modifier = Modifier.fillMaxWidth()
                 )
+                BankSection(
+                    partyName = name,
+                    bank = bank,
+                    expanded = bankExpanded,
+                    onToggle = { bankExpanded = !bankExpanded },
+                    hasError = bankError
+                ) {
+                    OutlinedTextField(
+                        value = accountName, onValueChange = { accountName = it },
+                        label = { Text("Account holder name") },
+                        placeholder = { Text(name.ifBlank { "Same as name" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = bankName, onValueChange = { bankName = it },
+                        label = { Text("Bank name") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = accountNo, onValueChange = { accountNo = it.uppercase() },
+                        label = { Text("Account number") },
+                        singleLine = true,
+                        isError = accountNoError,
+                        supportingText = if (accountNoError) { { Text("Use 6–20 letters/digits") } } else null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = ifsc, onValueChange = { ifsc = it.uppercase().take(11) },
+                        label = { Text("IFSC") },
+                        singleLine = true,
+                        isError = ifscError,
+                        supportingText = if (ifscError) { { Text(if (ifsc.trim().length == 11) "5th character must be 0, e.g. HDFC0001234" else "11 characters, e.g. HDFC0001234") } } else null,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = branch, onValueChange = { branch = it },
+                        label = { Text("Branch") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = upi, onValueChange = { upi = it.trim() },
+                        label = { Text("UPI ID") },
+                        singleLine = true,
+                        isError = upiError,
+                        supportingText = if (upiError) { { Text("Looks like name@bank") } } else null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 if (onDelete != null) {
                     TextButton(
                         onClick = { confirmDelete = true },
@@ -325,7 +427,7 @@ fun PartyEditDialog(
                     saving = true
                     scope.launch {
                         val saved = withContext(Dispatchers.IO) {
-                            runCatching { catalog.save(initial.copy(name = name, address = address, city = city, phone = phone, gstin = gstin)) }
+                            runCatching { catalog.save(initial.copy(name = name, address = address, city = city, phone = phone, gstin = gstin, bank = bank)) }
                         }
                         saving = false
                         saved.onSuccess(onSaved)
@@ -346,5 +448,65 @@ fun PartyEditDialog(
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun BankSection(
+    partyName: String,
+    bank: BankDetails,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    hasError: Boolean,
+    fields: @Composable ColumnScope.() -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "bankChevron")
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, if (hasError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.AccountBalance, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
+                    Text("Bank details", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        if (bank.isEmpty) "Optional" else bankSummary(bank).orEmpty(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
+                AnimatedVisibility(visible = !bank.isEmpty, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+                    IconButton(onClick = {
+                        scope.launch {
+                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Bank details", bank.cleaned().toShareText(partyName.trim()))))
+                            Toast.makeText(context, "Bank details copied", Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Icon(Icons.Default.ContentCopy, contentDescription = "Copy bank details", modifier = Modifier.size(20.dp)) }
+                }
+                Icon(
+                    Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Hide bank details" else "Show bank details",
+                    modifier = Modifier.padding(horizontal = 8.dp).rotate(rotation)
+                )
+            }
+            AnimatedVisibility(visible = expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column(
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    content = fields
+                )
+            }
+        }
     }
 }

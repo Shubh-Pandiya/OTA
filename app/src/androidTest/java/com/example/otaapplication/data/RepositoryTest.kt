@@ -178,4 +178,63 @@ class RepositoryTest {
         assertEquals(listOf("file:/x/old.json"), orders.search(OrderQuery(text = "terry")).map { it.id })
         assertEquals(null, orders.search(OrderQuery(text = "old buyer")).single().uuid)
     }
+
+    @Test
+    fun bankDetailsRoundTripAndSearch() {
+        val saved = catalog.save(
+            Party(
+                type = PartyType.SUPPLIER, name = "Mafatlal Mills",
+                bank = BankDetails(accountName = "Mafatlal Industries", bankName = " State Bank of India ", accountNo = "3012 3456 789", ifsc = "sbin0001234", branch = "Ahmedabad", upi = "mafatlal@sbi")
+            )
+        )
+        val loaded = catalog.list(PartyType.SUPPLIER).single()
+        assertEquals(saved.id, loaded.id)
+        assertEquals(
+            BankDetails("Mafatlal Industries", "State Bank of India", "30123456789", "SBIN0001234", "Ahmedabad", "mafatlal@sbi"),
+            loaded.bank
+        )
+        assertEquals(listOf("Mafatlal Mills"), catalog.list(PartyType.SUPPLIER, "sbin0001234").map { it.name })
+        assertEquals(listOf("Mafatlal Mills"), catalog.list(PartyType.SUPPLIER, "30123456789").map { it.name })
+        // The order form's field text never includes bank details.
+        assertEquals("Mafatlal Mills", loaded.toFieldText())
+
+        catalog.save(loaded.copy(bank = BankDetails()))
+        assertTrue(catalog.list(PartyType.SUPPLIER).single().bank.isEmpty)
+        assertEquals(1, syncColumns("suppliers", saved.id).third)
+    }
+
+    @Test
+    fun upgradeFromVersion1KeepsCatalogAndAddsBankColumns() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val name = "upgrade_test.db"
+        context.deleteDatabase(name)
+        android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name), null).use { v1 ->
+            for (table in listOf("buyers", "suppliers")) {
+                v1.execSQL(
+                    """
+                    CREATE TABLE $table (
+                        id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL,
+                        address TEXT NOT NULL DEFAULT '', city TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '',
+                        gstin TEXT NOT NULL DEFAULT '', search_key TEXT NOT NULL DEFAULT '',
+                        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                        is_deleted INTEGER NOT NULL DEFAULT 0, sync_pending INTEGER NOT NULL DEFAULT 1)
+                    """.trimIndent()
+                )
+            }
+            v1.execSQL("INSERT INTO buyers (id, name, name_key, city, search_key, created_at, updated_at) VALUES ('b1', 'Ram Textiles', 'ram textiles', 'Indore', 'ram textiles indore', 1, 1)")
+            v1.version = 1
+        }
+        val upgraded = OtaDatabase(context, name)
+        try {
+            val repo = CatalogRepository(upgraded) { now }
+            val ram = repo.list(PartyType.BUYER).single()
+            assertEquals(Party(id = "b1", type = PartyType.BUYER, name = "Ram Textiles", city = "Indore"), ram)
+            repo.save(ram.copy(bank = BankDetails(bankName = "HDFC Bank", ifsc = "HDFC0001234")))
+            assertEquals("HDFC0001234", repo.list(PartyType.BUYER, "hdfc").single().bank.ifsc)
+            assertEquals(OtaDatabase.VERSION, upgraded.readableDatabase.version)
+        } finally {
+            upgraded.close()
+            context.deleteDatabase(name)
+        }
+    }
 }

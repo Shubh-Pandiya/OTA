@@ -1,6 +1,8 @@
 package com.example.otaapplication.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 
@@ -47,5 +49,29 @@ class SearchTextTest {
         assertEquals("Ram Textiles\n12 MG Road\nIndore", party.toFieldText())
         assertEquals("Ram Textiles\n12 MG Road, Indore", party.copy(address = "12 MG Road, Indore").toFieldText())
         assertEquals("Ram Textiles", Party(type = PartyType.SUPPLIER, name = "Ram Textiles").toFieldText())
+    }
+
+    @Test
+    fun bankDetailsValidation() {
+        assertTrue(BankDetails.isValidIfsc(""))
+        assertTrue(BankDetails.isValidIfsc("hdfc0001234"))
+        assertFalse(BankDetails.isValidIfsc("HDFC1001234"))
+        assertFalse(BankDetails.isValidIfsc("HDFC000123"))
+        assertTrue(BankDetails.isValidAccountNo("5010 0123 4567 89"))
+        assertFalse(BankDetails.isValidAccountNo("12-34"))
+        assertTrue(BankDetails.isValidUpi("ram.textiles@okhdfc"))
+        assertFalse(BankDetails.isValidUpi("ram textiles"))
+    }
+
+    @Test
+    fun bankDetailsCleanAndShare() {
+        val bank = BankDetails(bankName = " HDFC Bank ", accountNo = "5010 0123", ifsc = "hdfc0001234").cleaned()
+        assertEquals(BankDetails(bankName = "HDFC Bank", accountNo = "50100123", ifsc = "HDFC0001234"), bank)
+        assertTrue(BankDetails(" ", "", "").isEmpty)
+        assertFalse(bank.isEmpty)
+        assertEquals(
+            "Account name: Ram Textiles\nBank: HDFC Bank\nA/c no: 50100123\nIFSC: HDFC0001234",
+            bank.toShareText("Ram Textiles")
+        )
     }
 }
