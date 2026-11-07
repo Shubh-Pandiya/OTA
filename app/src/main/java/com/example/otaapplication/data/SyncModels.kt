@@ -2,6 +2,7 @@ package com.example.otaapplication.data
 
 import java.time.Instant
 import java.time.OffsetDateTime
+import java.util.UUID
 
 /** A catalog row as stored in the cloud. */
 data class RemoteParty(
@@ -35,10 +36,12 @@ data class LocalSyncMeta(val updatedAt: Long, val pending: Boolean)
 object SyncMerge {
     enum class Decision { APPLY_REMOTE, KEEP_LOCAL, MARK_SYNCED, SKIP }
 
-    fun onPulled(local: LocalSyncMeta?, remote: RemoteParty): Decision = when {
-        local == null -> if (remote.deleted) Decision.SKIP else Decision.APPLY_REMOTE
+    fun onPulled(local: LocalSyncMeta?, remote: RemoteParty): Decision = onPulled(local, remote.deleted, remote.clientUpdatedAt)
+
+    fun onPulled(local: LocalSyncMeta?, remoteDeleted: Boolean, remoteClientUpdatedAt: Long): Decision = when {
+        local == null -> if (remoteDeleted) Decision.SKIP else Decision.APPLY_REMOTE
         !local.pending -> Decision.APPLY_REMOTE
-        remote.clientUpdatedAt > local.updatedAt -> Decision.APPLY_REMOTE
+        remoteClientUpdatedAt > local.updatedAt -> Decision.APPLY_REMOTE
         else -> Decision.KEEP_LOCAL
     }
 
@@ -66,4 +69,33 @@ object SyncTime {
      * committed slightly out of order is never skipped; re-applying an unchanged row is a no-op.
      */
     fun minusSeconds(serverTime: String, seconds: Long): String = toInstant(serverTime).minusSeconds(seconds).toString()
+}
+
+/** A row of a synced order table as stored in the cloud. */
+data class RemoteRow<T>(
+    val id: String,
+    val value: T,
+    val deleted: Boolean,
+    val clientUpdatedAt: Long,
+    val serverUpdatedAt: String
+)
+
+/** A local row waiting to be pushed, with the edit time it had when read. */
+data class PendingRow<T>(val id: String, val value: T, val deleted: Boolean, val updatedAt: Long)
+
+/** Index facts about an order waiting to be pushed; the content comes from the history file. */
+data class PendingOrderRef(val id: String, val offerNo: String, val date: String, val updatedAt: Long, val deleted: Boolean)
+
+data class BillValue(val billNo: String, val billDate: String?, val amount: Double?)
+
+data class LinkValue(val orderId: String, val billId: String)
+
+/**
+ * Ids derived from content, so the same bill (or the same bill-to-order link) created offline on
+ * two phones ends up as one cloud row instead of a duplicate.
+ */
+object SyncIds {
+    fun bill(billKey: String): String = UUID.nameUUIDFromBytes("ota-bill:$billKey".toByteArray()).toString()
+
+    fun link(orderId: String, billId: String): String = UUID.nameUUIDFromBytes("ota-link:$orderId:$billId".toByteArray()).toString()
 }

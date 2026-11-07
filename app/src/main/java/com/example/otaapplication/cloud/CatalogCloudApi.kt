@@ -6,8 +6,6 @@ import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PendingParty
 import com.example.otaapplication.data.RemoteParty
 import com.example.otaapplication.data.SyncTime
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,10 +19,7 @@ interface CatalogCloudApi {
 }
 
 /** [CatalogCloudApi] over Supabase's REST API (PostgREST); row-level security limits it to signed-in staff. */
-class PostgrestCatalogApi(
-    private val config: SupabaseConfig,
-    private val auth: SupabaseAuth
-) : CatalogCloudApi {
+class PostgrestCatalogApi(private val client: PostgrestClient) : CatalogCloudApi {
 
     override suspend fun pull(type: PartyType, after: String?, afterId: String?, limit: Int): List<RemoteParty> {
         val filter = when {
@@ -32,40 +27,18 @@ class PostgrestCatalogApi(
             afterId == null -> "&updated_at=gt.${Http.encode(after)}"
             else -> "&or=" + Http.encode("(updated_at.gt.\"$after\",and(updated_at.eq.\"$after\",id.gt.$afterId))")
         }
-        val url = "${config.url}/rest/v1/${type.table}?select=*&order=updated_at.asc,id.asc&limit=$limit$filter"
-        val body = call("GET", url, emptyMap(), null)
+        val body = client.call("GET", "${type.table}?select=*&order=updated_at.asc,id.asc&limit=$limit$filter")
         return CatalogJson.parseRows(body, type)
     }
 
     override suspend fun push(type: PartyType, rows: List<PendingParty>): List<RemoteParty> {
         if (rows.isEmpty()) return emptyList()
-        val url = "${config.url}/rest/v1/${type.table}?on_conflict=id"
-        val body = call(
-            "POST", url,
+        val body = client.call(
+            "POST", "${type.table}?on_conflict=id",
             mapOf("Prefer" to "resolution=merge-duplicates,return=representation"),
             CatalogJson.toJsonArray(rows).toString()
         )
         return CatalogJson.parseRows(body, type)
-    }
-
-    private suspend fun call(method: String, url: String, extraHeaders: Map<String, String>, body: String?): String {
-        var token = auth.accessToken()
-        repeat(2) { attempt ->
-            val headers = extraHeaders + mapOf("apikey" to config.publishableKey, "Authorization" to "Bearer $token")
-            val response = withContext(Dispatchers.IO) { Http.send(method, url, headers, body) }
-            if (response.ok) return response.body
-            if (response.status == 401 && attempt == 0) {
-                token = auth.accessToken(forceRefresh = true)
-            } else {
-                val message = Http.errorMessage(response)
-                throw CloudException(
-                    if (response.status == 401 || response.status == 403) "Not allowed: $message" else message,
-                    response.status,
-                    authFailed = response.status == 401
-                )
-            }
-        }
-        error("unreachable")
     }
 }
 

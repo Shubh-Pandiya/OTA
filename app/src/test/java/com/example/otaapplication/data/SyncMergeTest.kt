@@ -65,4 +65,19 @@ class SyncTimeTest {
     @Test fun cursorOverlapKeepsMicroseconds() {
         assertEquals("2026-11-07T09:59:00.123456Z", SyncTime.minusSeconds("2026-11-07T10:00:00.123456+00:00", 60))
     }
+
+    @Test fun rowOverloadFollowsTheSameRules() {
+        assertEquals(Decision.SKIP, SyncMerge.onPulled(null, remoteDeleted = true, remoteClientUpdatedAt = 5_000))
+        assertEquals(Decision.APPLY_REMOTE, SyncMerge.onPulled(null, remoteDeleted = false, remoteClientUpdatedAt = 5_000))
+        assertEquals(Decision.KEEP_LOCAL, SyncMerge.onPulled(LocalSyncMeta(6_000, pending = true), false, 5_000))
+        assertEquals(Decision.APPLY_REMOTE, SyncMerge.onPulled(LocalSyncMeta(6_000, pending = true), true, 7_000))
+    }
+
+    @Test fun sameBillOnTwoPhonesGetsTheSameId() {
+        assertEquals(SyncIds.bill("inv 42"), SyncIds.bill("inv 42"))
+        assertEquals(36, SyncIds.bill("inv 42").length)
+        assert(SyncIds.bill("inv 42") != SyncIds.bill("inv 43"))
+        assertEquals(SyncIds.link("o1", "b1"), SyncIds.link("o1", "b1"))
+        assert(SyncIds.link("o1", "b1") != SyncIds.link("o2", "b1"))
+    }
 }

@@ -58,7 +58,10 @@ fun OrderFormScreen(
     modifier: Modifier = Modifier,
     isGenerating: Boolean = false,
     isNewOrder: Boolean = true,
-    catalog: CatalogRepository? = null
+    catalog: CatalogRepository? = null,
+    /** Why a new order can't get a number yet (no staff code); null when it can. */
+    numberMissingMessage: String? = null,
+    onOpenSyncSettings: () -> Unit = {}
 ) {
     // Rows present on first composition appear instantly; rows added later animate in.
     var rowsAnimateIn by remember { mutableStateOf(false) }
@@ -110,6 +113,9 @@ fun OrderFormScreen(
                     readOnly = true,
                     supportingText = if (isNewOrder) "Auto-generated, assigned when the PDF is saved" else "Existing order number"
                 )
+                AnimatedVisibility(visible = numberMissingMessage != null) {
+                    StaffCodeNotice(numberMissingMessage.orEmpty(), onOpenSyncSettings)
+                }
             }
 
             FormSection(title = "Party Configurations", icon = Icons.Default.Groups) {
@@ -612,5 +618,24 @@ fun OrderFormScreenPreview() {
             onFormChange = {},
             onGeneratePdf = {}
         )
+    }
+}
+
+@Composable
+private fun StaffCodeNotice(message: String, onOpenSyncSettings: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(start = 16.dp, top = 12.dp, end = 8.dp, bottom = 4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            }
+            TextButton(onClick = onOpenSyncSettings, modifier = Modifier.align(Alignment.End)) { Text("Open Sync Settings") }
+        }
     }
 }

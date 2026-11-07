@@ -1,5 +1,6 @@
 package com.example.otaapplication.data
 
+import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
@@ -96,11 +97,43 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
                 }
             }
         }
+        if (oldVersion < 3) rekeyBills(db)
+    }
+
+    /**
+     * v3: bills and bill links get ids derived from their content ([SyncIds]) so the same bill
+     * entered on two phones syncs as one row. Everything re-keyed is marked for upload.
+     */
+    private fun rekeyBills(db: SQLiteDatabase) {
+        val hasBillTables = db.rawQuery(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('bills', 'order_bills')", null
+        ).use { it.moveToFirst() && it.getInt(0) == 2 }
+        if (!hasBillTables) return
+        val links = db.rawQuery("SELECT order_id, bill_id, created_at, updated_at, is_deleted FROM order_bills", null).use { c ->
+            buildList { while (c.moveToNext()) add(ContentValues().apply {
+                put("order_id", c.getString(0)); put("bill_id", c.getString(1)); put("created_at", c.getLong(2))
+                put("updated_at", c.getLong(3)); put("is_deleted", c.getInt(4)); put("sync_pending", 1)
+            }) }
+        }
+        db.delete("order_bills", null, null)
+        val newIds = HashMap<String, String>()
+        db.rawQuery("SELECT id, bill_key FROM bills", null).use { c ->
+            while (c.moveToNext()) newIds[c.getString(0)] = SyncIds.bill(c.getString(1))
+        }
+        for ((oldId, newId) in newIds) {
+            db.execSQL("UPDATE bills SET id = ?, sync_pending = 1 WHERE id = ?", arrayOf(newId, oldId))
+        }
+        for (link in links) {
+            val billId = newIds[link.getAsString("bill_id")] ?: continue
+            link.put("bill_id", billId)
+            link.put("id", SyncIds.link(link.getAsString("order_id"), billId))
+            db.insertWithOnConflict("order_bills", null, link, SQLiteDatabase.CONFLICT_IGNORE)
+        }
     }
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 2
+        const val VERSION = 3
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

@@ -5,7 +5,6 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import java.security.MessageDigest
 import java.time.LocalDate
-import java.util.UUID
 
 /**
  * Order search index plus bills. The index mirrors the order history file and is kept in step
@@ -16,9 +15,24 @@ class OrderRepository(
     private val helper: OtaDatabase,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    /** Called after a local change that should be uploaded (new/edited/deleted order, bill links). */
+    var onLocalChange: (() -> Unit)? = null
 
-    /** Brings the index in line with the history file. Returns true when anything changed. */
-    fun reconcile(entries: List<HistoryIndexEntry>): Boolean {
+    /**
+     * Brings the index in line with the history file. Returns true when anything changed.
+     *
+     * [remote] lists orders whose history entry was just written (or removed) by a cloud pull,
+     * with the edit time they have in the cloud: those rows are stored as already synced, so a
+     * pulled change is never uploaded back.
+     */
+    fun reconcile(entries: List<HistoryIndexEntry>, remote: Map<String, Long> = emptyMap()): Boolean {
+        val changed = reconcileInternal(entries, remote)
+        // Only local edits need an upload; a pull-only round has nothing new to push.
+        if (changed && remote.isEmpty()) onLocalChange?.invoke()
+        return changed
+    }
+
+    private fun reconcileInternal(entries: List<HistoryIndexEntry>, remote: Map<String, Long>): Boolean {
         val db = helper.writableDatabase
         var changed = false
         db.beginTransaction()
@@ -32,16 +46,20 @@ class OrderRepository(
             for (e in entries) {
                 val fingerprint = fingerprint(e)
                 val row = existing[e.id]
+                val remoteAt = remote[e.id]
+                val values = { orderValues(e, fingerprint, remoteAt ?: now, pending = remoteAt == null) }
                 when {
                     row == null -> {
-                        db.insertOrThrow("orders", null, orderValues(e, fingerprint, now).apply {
-                            put("id", e.id); put("created_at", now)
-                        })
+                        db.insertOrThrow("orders", null, values().apply { put("id", e.id); put("created_at", remoteAt ?: now) })
                         changed = true
                     }
                     row.fingerprint != fingerprint || row.deleted -> {
-                        db.update("orders", orderValues(e, fingerprint, now), "id = ?", arrayOf(e.id))
+                        db.update("orders", values(), "id = ?", arrayOf(e.id))
                         changed = true
+                    }
+                    remoteAt != null -> {
+                        // Same content as the cloud copy: just record that it is in sync.
+                        db.update("orders", syncedAt(remoteAt).apply { put("seq", e.seq) }, "id = ?", arrayOf(e.id))
                     }
                     row.seq != e.seq -> {
                         db.update("orders", ContentValues().apply { put("seq", e.seq) }, "id = ?", arrayOf(e.id))
@@ -52,8 +70,10 @@ class OrderRepository(
             val present = entries.mapTo(HashSet()) { it.id }
             val removed = existing.filter { (id, row) -> !row.deleted && id !in present }.keys
             for (id in removed) {
-                db.update("orders", tombstone(now), "id = ?", arrayOf(id))
-                db.update("order_bills", tombstone(now), "order_id = ? AND is_deleted = 0", arrayOf(id))
+                val remoteAt = remote[id]
+                // A deletion pulled from the cloud: the phone that deleted it uploads its own link changes.
+                db.update("orders", if (remoteAt != null) tombstoneSynced(remoteAt) else tombstone(now), "id = ?", arrayOf(id))
+                db.update("order_bills", if (remoteAt != null) tombstoneSynced(now) else tombstone(now), "order_id = ? AND is_deleted = 0", arrayOf(id))
             }
             if (removed.isNotEmpty()) {
                 retireOrphanBills(db, now)
@@ -161,17 +181,19 @@ class OrderRepository(
                     val wasDeleted = c.getInt(1) != 0
                     val dateChanged = billDate != null && billDate.toString() != c.getStringOrNull(2)
                     val amountChanged = amount != null && (c.isNull(3) || c.getDouble(3) != amount)
-                    if (wasDeleted || dateChanged || amountChanged) {
-                        db.update("bills", ContentValues().apply {
+                    // Uploaded again even when unchanged: the cloud may already have purged an
+                    // old bill, and other phones need it to show the new link.
+                    db.update("bills", ContentValues().apply {
+                        if (wasDeleted || dateChanged || amountChanged) {
                             put("is_deleted", 0)
                             if (billDate != null) put("bill_date", billDate.toString())
                             if (amount != null) put("amount", amount)
-                            put("updated_at", now); put("sync_pending", 1)
-                        }, "id = ?", arrayOf(id))
-                    }
+                        }
+                        put("updated_at", now); put("sync_pending", 1)
+                    }, "id = ?", arrayOf(id))
                     id
                 } else null
-            } ?: UUID.randomUUID().toString().also { id ->
+            } ?: SyncIds.bill(key).also { id ->
                 db.insertOrThrow("bills", null, ContentValues().apply {
                     put("id", id); put("bill_no", display); put("bill_key", key)
                     if (billDate != null) put("bill_date", billDate.toString())
@@ -188,7 +210,7 @@ class OrderRepository(
                 )
                 if (revived == 0) {
                     db.insertWithOnConflict("order_bills", null, ContentValues().apply {
-                        put("id", UUID.randomUUID().toString()); put("order_id", orderId); put("bill_id", billId)
+                        put("id", SyncIds.link(orderId, billId)); put("order_id", orderId); put("bill_id", billId)
                         put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
                     }, SQLiteDatabase.CONFLICT_IGNORE)
                 }
@@ -197,6 +219,7 @@ class OrderRepository(
             return billById(db, billId)
         } finally {
             db.endTransaction()
+            onLocalChange?.invoke()
         }
     }
 
@@ -212,6 +235,7 @@ class OrderRepository(
         } finally {
             db.endTransaction()
         }
+        onLocalChange?.invoke()
     }
 
     private fun billById(db: SQLiteDatabase, id: String): Bill =
@@ -224,6 +248,166 @@ class OrderRepository(
             "is_deleted = 0 AND NOT EXISTS (SELECT 1 FROM order_bills ob WHERE ob.bill_id = bills.id AND ob.is_deleted = 0)",
             null
         )
+    }
+
+    // ------------------------------------------------------------------ cloud sync
+
+    /** Order numbers starting with [prefix], including deleted orders (numbers are never reused). */
+    fun offerNosWithPrefix(prefix: String): List<String> =
+        helper.readableDatabase.rawQuery(
+            "SELECT offer_no FROM orders WHERE substr(offer_no, 1, ?) = ?",
+            arrayOf(prefix.length.toString(), prefix)
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+    /** Unuploaded orders, bills and bill links. Orders without a uuid (very old entries) never sync. */
+    fun pendingCount(): Int = helper.readableDatabase.rawQuery(
+        """
+        SELECT (SELECT COUNT(*) FROM orders WHERE sync_pending = 1 AND $SYNCABLE_ORDER)
+             + (SELECT COUNT(*) FROM bills WHERE sync_pending = 1)
+             + (SELECT COUNT(*) FROM order_bills WHERE sync_pending = 1)
+        """.trimIndent(), null
+    ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+
+    fun localSyncMeta(table: String, ids: Collection<String>): Map<String, LocalSyncMeta> {
+        if (ids.isEmpty()) return emptyMap()
+        val out = HashMap<String, LocalSyncMeta>()
+        ids.distinct().chunked(500).forEach { chunk ->
+            helper.readableDatabase.rawQuery(
+                "SELECT id, updated_at, sync_pending FROM ${tableName(table)} WHERE id IN (${chunk.joinToString(",") { "?" }})",
+                chunk.toTypedArray()
+            ).use { c -> while (c.moveToNext()) out[c.getString(0)] = LocalSyncMeta(c.getLong(1), c.getInt(2) != 0) }
+        }
+        return out
+    }
+
+    /** Orders waiting to be uploaded; their content is read from the history file by the caller. */
+    fun pendingOrders(limit: Int): List<PendingOrderRef> =
+        helper.readableDatabase.rawQuery(
+            "SELECT id, offer_no, order_date, updated_at, is_deleted FROM orders WHERE sync_pending = 1 AND $SYNCABLE_ORDER ORDER BY updated_at, id LIMIT $limit",
+            null
+        ).use { c ->
+            buildList { while (c.moveToNext()) add(PendingOrderRef(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getInt(4) != 0)) }
+        }
+
+    fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
+        helper.readableDatabase.rawQuery(
+            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
+            null
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(
+                    PendingRow(
+                        c.getString(0),
+                        BillValue(c.getString(1), c.getStringOrNull(2), if (c.isNull(3)) null else c.getDouble(3)),
+                        c.getInt(4) != 0,
+                        c.getLong(5)
+                    )
+                )
+            }
+        }
+
+    /** Links whose order and bill have been uploaded first, so other phones can apply the link. */
+    fun pendingLinks(limit: Int): List<PendingRow<LinkValue>> =
+        helper.readableDatabase.rawQuery(
+            """
+            SELECT ob.id, ob.order_id, ob.bill_id, ob.is_deleted, ob.updated_at
+            FROM order_bills ob JOIN orders o ON o.id = ob.order_id JOIN bills b ON b.id = ob.bill_id
+            WHERE ob.sync_pending = 1 AND o.sync_pending = 0 AND b.sync_pending = 0 AND length(o.id) = 36
+            ORDER BY ob.updated_at, ob.id LIMIT $limit
+            """.trimIndent(),
+            null
+        ).use { c ->
+            buildList { while (c.moveToNext()) add(PendingRow(c.getString(0), LinkValue(c.getString(1), c.getString(2)), c.getInt(3) != 0, c.getLong(4))) }
+        }
+
+    /** Clears the dirty flag of rows that were not edited again while the upload was running. */
+    fun markSynced(table: String, rows: List<Pair<String, Long>>) {
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            for ((id, updatedAt) in rows) {
+                db.update(tableName(table), ContentValues().apply { put("sync_pending", 0) }, "id = ? AND updated_at = ?", arrayOf(id, updatedAt.toString()))
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /**
+     * Remembers an order that was deleted in the cloud before this phone ever saw it, so that
+     * its number still counts as used.
+     */
+    fun recordRemoteTombstone(id: String, offerNo: String, date: String, clientUpdatedAt: Long) {
+        helper.writableDatabase.insertWithOnConflict("orders", null, ContentValues().apply {
+            put("id", id); put("uuid", id); put("offer_no", offerNo); put("order_date", date)
+            put("day_key", SearchText.dayKey(date)); put("seq", -1); put("search_text", ""); put("fingerprint", "")
+            put("created_at", clientUpdatedAt); put("updated_at", clientUpdatedAt); put("is_deleted", 1); put("sync_pending", 0)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    /** Applies pulled bills (last write wins). Returns how many local rows changed. */
+    fun applyRemoteBills(rows: List<RemoteRow<BillValue>>): Int {
+        val db = helper.writableDatabase
+        val local = localSyncMeta("bills", rows.map { it.id })
+        var changed = 0
+        db.beginTransaction()
+        try {
+            for (row in rows) {
+                if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                val values = ContentValues().apply {
+                    put("bill_no", row.value.billNo); put("bill_key", SearchText.billKey(row.value.billNo))
+                    put("bill_date", row.value.billDate); put("amount", row.value.amount)
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                }
+                if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {
+                    values.put("id", row.id); values.put("created_at", row.clientUpdatedAt)
+                    // Ignored if the same bill number already exists here under another id.
+                    if (db.insertWithOnConflict("bills", null, values, SQLiteDatabase.CONFLICT_IGNORE) == -1L) continue
+                }
+                changed++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return changed
+    }
+
+    /** Applies pulled bill links. Links to orders or bills this phone doesn't have are skipped. */
+    fun applyRemoteLinks(rows: List<RemoteRow<LinkValue>>): Int {
+        val db = helper.writableDatabase
+        val local = localSyncMeta("order_bills", rows.map { it.id })
+        var changed = 0
+        db.beginTransaction()
+        try {
+            for (row in rows) {
+                if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                val values = ContentValues().apply {
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                }
+                if (db.update("order_bills", values, "id = ?", arrayOf(row.id)) == 0) {
+                    val known = db.rawQuery(
+                        "SELECT (SELECT COUNT(*) FROM orders WHERE id = ?) + (SELECT COUNT(*) FROM bills WHERE id = ?)",
+                        arrayOf(row.value.orderId, row.value.billId)
+                    ).use { c -> c.moveToFirst() && c.getInt(0) == 2 }
+                    if (!known) continue
+                    values.put("id", row.id); values.put("order_id", row.value.orderId); values.put("bill_id", row.value.billId)
+                    values.put("created_at", row.clientUpdatedAt)
+                    if (db.insertWithOnConflict("order_bills", null, values, SQLiteDatabase.CONFLICT_IGNORE) == -1L) continue
+                }
+                changed++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return changed
+    }
+
+    private fun tableName(table: String) = when (table) {
+        "orders", "bills", "order_bills" -> table
+        else -> throw IllegalArgumentException(table)
     }
 
     private fun whereClause(query: OrderQuery, includeStatus: Boolean): Pair<String, Array<String>> {
@@ -245,7 +429,7 @@ class OrderRepository(
         return clauses.joinToString(" AND ") to args.toTypedArray()
     }
 
-    private fun orderValues(e: HistoryIndexEntry, fingerprint: String, now: Long) = ContentValues().apply {
+    private fun orderValues(e: HistoryIndexEntry, fingerprint: String, now: Long, pending: Boolean = true) = ContentValues().apply {
         put("uuid", e.uuid)
         put("offer_no", e.offerNo)
         put("order_date", e.date)
@@ -260,15 +444,21 @@ class OrderRepository(
         put("fingerprint", fingerprint)
         put("updated_at", now)
         put("is_deleted", 0)
-        put("sync_pending", 1)
+        put("sync_pending", if (pending) 1 else 0)
     }
 
     private fun tombstone(now: Long) = ContentValues().apply {
         put("is_deleted", 1); put("updated_at", now); put("sync_pending", 1)
     }
 
+    private fun tombstoneSynced(at: Long) = ContentValues().apply {
+        put("is_deleted", 1); put("updated_at", at); put("sync_pending", 0)
+    }
+
+    private fun syncedAt(at: Long) = ContentValues().apply { put("updated_at", at); put("sync_pending", 0) }
+
     private fun fingerprint(e: HistoryIndexEntry): String {
-        val raw = listOf(e.uuid.orEmpty(), e.offerNo, e.date, e.buyer, e.supplier, e.particulars, e.jsonPath, e.pdfFileName.orEmpty())
+        val raw = listOf(e.uuid.orEmpty(), e.offerNo, e.date, e.buyer, e.supplier, e.particulars, e.jsonPath, e.pdfFileName.orEmpty(), e.content)
             .joinToString("\u0000")
         return MessageDigest.getInstance("SHA-1").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
@@ -290,6 +480,8 @@ class OrderRepository(
     private fun Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
     private companion object {
+        /** Orders with a real uuid; entries from before uuids existed stay on this phone only. */
+        const val SYNCABLE_ORDER = "length(id) = 36"
         const val BILL_SEPARATOR = "\u001f"
         const val HAS_BILL = """EXISTS (SELECT 1 FROM order_bills ob JOIN bills b ON b.id = ob.bill_id
             WHERE ob.order_id = o.id AND ob.is_deleted = 0 AND b.is_deleted = 0)"""

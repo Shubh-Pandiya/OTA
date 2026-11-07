@@ -100,7 +100,12 @@ private sealed interface DetailLoad {
 private data class BillInput(val billNo: String, val date: LocalDate?, val amount: Double?)
 
 @Composable
-fun OrderHistoryScreen(activity: MainActivity, orders: OrderRepository, onOrderFocused: (OrderFormData) -> Unit) {
+fun OrderHistoryScreen(
+    activity: MainActivity,
+    orders: OrderRepository,
+    remoteChanges: Int = 0,
+    onOrderFocused: (OrderFormData, String?) -> Unit
+) {
     val scope = rememberCoroutineScope()
     var searchText by rememberSaveable { mutableStateOf("") }
     var status by rememberSaveable { mutableStateOf(BillStatusFilter.ALL) }
@@ -130,6 +135,14 @@ fun OrderHistoryScreen(activity: MainActivity, orders: OrderRepository, onOrderF
         val changed = withContext(Dispatchers.IO) { activity.syncOrderIndex() }
         indexReady = true
         if (changed) dataVersion++
+    }
+    // Orders or bills changed by a cloud sync while this screen is open.
+    var seenRemoteChanges by remember { mutableIntStateOf(remoteChanges) }
+    LaunchedEffect(remoteChanges) {
+        if (remoteChanges != seenRemoteChanges) {
+            seenRemoteChanges = remoteChanges
+            dataVersion++
+        }
     }
     val lastQuery = remember { arrayOf<OrderQuery?>(null) }
     LaunchedEffect(query, dataVersion) {
@@ -213,7 +226,7 @@ fun OrderHistoryScreen(activity: MainActivity, orders: OrderRepository, onOrderF
                         }
                     }
                 },
-                onFocus = { data -> onOrderFocused(data); detail = null }
+                onFocus = { data -> onOrderFocused(data, selected.uuid); detail = null }
             )
         }
     }

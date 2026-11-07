@@ -3,9 +3,10 @@
 Android app for **Onkar Textile Agency**: take shirting/suiting orders, share them as PDF,
 track bills against orders, and keep a buyer/supplier catalog.
 
-Orders, bills and PDFs are stored on the phone. The **buyer and supplier catalog** can also be
-shared between staff phones through [Supabase](https://supabase.com) (optional: without it the
-app works exactly the same, the catalog just stays on each phone).
+Everything is stored on the phone first and works offline. When staff sign in, the **buyer and
+supplier catalog**, **orders** and **bills** are shared between phones through
+[Supabase](https://supabase.com). PDFs are never uploaded; each phone regenerates them from the
+order data.
 
 ## Build
 
@@ -23,7 +24,7 @@ creates it with `sdk.dir`; add the cloud keys below yourself.
 > Note: after pulling the commit that stopped tracking `local.properties`, git removes your old copy.
 > Open the project in Android Studio once (it recreates `sdk.dir`) and add the two Supabase lines again.
 
-## Cloud catalog (Supabase) setup
+## Cloud (Supabase) setup
 
 Done once by the owner.
 
@@ -34,10 +35,24 @@ Done once by the owner.
    **Allow new users to sign up** → **Save**. Keep the **Email** provider enabled.
 3. **Create the tables.** **SQL Editor → New query** → paste the whole of
    [`supabase/migrations/20261107000000_catalog.sql`](supabase/migrations/20261107000000_catalog.sql)
-   → **Run**. It is safe to run again.
+   → **Run**. Then do the same with
+   [`supabase/migrations/20261108000000_orders.sql`](supabase/migrations/20261108000000_orders.sql).
+   Both are safe to run again.
 4. **Add staff accounts.** **Authentication → Users → Add user → Create new user** → email + password,
    tick **Auto Confirm User** → **Create user**. Repeat for each staff member. Deleting a user here
    signs that phone out within the hour (when its sign-in token next refreshes).
+   Then give each person their order-number digit (1–9, unique) in the **SQL Editor**; `is_admin`
+   lets that person change cloud retention and purge archived orders (desktop app):
+
+   ```sql
+   insert into public.staff (user_id, code, name, is_admin)
+   select id, v.code, v.name, v.is_admin from auth.users
+   join (values ('varun@example.com', 1, 'Varun', false),
+                ('pawan@example.com', 2, 'Pawan', false),
+                ('shubham@example.com', 3, 'Shubham', true)) as v(email, code, name, is_admin)
+     using (email)
+   on conflict (user_id) do update set code = excluded.code, name = excluded.name, is_admin = excluded.is_admin;
+   ```
 5. **Copy the keys into `local.properties`.** **Project Settings → Data API** for the Project URL and
    **Project Settings → API Keys** for the *publishable* key (`sb_publishable_…`, or the legacy
    `anon` key):
@@ -50,9 +65,9 @@ Done once by the owner.
    Rebuild the app. **Never** put the `service_role` / secret key or the database password in the
    app or in this repository; if one leaks, rotate it in the dashboard.
 
-Staff then open **Sync Settings** in the app, sign in, and the catalog syncs.
+Staff then open **Sync Settings** in the app, sign in, and everything syncs.
 
-### How catalog sync works
+### How sync works
 
 - The phone's local database is always the source for the screens; everything works offline.
 - Sync is automatic while signed in:
@@ -60,7 +75,7 @@ Staff then open **Sync Settings** in the app, sign in, and the catalog syncs.
     nothing new is two small requests);
   - every 15 minutes in the background via WorkManager (unique periodic work `catalog-sync`, only
     with a network connection, exponential backoff on failure; cancelled on sign-out);
-  - a moment after any catalog edit, right after sign-in, and when the phone comes back online.
+  - a moment after any edit, right after sign-in, and when the phone comes back online.
 - **Sync Settings → Sync now** still syncs on demand and shows last sync time, pending changes and
   errors. Manual, automatic and background rounds share one lock, so they never run at the same time.
 - Each round pulls rows changed on the server since the last pull (using the server's `updated_at`,
@@ -75,4 +90,33 @@ Staff then open **Sync Settings** in the app, sign in, and the catalog syncs.
 - Known limitation: if two phones add the *same* new name while both are offline, both entries are
   kept (as two catalog rows) and one can be deleted afterwards.
 
-Only the catalog is in the cloud for now; orders and bills stay on the phone.
+### Orders, bills and order numbers
+
+- **Order numbers** are per person, not per phone: `{staff digit}{YYYYMMDD}{serial of the day}`,
+  e.g. Varun (1) → `1202611071`, `1202611072`, … The serial restarts every day and has no padding.
+  The digit is read at sign-in and remembered, so orders can be made offline afterwards; a phone
+  that has never been signed in asks the user to sign in once. The day's counter is matched with
+  the cloud on every sync, and if two phones of the same person used the same number offline, the
+  later upload is renumbered and the user is told. Older orders keep their old numbers.
+- Reopening an order from history and saving updates that order in place (same number, bills kept,
+  new PDF).
+- Uploaded: one compact row per order (items as a JSON array), bills and order–bill links (many to
+  many). Existing orders upload once after the first sign-in.
+- Size: about 1 KB per order including a bill link, so the 500 MB free database holds hundreds of
+  thousands of orders; with the default 30-day retention the cloud only ever holds about a month.
+
+### Cloud retention (desktop app)
+
+The cloud keeps orders only for `retention_days` (default 30). The desktop app keeps everything: it
+pulls all orders, marks the stored ones archived, and then purges archived orders older than the
+retention period. Rows that were never archived, or changed after archiving, are never purged.
+Phones keep all their own orders; a purge never removes anything from a phone. Buyers and
+suppliers are never purged.
+
+Each sync reads the cloud's database size. Above 80 % of the limit (500 MB, the Free plan database
+quota; the 1 GB is file storage, which the app does not use) the phone shows a notification and a
+banner on Sync Settings asking to archive from the desktop app. If the cloud refuses writes because
+it is full, changes stay on the phone and upload automatically once there is space.
+
+See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md) for the tables, cursors and
+archive/purge RPCs the desktop app uses.

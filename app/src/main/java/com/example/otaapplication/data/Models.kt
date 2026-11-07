@@ -118,5 +118,7 @@ data class HistoryIndexEntry(
     val particulars: String,
     val jsonPath: String,
     val pdfFileName: String?,
-    val seq: Int
+    val seq: Int,
+    /** All printed order fields (see [OrderJson.contentKey]); a change means the order was edited. */
+    val content: String = ""
 )

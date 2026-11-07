@@ -1,6 +1,8 @@
 package com.example.otaapplication.cloud
 
 import com.example.otaapplication.BuildConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -19,8 +21,19 @@ data class SupabaseConfig(val url: String, val publishableKey: String) {
     }
 }
 
-/** A failed call to Supabase. [authFailed] means the user has to sign in again. */
-class CloudException(message: String, val status: Int = 0, val authFailed: Boolean = false) : IOException(message)
+/**
+ * A failed call to Supabase. [authFailed] means the user has to sign in again; [code] is the
+ * Postgres error code from PostgREST when there is one (e.g. 23505 = duplicate key).
+ */
+class CloudException(message: String, val status: Int = 0, val authFailed: Boolean = false, val code: String? = null) : IOException(message) {
+    val duplicateKey: Boolean get() = code == "23505"
+
+    /**
+     * The cloud refused to store more: the database went read-only (disk almost full, 25006),
+     * the disk is full (53100) or the plan's database quota is exceeded (HTTP 402).
+     */
+    val storageFull: Boolean get() = status == 402 || code == "25006" || code == "53100"
+}
 
 internal class HttpResponse(val status: Int, val body: String) {
     val ok: Boolean get() = status in 200..299
@@ -58,5 +71,33 @@ internal object Http {
         val text = listOf("msg", "error_description", "message", "error")
             .firstNotNullOfOrNull { key -> json?.optString(key)?.takeIf { it.isNotBlank() && it != "null" } }
         return text ?: "Server error (${response.status})"
+    }
+
+    fun errorCode(response: HttpResponse): String? =
+        runCatching { JSONObject(response.body).optString("code") }.getOrNull()?.takeIf { it.isNotBlank() && it != "null" }
+}
+
+/** Authenticated PostgREST calls; retries once with a refreshed token on 401. */
+class PostgrestClient(val config: SupabaseConfig, private val auth: SupabaseAuth) {
+    suspend fun call(method: String, path: String, extraHeaders: Map<String, String> = emptyMap(), body: String? = null): String {
+        val url = "${config.url}/rest/v1/$path"
+        var token = auth.accessToken()
+        repeat(2) { attempt ->
+            val headers = extraHeaders + mapOf("apikey" to config.publishableKey, "Authorization" to "Bearer $token")
+            val response = withContext(Dispatchers.IO) { Http.send(method, url, headers, body) }
+            if (response.ok) return response.body
+            if (response.status == 401 && attempt == 0) {
+                token = auth.accessToken(forceRefresh = true)
+            } else {
+                val message = Http.errorMessage(response)
+                throw CloudException(
+                    if (response.status == 401 || response.status == 403) "Not allowed: $message" else message,
+                    response.status,
+                    authFailed = response.status == 401,
+                    code = Http.errorCode(response)
+                )
+            }
+        }
+        error("unreachable")
     }
 }

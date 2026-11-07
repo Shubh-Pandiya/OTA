@@ -1,6 +1,9 @@
 package com.example.otaapplication
 
+import android.Manifest
 import android.text.format.DateUtils
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.AnimatedVisibility
@@ -26,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -36,6 +40,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
+import com.example.otaapplication.cloud.CloudUsage
+import com.example.otaapplication.cloud.StorageAlert
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -58,11 +65,11 @@ private fun lastSyncText(lastSyncAt: Long?, now: Long): String = when {
     else -> "Last synced " + DateUtils.getRelativeTimeSpanString(lastSyncAt, now, DateUtils.MINUTE_IN_MILLIS)
 }
 
-/** Staff sign-in and catalog sync controls (Sync Settings screen). */
+/** Staff sign-in and cloud sync controls (Sync Settings screen). */
 @Composable
 fun CloudAccountSection(cloud: CloudSync, modifier: Modifier = Modifier) {
     val status by cloud.status.collectAsState()
-    FormSection(title = "Cloud Catalog", icon = Icons.Default.Cloud, modifier = modifier) {
+    FormSection(title = "Cloud Sync", icon = Icons.Default.Cloud, modifier = modifier) {
         AnimatedContent(
             targetState = when {
                 !status.configured -> 0
@@ -115,7 +122,7 @@ private fun SignInForm(cloud: CloudSync) {
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Sign in with your staff account to share the buyer and supplier catalog across phones. Order entry works without signing in.",
+            "Sign in with your staff account to share buyers, suppliers, orders and bills across phones. Signing in once also gives you your own order numbers.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -169,6 +176,7 @@ private fun SignInForm(cloud: CloudSync) {
 @Composable
 private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
     val scope = rememberCoroutineScope()
+    val staff by cloud.staff.collectAsState()
     val now = rememberNow()
     var confirmSignOut by remember { mutableStateOf(false) }
 
@@ -194,6 +202,23 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
+        val storageAlert = status.storageFull || status.usage?.warning == true
+        AnimatedVisibility(visible = storageAlert, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            StorageBanner(full = status.storageFull, usage = status.usage)
+        }
+
+        val code = staff?.code
+        if (code != null) {
+            StatusLine(Icons.Default.Tag, "Your order numbers: ${code}YYYYMMDD + serial, e.g. ${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}1")
+        } else {
+            StatusLine(
+                Icons.Default.Tag,
+                if (status.lastSyncAt == null) "Getting your order number code…"
+                else "This login has no order number code yet. Ask the owner to add one, then tap Sync now.",
+                isError = status.lastSyncAt != null,
+                busy = status.lastSyncAt == null
+            )
+        }
         StatusLine(
             Icons.Default.Schedule,
             lastSyncText(status.lastSyncAt, now),
@@ -204,11 +229,26 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             Icons.Default.CloudUpload,
             if (status.pending == 0) "All changes uploaded" else "${status.pending} change${if (status.pending == 1) "" else "s"} waiting to upload"
         )
-        AnimatedVisibility(visible = status.lastError != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        status.usage?.let { usage ->
+            StatusLine(Icons.Default.Storage, "Cloud storage: ${usageText(usage)}", isError = usage.warning)
+            StatusLine(
+                Icons.Default.History,
+                "Cloud keeps orders for ${usage.retentionDays} day${if (usage.retentionDays == 1) "" else "s"} (set in the desktop app). " +
+                    "Orders on this phone are never removed by it."
+            )
+        }
+        // The storage banner already explains a full cloud.
+        AnimatedVisibility(visible = status.lastError != null && !status.storageFull, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             if (status.offline) {
                 StatusLine(Icons.Default.CloudOff, "Offline. Changes upload automatically when back online.")
             } else {
                 StatusLine(Icons.Default.ErrorOutline, status.lastError.orEmpty(), isError = true)
+            }
+        }
+        AnimatedVisibility(visible = status.notice != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { StatusLine(Icons.Default.Info, status.notice.orEmpty()) }
+                TextButton(onClick = cloud::dismissNotice) { Text("OK") }
             }
         }
 
@@ -244,7 +284,7 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             onDismissRequest = { confirmSignOut = false },
             icon = { Icon(Icons.Default.CloudOff, contentDescription = null) },
             title = { Text("Sign out?") },
-            text = { Text("${status.pending} catalog change(s) are not uploaded yet. They stay on this phone and upload after you sign in again.") },
+            text = { Text("${status.pending} change(s) are not uploaded yet. They stay on this phone and upload after you sign in again. New orders need you to sign in again.") },
             confirmButton = {
                 TextButton(onClick = { confirmSignOut = false; scope.launch { cloud.signOut() } }) { Text("Sign out") }
             },
@@ -268,6 +308,45 @@ private fun StatusLine(
     }
 }
 
+private fun usageText(usage: CloudUsage) =
+    String.format(Locale.US, "%.0f MB of %d MB used (%.0f%%)", usage.usedMb, usage.limitMb, usage.percent)
+
+/** Cloud almost full / full: what it means and what to do; offers to turn on alerts. */
+@Composable
+private fun StorageBanner(full: Boolean, usage: CloudUsage?) {
+    val context = LocalContext.current
+    var canNotify by remember { mutableStateOf(StorageAlert.canNotify(context)) }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { canNotify = it }
+    LaunchedEffect(Unit) {
+        // Asked the first time the warning appears, so later warnings also reach the phone's tray.
+        if (!canNotify) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (full) "Cloud storage full" else "Cloud storage almost full",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+            Text(
+                (usage?.let { usageText(it) + ". " }.orEmpty()) + (if (full) StorageAlert.FULL_HINT else StorageAlert.ALMOST_FULL_HINT),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            if (!canNotify) {
+                TextButton(onClick = { permission.launch(Manifest.permission.POST_NOTIFICATIONS) }, contentPadding = PaddingValues(0.dp)) {
+                    Text("Turn on storage alerts")
+                }
+            }
+        }
+    }
+}
+
 /** One-line cloud status shown above the catalog lists; tap opens Sync Settings. */
 @Composable
 fun CatalogCloudStatusRow(status: CloudStatus, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -280,7 +359,9 @@ fun CatalogCloudStatusRow(status: CloudStatus, onClick: () -> Unit, modifier: Mo
             if (status.pending > 0) "Offline. ${status.pending} change(s) will upload when back online" else "Offline. Showing the catalog saved on this phone",
             false
         )
+        status.storageFull -> Triple(Icons.Default.Warning, "Cloud storage full. ${status.pending} change(s) kept on this phone. Tap for details", true)
         status.lastError != null -> Triple(Icons.Default.ErrorOutline, "Sync failed: ${status.lastError}", true)
+        status.usage?.warning == true -> Triple(Icons.Default.Warning, "Cloud storage almost full. Tap for details", true)
         status.pending > 0 -> Triple(Icons.Default.CloudUpload, "${status.pending} change(s) waiting to upload", false)
         else -> Triple(Icons.Default.CloudDone, lastSyncText(status.lastSyncAt, now), false)
     }

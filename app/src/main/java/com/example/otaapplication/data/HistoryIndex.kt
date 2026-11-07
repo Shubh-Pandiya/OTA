@@ -30,7 +30,8 @@ object HistoryIndex {
                 particulars = particulars,
                 jsonPath = filePath,
                 pdfFileName = if (json.has("pdfFileName")) json.optString("pdfFileName") else null,
-                seq = i
+                seq = i,
+                content = OrderJson.contentKey(OrderJson.parse(json))
             )
         }
         // Defensive: keep ids unique even if the history file ever contains a duplicated uuid.

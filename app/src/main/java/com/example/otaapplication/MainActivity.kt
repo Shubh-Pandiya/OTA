@@ -60,19 +60,17 @@ import androidx.lifecycle.lifecycleScope
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
 import com.example.otaapplication.data.CatalogRepository
-import com.example.otaapplication.data.HistoryIndex
+import com.example.otaapplication.data.LocalOrders
+import com.example.otaapplication.data.OrderJson
 import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.io.FileWriter
-import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -93,9 +91,6 @@ enum class Screen(val title: String) {
     SyncSettings("Sync Settings")
 }
 
-private const val KEY_ORDER_SERIAL_DATE = "order_serial_date"
-private const val KEY_ORDER_SERIAL = "order_serial"
-
 private val screenIcons = mapOf(
     Screen.OrderEntry to Icons.Default.EditNote,
     Screen.OrderHistory to Icons.Default.History,
@@ -110,8 +105,6 @@ private fun AnimatedContentTransitionScope<Screen>.fadeThrough(): ContentTransfo
 
 class MainActivity : ComponentActivity() {
 
-    private val orderNumberLock = Any()
-
     internal val catalogRepository by lazy {
         CatalogRepository(OtaDatabase.get(this)).also { repo ->
             // Upload catalog edits shortly after they are made (debounced).
@@ -119,7 +112,11 @@ class MainActivity : ComponentActivity() {
         }
     }
     private val cloud by lazy { CloudSync.get(this) }
-    internal val orderRepository by lazy { OrderRepository(OtaDatabase.get(this)) }
+    internal val localOrders by lazy { LocalOrders.get(this) }
+    internal val orderRepository: OrderRepository get() = localOrders.index
+    private val numberAllocator by lazy {
+        OrderNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), localOrders.history, localOrders.index)
+    }
 
     // Bumped on every resume so the previewed order number follows a change of day.
     private var resumeTick by mutableIntStateOf(0)
@@ -158,16 +155,21 @@ class MainActivity : ComponentActivity() {
 
                 var formData by remember { mutableStateOf(OrderFormData()) }
                 var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
+                // uuid of the order reopened from history; saving updates that order in place.
+                var focusedUuid by remember { mutableStateOf<String?>(null) }
                 var isGenerating by remember { mutableStateOf(false) }
                 var nextOfferNo by remember { mutableStateOf("") }
                 var offerNoRefresh by remember { mutableIntStateOf(0) }
                 val resumed = resumeTick
                 val cloudStatus by cloud.status.collectAsState()
                 val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
+                val remoteOrderChanges by cloud.orderChanges.collectAsState()
+                val staff by cloud.staff.collectAsState()
+                val staffCode = staff?.code
 
-                LaunchedEffect(currentScreen, offerNoRefresh, resumed) {
+                LaunchedEffect(currentScreen, offerNoRefresh, resumed, staffCode, remoteOrderChanges) {
                     if (currentScreen == Screen.OrderEntry) {
-                        nextOfferNo = withContext(Dispatchers.IO) { peekNextOrderNumber() }
+                        nextOfferNo = staffCode?.let { code -> withContext(Dispatchers.IO) { numberAllocator.peek(code) } }.orEmpty()
                     }
                 }
 
@@ -226,18 +228,24 @@ class MainActivity : ComponentActivity() {
                                     isNewOrder = focusedOrderState == null,
                                     isGenerating = isGenerating,
                                     catalog = catalogRepository,
+                                    numberMissingMessage = if (focusedOrderState == null && staffCode == null) staffCodeMessage(cloudStatus.signedIn) else null,
+                                    onOpenSyncSettings = { currentScreen = Screen.SyncSettings },
                                     onGeneratePdf = { data ->
-                                        if (!isGenerating) {
+                                        val isNewOrder = focusedOrderState == null
+                                        val code = staffCode
+                                        if (isNewOrder && code == null) {
+                                            Toast.makeText(this@MainActivity, staffCodeMessage(cloudStatus.signedIn), Toast.LENGTH_LONG).show()
+                                        } else if (!isGenerating) {
                                             isGenerating = true
-                                            val isNewOrder = focusedOrderState == null
+                                            val existingUuid = focusedUuid
                                             scope.launch {
                                                 val (ok, message) = withContext(Dispatchers.IO) {
-                                                    (if (isNewOrder) generateNewOrderPdf(data) else generateOrderPdf(data))
-                                                        .also { if (it.first) syncOrderIndex() }
+                                                    if (isNewOrder) generateNewOrderPdf(data, code!!) else generateOrderPdf(data, existingUuid)
                                                 }
                                                 Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                                                 if (ok) {
                                                     focusedOrderState = null
+                                                    focusedUuid = null
                                                     formData = OrderFormData()
                                                     offerNoRefresh++
                                                 }
@@ -249,8 +257,10 @@ class MainActivity : ComponentActivity() {
                                 Screen.OrderHistory -> OrderHistoryScreen(
                                     activity = this@MainActivity,
                                     orders = orderRepository,
-                                    onOrderFocused = { selected ->
+                                    remoteChanges = remoteOrderChanges,
+                                    onOrderFocused = { selected, uuid ->
                                         focusedOrderState = selected
+                                        focusedUuid = uuid
                                         Toast.makeText(this@MainActivity, "Order Focused: ${selected.offerNo}", Toast.LENGTH_SHORT).show()
                                         currentScreen = Screen.OrderEntry
                                     }
@@ -275,12 +285,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun jsonFileRoot(jsonRoot: JSONObject, data: OrderFormData) {
-        jsonRoot.put("date", data.date); jsonRoot.put("offerNo", data.offerNo); jsonRoot.put("buyer", data.buyer)
-        jsonRoot.put("supplier", data.supplier); jsonRoot.put("remarks", data.remarks); jsonRoot.put("deliveryReady", data.deliveryReady)
-        jsonRoot.put("transportTo", data.transportTo); jsonRoot.put("cashPayment", data.cashPayment); jsonRoot.put("lessDisc", data.lessDisc); jsonRoot.put("side", data.side)
-    }
-
     private fun countTotalOrders(): Int {
         val baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
         val otaDir = File(baseDir, "OTA Orders")
@@ -291,156 +295,66 @@ class MainActivity : ComponentActivity() {
         return syncDir.listFiles { file -> file.isFile && file.extension == "json" }?.size ?: 0
     }
 
-    @Synchronized
-    private fun writeToInternalHistoryCache(orderRoot: JSONObject) {
-        try {
-            val historyFile = File(filesDir, "internal_order_history_db.json")
-            val historyArray = if (historyFile.exists()) {
-                val content = historyFile.readText()
-                if (content.isNotBlank()) JSONArray(content) else JSONArray()
-            } else JSONArray()
-            val historyEntry = JSONObject()
-            jsonFileRoot(historyEntry, parseOrderFromJsonObject(orderRoot))
-            historyEntry.put("items", orderRoot.optJSONArray("items"))
-            historyEntry.put("filePath", orderRoot.optString("filePath"))
-            historyEntry.put("pdfFileName", orderRoot.optString("pdfFileName"))
-            historyEntry.put("uuid", orderRoot.optString("uuid"))
-            historyArray.put(historyEntry)
-            val writer = FileWriter(historyFile); writer.write(historyArray.toString()); writer.close()
-        } catch (e: Exception) { e.printStackTrace() }
-    }
-
-    @Synchronized
     internal fun loadOrderHistory(): List<OrderHistoryItem> {
         val historyList = mutableListOf<OrderHistoryItem>()
         try {
-            val historyFile = File(filesDir, "internal_order_history_db.json")
-            if (historyFile.exists()) {
-                val content = historyFile.readText()
-                if (content.isNotBlank()) {
-                    val array = JSONArray(content)
-                    for (i in 0 until array.length()) {
-                        val json = array.getJSONObject(i)
-                        historyList.add(OrderHistoryItem(
-                            date = json.optString("date", "N/A"),
-                            offerNo = json.optString("offerNo", "N/A"),
-                            buyer = json.optString("buyer", "Unknown Buyer"),
-                            filePath = json.optString("filePath", ""),
-                            fileName = "internal_cache_${i}",
-                            pdfFileName = if (json.has("pdfFileName")) json.getString("pdfFileName") else null,
-                            uuid = if (json.has("uuid")) json.getString("uuid") else null
-                        ))
-                    }
-                }
+            val array = localOrders.history.readArray()
+            for (i in 0 until array.length()) {
+                val json = array.getJSONObject(i)
+                historyList.add(OrderHistoryItem(
+                    date = json.optString("date", "N/A"),
+                    offerNo = json.optString("offerNo", "N/A"),
+                    buyer = json.optString("buyer", "Unknown Buyer"),
+                    filePath = json.optString("filePath", ""),
+                    fileName = "internal_cache_${i}",
+                    pdfFileName = if (json.has("pdfFileName")) json.getString("pdfFileName") else null,
+                    uuid = if (json.has("uuid")) json.getString("uuid") else null
+                ))
             }
         } catch (e: Exception) { e.printStackTrace() }
         return historyList
     }
 
     /** Runs on a background thread; mirrors the history file into the search index. */
-    internal fun syncOrderIndex(): Boolean {
-        val text = synchronized(this) {
-            val historyFile = File(filesDir, "internal_order_history_db.json")
-            if (historyFile.exists()) historyFile.readText() else ""
-        }
-        val entries = runCatching { HistoryIndex.parse(text) }.getOrElse { it.printStackTrace(); return false }
-        return runCatching { orderRepository.reconcile(entries) }.getOrElse { it.printStackTrace(); false }
-    }
+    internal fun syncOrderIndex(): Boolean = runCatching { localOrders.reindex() }.getOrElse { it.printStackTrace(); false }
 
-    @Synchronized
-    internal fun getOrderFromHistory(uuid: String?): OrderFormData? {
-        if (uuid == null) return null
-        try {
-            val historyFile = File(filesDir, "internal_order_history_db.json")
-            if (historyFile.exists()) {
-                val array = JSONArray(historyFile.readText())
-                for (i in 0 until array.length()) {
-                    val json = array.getJSONObject(i)
-                    if (json.optString("uuid") == uuid) return parseOrderFromJsonObject(json)
-                }
-            }
-        } catch (e: Exception) { e.printStackTrace() }
-        return null
-    }
+    internal fun getOrderFromHistory(uuid: String?): OrderFormData? =
+        uuid?.let { runCatching { localOrders.get(it) }.onFailure { e -> e.printStackTrace() }.getOrNull() }
 
-    private fun parseOrderFromJsonObject(json: JSONObject): OrderFormData {
-        val itemsArray = json.optJSONArray("items") ?: JSONArray()
-        val itemsList = mutableListOf<OrderItem>()
-        for (i in 0 until itemsArray.length()) {
-            val itemObj = itemsArray.getJSONObject(i)
-            itemsList.add(OrderItem(itemObj.optString("serialNo", ""), itemObj.optString("particulars", ""), itemObj.optString("quantity", ""), itemObj.optString("rate", "")))
-        }
-        return OrderFormData(json.optString("date", ""), json.optString("offerNo", ""), json.optString("buyer", ""), json.optString("supplier", ""), itemsList, json.optString("remarks", ""), json.optString("deliveryReady", ""), json.optString("transportTo", ""), json.optString("cashPayment", ""), json.optString("lessDisc", ""), json.optString("side", ""))
-    }
-
-    @Synchronized
-    internal fun deleteOrderPermanently(uuid: String?, syncFilePath: String, pdfName: String?): Boolean {
-        var success = true
-        try {
-            val historyFile = File(filesDir, "internal_order_history_db.json")
-            if (historyFile.exists()) {
-                val array = JSONArray(historyFile.readText()); val newArray = JSONArray()
-                for (i in 0 until array.length()) { val json = array.getJSONObject(i); if (json.optString("uuid") != uuid) newArray.put(json) }
-                val writer = FileWriter(historyFile); writer.write(newArray.toString()); writer.close()
-            }
-        } catch (e: Exception) { e.printStackTrace(); success = false }
-        try {
-            val jsonFile = File(syncFilePath); if (jsonFile.exists()) jsonFile.delete()
-            if (pdfName != null) {
-                val pdfFile = File(jsonFile.parentFile?.parentFile, pdfName)
-                if (pdfFile.exists()) pdfFile.delete()
-            }
-        } catch (e: Exception) { e.printStackTrace() }
-        return success
-    }
+    internal fun deleteOrderPermanently(uuid: String?, syncFilePath: String, pdfName: String?): Boolean =
+        localOrders.delete(uuid, syncFilePath, pdfName)
 
     private fun createStaticLayout(text: String, width: Int, textPaint: TextPaint): StaticLayout {
         return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, width).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1f).setIncludePad(false).build()
     }
 
-    private fun nextOrderSerial(prefix: String): Int {
-        val prefs = getSharedPreferences("OTA_Prefs", MODE_PRIVATE)
-        return OrderNumber.nextSerial(
-            prefix = prefix,
-            storedPrefix = prefs.getString(KEY_ORDER_SERIAL_DATE, null),
-            storedSerial = prefs.getInt(KEY_ORDER_SERIAL, 0),
-            existingOfferNos = loadOrderHistory().map { it.offerNo }
-        )
-    }
+    private fun staffCodeMessage(signedIn: Boolean): String =
+        if (signedIn) "Your login has no order number code yet. Ask the owner to add it, then tap Sync now in Sync Settings."
+        else "Sign in once in Sync Settings to get your order numbers."
 
-    /** Runs on a background thread; the number a new order will get if saved now. */
-    private fun peekNextOrderNumber(): String = synchronized(orderNumberLock) {
-        val prefix = OrderNumber.prefix(LocalDate.now())
-        OrderNumber.format(prefix, nextOrderSerial(prefix))
+    /**
+     * Runs on a background thread. Assigns this staff member's next order number at save time and
+     * only consumes it when the PDF was written, so abandoned or failed attempts don't use up numbers.
+     */
+    private fun generateNewOrderPdf(data: OrderFormData, staffCode: Int): Pair<Boolean, String> {
+        var result = false to "Could not save the order"
+        val offerNo = numberAllocator.assign(staffCode) { number ->
+            result = generateOrderPdf(data.copy(offerNo = number), existingUuid = null)
+            result.first
+        }
+        return if (offerNo != null) true to "Order $offerNo saved. ${result.second}" else result
     }
 
     /**
-     * Runs on a background thread. Assigns today's next order number at save time and only
-     * consumes it when the PDF was written, so abandoned or failed attempts don't use up numbers.
+     * Runs on a background thread; returns (success, user message). With [existingUuid] the saved
+     * order is updated in place (same uuid, bills kept) and its old files are replaced.
      */
-    private fun generateNewOrderPdf(data: OrderFormData): Pair<Boolean, String> = synchronized(orderNumberLock) {
-        val prefix = OrderNumber.prefix(LocalDate.now())
-        val serial = nextOrderSerial(prefix)
-        val offerNo = OrderNumber.format(prefix, serial)
-        val (ok, message) = generateOrderPdf(data.copy(offerNo = offerNo))
-        if (ok) {
-            getSharedPreferences("OTA_Prefs", MODE_PRIVATE).edit()
-                .putString(KEY_ORDER_SERIAL_DATE, prefix)
-                .putInt(KEY_ORDER_SERIAL, serial)
-                .commit()
-            true to "Order $offerNo saved. $message"
-        } else {
-            false to message
-        }
-    }
-
-    /** Runs on a background thread; returns (success, user message). */
-    private fun generateOrderPdf(data: OrderFormData): Pair<Boolean, String> {
+    private fun generateOrderPdf(data: OrderFormData, existingUuid: String?): Pair<Boolean, String> = localOrders.history.locked {
         val now = LocalDateTime.now(); val year = now.year.toString(); val monthName = now.month.name.lowercase().replaceFirstChar { it.uppercase() }
         val dateStamp = now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
         val sharedPrefs = getSharedPreferences("OTA_Prefs", MODE_PRIVATE)
         val deviceId = sharedPrefs.getString("device_id", "")?.takeIf { it.isNotBlank() } ?: "UnknownDevice"
-        val uniqueId = java.util.UUID.randomUUID().toString()
+        val uniqueId = existingUuid ?: java.util.UUID.randomUUID().toString()
         val bhagvaOrange = android.graphics.Color.parseColor("#FF6F00")
         val baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
         val otaDir = File(baseDir, "OTA Orders/$year/$monthName")
@@ -510,14 +424,30 @@ class MainActivity : ComponentActivity() {
             pdfDocument.finishPage(page); val outputStream = FileOutputStream(pdfFile); pdfDocument.writeTo(outputStream); pdfDocument.close(); outputStream.close()
             try {
                 val syncDir = File(otaDir, "SyncData"); if (!syncDir.exists()) syncDir.mkdirs()
-                val jsonFileName = "Order_${deviceId}_${uniqueId}.json"; val jsonFile = File(syncDir, jsonFileName); val jsonRoot = JSONObject(); jsonFileRoot(jsonRoot, data); jsonRoot.put("deviceId", deviceId); jsonRoot.put("uuid", uniqueId); jsonRoot.put("pdfFileName", fileName); jsonRoot.put("filePath", jsonFile.absolutePath)
-                val itemsArray = JSONArray()
-                for (item in data.items) { val itemObj = JSONObject()
-                    itemObj.put("serialNo", item.serialNo); itemObj.put("particulars", item.particulars); itemObj.put("quantity", item.quantity); itemObj.put("rate", item.rate); itemsArray.put(itemObj) }
-                jsonRoot.put("items", itemsArray); val writer = FileWriter(jsonFile); writer.write(jsonRoot.toString()); writer.close(); writeToInternalHistoryCache(jsonRoot)
+                val jsonFileName = "Order_${deviceId}_${uniqueId}.json"; val jsonFile = File(syncDir, jsonFileName)
+                val jsonRoot = OrderJson.putFields(JSONObject(), data)
+                jsonRoot.put("deviceId", deviceId); jsonRoot.put("uuid", uniqueId); jsonRoot.put("pdfFileName", fileName); jsonRoot.put("filePath", jsonFile.absolutePath)
+                jsonRoot.put("items", OrderJson.itemsArray(data.items)); jsonFile.writeText(jsonRoot.toString())
+                val previous = existingUuid?.let { localOrders.history.find(it) }
+                localOrders.history.upsert(OrderJson.historyEntry(data, uniqueId, jsonFile.absolutePath, fileName))
+                localOrders.reindex()
+                if (previous != null) removeReplacedFiles(previous, jsonFile, pdfFile)
             } catch (e: Exception) { e.printStackTrace() }
-            return true to "PDF Generated: ${pdfFile.absolutePath}"
-        } catch (e: Exception) { e.printStackTrace(); return false to "Error: ${e.message}" }
+            return@locked true to "PDF Generated: ${pdfFile.absolutePath}"
+        } catch (e: Exception) { e.printStackTrace(); return@locked false to "Error: ${e.message}" }
+    }
+
+    /** After an in-place update, deletes the order's previous sync JSON and PDF if they are different files. */
+    private fun removeReplacedFiles(previous: JSONObject, newJson: File, newPdf: File) {
+        val oldPath = previous.optString("filePath")
+        if (oldPath.isBlank()) return
+        val oldJson = File(oldPath)
+        if (oldJson.absolutePath != newJson.absolutePath) oldJson.delete()
+        val oldPdfName = if (previous.has("pdfFileName")) previous.optString("pdfFileName") else ""
+        if (oldPdfName.isNotBlank()) {
+            val oldPdf = File(oldJson.parentFile?.parentFile, oldPdfName)
+            if (oldPdf.absolutePath != newPdf.absolutePath) oldPdf.delete()
+        }
     }
 }
 
