@@ -3,7 +3,6 @@ package com.example.otaapplication
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
@@ -58,15 +57,6 @@ object AdvicePdf {
         return File(dir, "${advice.adviceNo}.pdf")
     }
 
-    /** Downscales to ~300 dpi for the drawn size (in points); PdfDocument embeds bitmaps uncompressed. */
-    private fun forPrint(src: android.graphics.Bitmap, wPt: Float, hPt: Float): android.graphics.Bitmap {
-        val scale = minOf(1f, 4f * wPt / src.width, 4f * hPt / src.height)
-        if (scale >= 1f) return src
-        return android.graphics.Bitmap.createScaledBitmap(
-            src, (src.width * scale).toInt().coerceAtLeast(1), (src.height * scale).toInt().coerceAtLeast(1), true
-        )
-    }
-
     /** Writes the PDF; runs on a background thread. */
     fun write(context: Context, advice: PaymentAdvice): File {
         val file = fileFor(advice)
@@ -76,13 +66,9 @@ object AdvicePdf {
         var pageNo = 1
         var page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNo).create())
         var canvas = page.canvas
-        val decode = BitmapFactory.Options().apply { inScaled = false }
 
         // ---- Letterhead (same as the order form)
-        BitmapFactory.decodeResource(context.resources, R.drawable.ic_logo, decode)?.let { logo ->
-            val h = 60f; val w = logo.width.toFloat() / logo.height * h
-            canvas.drawBitmap(forPrint(logo, w, h), null, RectF(LEFT, 40f, LEFT + w, 40f + h), paint)
-        }
+        PdfMarks.drawLogo(context, canvas, RectF(LEFT, 40f, LEFT + 60f, 100f))
         val centerX = PAGE_W / 2f
         paint.color = Color.BLACK; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 9f; paint.textAlign = Paint.Align.RIGHT
         canvas.drawText("Mob.: 94250-57961", RIGHT, 45f, paint); canvas.drawText("94068-03061", RIGHT, 58f, paint)
@@ -239,9 +225,7 @@ object AdvicePdf {
         paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; paint.textAlign = Paint.Align.LEFT
         paint.style = Paint.Style.STROKE; canvas.drawLine(415f, sigY, RIGHT, sigY, paint); paint.style = Paint.Style.FILL
         canvas.drawText("Agent's Signature", 445f, sigY + 15f, paint)
-        BitmapFactory.decodeResource(context.resources, R.drawable.ic_signature, decode)?.let {
-            canvas.drawBitmap(forPrint(it, 100f, 100f), null, RectF(410f, sigY - 105f, 510f, sigY - 5f), paint)
-        }
+        PdfMarks.drawStamp(context, canvas, RectF(410f, sigY - 105f, 510f, sigY - 5f))
 
         doc.finishPage(page)
         try {

@@ -19,7 +19,13 @@ Requirements: Android Studio (or JDK 21 + Android SDK), minSdk 35 (Android 15+).
 ./gradlew assembleDebug        # APK in app/build/outputs/apk/debug/
 ./gradlew testDebugUnitTest    # JVM unit tests
 ./gradlew connectedDebugAndroidTest   # device/emulator tests
+./gradlew assembleRelease      # R8-minified, resource-shrunk APK (~3 MB); sign it before installing
 ```
+
+The letterhead logo and the agency stamp are vector path data (`res/values/pdf_marks.xml`,
+`res/raw/stamp_path.txt`) drawn straight onto the PDF canvas, so each order or advice PDF is about
+100 KB. PDFs saved by older versions are re-rendered once, in place, on the first launch after the update.
+Release builds trust only system CAs; debug builds also trust user-installed CAs (for office TLS proxies).
 
 A fresh clone builds an app that already connects to the agency's cloud: the project URL and the
 public *publishable* key are committed in [`supabase.properties`](supabase.properties). The
