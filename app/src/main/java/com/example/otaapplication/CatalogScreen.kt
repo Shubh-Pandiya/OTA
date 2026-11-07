@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.otaapplication.data.BankDetails
+import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.Party
 import com.example.otaapplication.data.PartyType
@@ -63,12 +64,19 @@ private val gstinPattern = Regex("^[0-9A-Z]{15}$")
 fun PartyType.icon(): ImageVector = if (this == PartyType.BUYER) Icons.Default.Person else Icons.Default.Store
 
 @Composable
-fun CatalogScreen(catalog: CatalogRepository) {
+fun CatalogScreen(
+    catalog: CatalogRepository,
+    cloudStatus: CloudStatus = CloudStatus(configured = false),
+    remoteChanges: Int = 0,
+    onOpenCloudSettings: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableStateOf(PartyType.BUYER) }
     var query by rememberSaveable { mutableStateOf("") }
-    var version by remember { mutableIntStateOf(0) }
+    var localVersion by remember { mutableIntStateOf(0) }
+    // Reload after local edits and after a cloud sync changed the catalog.
+    val version = localVersion + remoteChanges
     var editing by remember { mutableStateOf<Party?>(null) }
     var counts by remember { mutableStateOf<Map<PartyType, Int>>(emptyMap()) }
 
@@ -96,7 +104,7 @@ fun CatalogScreen(catalog: CatalogRepository) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
                 placeholder = { Text("Search name, city, phone, GSTIN or bank") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
@@ -111,6 +119,11 @@ fun CatalogScreen(catalog: CatalogRepository) {
                     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
                     unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
                 )
+            )
+            CatalogCloudStatusRow(
+                status = cloudStatus,
+                onClick = onOpenCloudSettings,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
             )
             AnimatedContent(
                 targetState = tab,
@@ -140,7 +153,7 @@ fun CatalogScreen(catalog: CatalogRepository) {
             onDismiss = { editing = null },
             onSaved = { saved ->
                 editing = null
-                version++
+                localVersion++
                 Toast.makeText(context, "${saved.type.label} ${if (party.id.isBlank()) "added" else "updated"}", Toast.LENGTH_SHORT).show()
             },
             onDelete = if (party.id.isBlank()) null else {
@@ -148,7 +161,7 @@ fun CatalogScreen(catalog: CatalogRepository) {
                     editing = null
                     scope.launch {
                         withContext(Dispatchers.IO) { catalog.delete(party.type, party.id) }
-                        version++
+                        localVersion++
                         Toast.makeText(context, "${party.type.label} removed", Toast.LENGTH_SHORT).show()
                     }
                 }

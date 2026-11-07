@@ -1,7 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Supabase project settings come from the git-ignored local.properties (or a Gradle property /
+// environment variable on CI). Only the public publishable (anon) key belongs here, never a secret key.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}
+
+fun cloudSetting(name: String): String =
+    (localProperties.getProperty(name) ?: providers.gradleProperty(name).orNull ?: System.getenv(name) ?: "")
+        .trim().replace("\\", "").replace("\"", "")
 
 android {
     namespace = "com.example.otaapplication"
@@ -19,6 +32,9 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "SUPABASE_URL", "\"${cloudSetting("SUPABASE_URL").trimEnd('/')}\"")
+        buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", "\"${cloudSetting("SUPABASE_PUBLISHABLE_KEY")}\"")
     }
 
     buildTypes {
@@ -34,6 +50,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

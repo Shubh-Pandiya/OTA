@@ -57,6 +57,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.otaapplication.cloud.CloudStatus
+import com.example.otaapplication.cloud.CloudSync
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.HistoryIndex
 import com.example.otaapplication.data.OrderRepository
@@ -110,7 +112,13 @@ class MainActivity : ComponentActivity() {
 
     private val orderNumberLock = Any()
 
-    internal val catalogRepository by lazy { CatalogRepository(OtaDatabase.get(this)) }
+    internal val catalogRepository by lazy {
+        CatalogRepository(OtaDatabase.get(this)).also { repo ->
+            // Upload catalog edits shortly after they are made (debounced).
+            repo.onLocalChange = { cloud.requestSync(delayMillis = 1_500) }
+        }
+    }
+    private val cloud by lazy { CloudSync.get(this) }
     internal val orderRepository by lazy { OrderRepository(OtaDatabase.get(this)) }
 
     // Bumped on every resume so the previewed order number follows a change of day.
@@ -119,6 +127,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumeTick++
+        // Catalog sync on app start / return to foreground (throttled to once a minute).
+        cloud.onAppForeground()
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -143,6 +153,8 @@ class MainActivity : ComponentActivity() {
                 var nextOfferNo by remember { mutableStateOf("") }
                 var offerNoRefresh by remember { mutableIntStateOf(0) }
                 val resumed = resumeTick
+                val cloudStatus by cloud.status.collectAsState()
+                val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
 
                 LaunchedEffect(currentScreen, offerNoRefresh, resumed) {
                     if (currentScreen == Screen.OrderEntry) {
@@ -161,7 +173,7 @@ class MainActivity : ComponentActivity() {
                 ModalNavigationDrawer(
                     drawerState = drawerState,
                     gesturesEnabled = true,
-                    drawerContent = { AppDrawer(currentScreen = currentScreen, onNavigate = ::navigate) }
+                    drawerContent = { AppDrawer(currentScreen = currentScreen, cloudStatus = cloudStatus, onNavigate = ::navigate) }
                 ) {
                     Scaffold(
                         modifier = Modifier.fillMaxSize(),
@@ -234,12 +246,17 @@ class MainActivity : ComponentActivity() {
                                         currentScreen = Screen.OrderEntry
                                     }
                                 )
-                                Screen.Catalog -> CatalogScreen(catalog = catalogRepository)
+                                Screen.Catalog -> CatalogScreen(
+                                    catalog = catalogRepository,
+                                    cloudStatus = cloudStatus,
+                                    remoteChanges = remoteCatalogChanges,
+                                    onOpenCloudSettings = { currentScreen = Screen.SyncSettings }
+                                )
                                 Screen.SyncSettings -> {
                                     val totalOrders by produceState<Int?>(initialValue = null) {
                                         value = withContext(Dispatchers.IO) { countTotalOrders() }
                                     }
-                                    SyncControlScreen(totalOrders = totalOrders)
+                                    SyncControlScreen(totalOrders = totalOrders, cloud = cloud)
                                 }
                             }
                         }
@@ -497,7 +514,7 @@ class MainActivity : ComponentActivity() {
 
 
 @Composable
-private fun AppDrawer(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
+private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigate: (Screen) -> Unit) {
     ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(
             modifier = Modifier
@@ -521,6 +538,25 @@ private fun AppDrawer(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
             Text(text = "TEXTILE AGENCY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f))
             Spacer(Modifier.height(4.dp))
             Text(text = "OTA Business", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f))
+            if (cloudStatus.configured) {
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (cloudStatus.signedIn) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = cloudStatus.email ?: "Not signed in",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(4.dp))
         Screen.entries.forEach { screen ->
@@ -541,7 +577,7 @@ private fun AppDrawer(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
 }
 
 @Composable
-fun SyncControlScreen(totalOrders: Int?) {
+fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null) {
     val context = LocalContext.current
     val sharedPrefs = remember { context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE) }
     var deviceId by remember { mutableStateOf(sharedPrefs.getString("device_id", "") ?: "") }
@@ -562,6 +598,8 @@ fun SyncControlScreen(totalOrders: Int?) {
             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.primary)
         }
         Text(text = "LAPTOP SYNCHRONIZATION DATA", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, letterSpacing = MaterialTheme.typography.labelMedium.letterSpacing)
+
+        if (cloud != null) CloudAccountSection(cloud)
 
         FormSection(title = "Sync Status", icon = Icons.Default.CloudUpload) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

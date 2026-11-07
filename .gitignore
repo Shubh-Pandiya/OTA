@@ -1,0 +1,14 @@
+# Local machine config and secrets (sdk.dir, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+local.properties
+secrets.properties
+
+# Build output and IDE/OS files
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.DS_Store
