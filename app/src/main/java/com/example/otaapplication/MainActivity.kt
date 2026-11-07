@@ -64,6 +64,7 @@ import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderJson
 import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OtaDatabase
+import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -87,6 +88,7 @@ data class OrderHistoryItem(
 enum class Screen(val title: String) {
     OrderEntry("Order Entry"),
     OrderHistory("Order History"),
+    Payments("Payment Advice"),
     Catalog("Buyers & Suppliers"),
     SyncSettings("Sync Settings")
 }
@@ -94,6 +96,7 @@ enum class Screen(val title: String) {
 private val screenIcons = mapOf(
     Screen.OrderEntry to Icons.Default.EditNote,
     Screen.OrderHistory to Icons.Default.History,
+    Screen.Payments to Icons.Default.Payments,
     Screen.Catalog to Icons.Default.Contacts,
     Screen.SyncSettings to Icons.Default.Settings
 )
@@ -116,6 +119,10 @@ class MainActivity : ComponentActivity() {
     internal val orderRepository: OrderRepository get() = localOrders.index
     private val numberAllocator by lazy {
         OrderNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), localOrders.history, localOrders.index)
+    }
+    private val payments by lazy { PaymentRepository.get(this) }
+    private val adviceNumbers by lazy {
+        AdviceNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), payments)
     }
 
     // Bumped on every resume so the previewed order number follows a change of day.
@@ -183,6 +190,9 @@ class MainActivity : ComponentActivity() {
         val remoteOrderChanges by cloud.orderChanges.collectAsState()
         val staff by cloud.staff.collectAsState()
         val staffCode = staff?.code
+        val paymentDeps = remember(staffCode, cloudStatus.signedIn) {
+            PaymentDeps(orderRepository, payments, catalogRepository, adviceNumbers, staffCode, staffCodeMessage(cloudStatus.signedIn).replace("order number", "advice number"))
+        }
 
         LaunchedEffect(currentScreen, offerNoRefresh, resumed, staffCode, remoteOrderChanges) {
             if (currentScreen == Screen.OrderEntry) {
@@ -274,6 +284,7 @@ class MainActivity : ComponentActivity() {
                         Screen.OrderHistory -> OrderHistoryScreen(
                             activity = this@MainActivity,
                             orders = orderRepository,
+                            paymentDeps = paymentDeps,
                             remoteChanges = remoteOrderChanges,
                             onOrderFocused = { selected, uuid ->
                                 focusedOrderState = selected
@@ -282,6 +293,7 @@ class MainActivity : ComponentActivity() {
                                 currentScreen = Screen.OrderEntry
                             }
                         )
+                        Screen.Payments -> PaymentAdviceScreen(deps = paymentDeps, remoteChanges = remoteOrderChanges)
                         Screen.Catalog -> CatalogScreen(
                             catalog = catalogRepository,
                             cloudStatus = cloudStatus,

@@ -77,6 +77,9 @@ internal object Http {
         runCatching { JSONObject(response.body).optString("code") }.getOrNull()?.takeIf { it.isNotBlank() && it != "null" }
 }
 
+/** Unknown column or table: the app is newer than the cloud schema. */
+private val SCHEMA_MISSING = setOf("42703", "42P01", "PGRST204", "PGRST205")
+
 /** Authenticated PostgREST calls; retries once with a refreshed token on 401. */
 class PostgrestClient(val config: SupabaseConfig, private val auth: SupabaseAuth) {
     suspend fun call(method: String, path: String, extraHeaders: Map<String, String> = emptyMap(), body: String? = null): String {
@@ -90,11 +93,17 @@ class PostgrestClient(val config: SupabaseConfig, private val auth: SupabaseAuth
                 token = auth.accessToken(forceRefresh = true)
             } else {
                 val message = Http.errorMessage(response)
+                val code = Http.errorCode(response)
                 throw CloudException(
-                    if (response.status == 401 || response.status == 403) "Not allowed: $message" else message,
+                    when {
+                        response.status == 401 || response.status == 403 -> "Not allowed: $message"
+                        code in SCHEMA_MISSING -> "The cloud database needs an update: run the latest file in supabase/migrations " +
+                            "in the Supabase SQL Editor ($message)"
+                        else -> message
+                    },
                     response.status,
                     authFailed = response.status == 401,
-                    code = Http.errorCode(response)
+                    code = code
                 )
             }
         }

@@ -2,7 +2,10 @@ package com.example.otaapplication.cloud
 
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.data.AdviceLineValue
+import com.example.otaapplication.data.AdviceValue
 import com.example.otaapplication.data.BillValue
+import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.LinkValue
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
@@ -65,13 +68,16 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
                     .put("bill_no", row.value.billNo)
                     .put("bill_date", row.value.billDate ?: JSONObject.NULL)
                     .put("amount", row.value.amount ?: JSONObject.NULL)
+                    .put("lr_no", row.value.lrNo)
+                    .put("cd_percent", row.value.cdPercent ?: JSONObject.NULL)
+                    .put("cd_amount", row.value.cdAmount ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -79,7 +85,10 @@ class OrderTable<T>(
                 remoteRow(json, BillValue(
                     billNo = json.text("bill_no"),
                     billDate = json.text("bill_date").ifBlank { null },
-                    amount = if (json.isNull("amount")) null else json.optDouble("amount").takeUnless { it.isNaN() }
+                    amount = json.number("amount"),
+                    lrNo = json.text("lr_no"),
+                    cdPercent = json.number("cd_percent"),
+                    cdAmount = json.number("cd_amount")
                 ))
             }
         )
@@ -96,6 +105,75 @@ class OrderTable<T>(
                     .put("client_updated_at", row.updatedAt)
             },
             parse = { json -> remoteRow(json, LinkValue(json.getString("order_id"), json.getString("bill_id"))) }
+        )
+
+        /** See supabase/migrations/20261109000000_payment_advice.sql. */
+        val ADVICES = OrderTable<AdviceValue>(
+            name = "payment_advices",
+            columns = "id,advice_no,pay_date,buyer,supplier,mode,reference,balance,balance_side,remarks,deleted,updated_at,client_updated_at",
+            toJson = { row ->
+                val v = row.value
+                // A deleted advice keeps only its number and date in the cloud.
+                val keep = !row.deleted
+                JSONObject()
+                    .put("id", row.id)
+                    .put("advice_no", v.adviceNo)
+                    .put("pay_date", v.payDate ?: JSONObject.NULL)
+                    .put("buyer", if (keep) v.buyer else "")
+                    .put("supplier", if (keep) v.supplier else "")
+                    .put("mode", if (keep) v.mode else "CASH")
+                    .put("reference", if (keep) v.reference else "")
+                    .put("balance", v.balanceAmount?.takeIf { keep } ?: JSONObject.NULL)
+                    .put("balance_side", v.balanceSide?.takeIf { keep && v.balanceAmount != null } ?: JSONObject.NULL)
+                    .put("remarks", if (keep) v.remarks else "")
+                    .put("deleted", row.deleted)
+                    .put("client_updated_at", row.updatedAt)
+            },
+            parse = { json ->
+                remoteRow(json, AdviceValue(
+                    adviceNo = json.text("advice_no"),
+                    payDate = json.text("pay_date").ifBlank { null },
+                    buyer = json.text("buyer"),
+                    supplier = json.text("supplier"),
+                    mode = json.text("mode"),
+                    reference = json.text("reference"),
+                    balanceAmount = json.number("balance"),
+                    balanceSide = json.text("balance_side").ifBlank { null },
+                    remarks = json.text("remarks")
+                ))
+            }
+        )
+
+        val ADVICE_LINES = OrderTable<AdviceLineValue>(
+            name = "advice_lines",
+            columns = "id,advice_id,bill_id,paid,cd_percent,cd_amount,goods_return,rate_diff,deleted,updated_at,client_updated_at",
+            toJson = { row ->
+                val a = row.value.amounts
+                JSONObject()
+                    .put("id", row.id)
+                    .put("advice_id", row.value.adviceId)
+                    .put("bill_id", row.value.billId)
+                    .put("paid", a.paid)
+                    .put("cd_percent", a.cdPercent ?: JSONObject.NULL)
+                    .put("cd_amount", a.cdAmount ?: JSONObject.NULL)
+                    .put("goods_return", a.goodsReturn ?: JSONObject.NULL)
+                    .put("rate_diff", a.rateDiff ?: JSONObject.NULL)
+                    .put("deleted", row.deleted)
+                    .put("client_updated_at", row.updatedAt)
+            },
+            parse = { json ->
+                remoteRow(json, AdviceLineValue(
+                    json.getString("advice_id"),
+                    json.getString("bill_id"),
+                    LineAmounts(
+                        paid = json.number("paid") ?: 0.0,
+                        cdPercent = json.number("cd_percent"),
+                        cdAmount = json.number("cd_amount"),
+                        goodsReturn = json.number("goods_return"),
+                        rateDiff = json.number("rate_diff")
+                    )
+                ))
+            }
         )
 
         /** Items as compact arrays: [s.no, particulars, qty, rate]. */
@@ -123,6 +201,10 @@ class OrderTable<T>(
         }
 
         private fun JSONObject.text(key: String): String = if (isNull(key)) "" else optString(key)
+
+        /** Postgres numeric arrives as a JSON number (or a string for very large values). */
+        private fun JSONObject.number(key: String): Double? =
+            if (isNull(key)) null else optDouble(key).takeUnless { it.isNaN() || it.isInfinite() }
     }
 }
 

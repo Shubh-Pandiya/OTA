@@ -3,15 +3,22 @@ package com.example.otaapplication.cloud
 import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.example.otaapplication.AdviceNumberAllocator
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
 import com.example.otaapplication.OrderNumberAllocator
+import com.example.otaapplication.data.AdviceDraft
+import com.example.otaapplication.data.BillDetails
+import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderHistoryStore
 import com.example.otaapplication.data.OrderJson
 import com.example.otaapplication.data.OrderQuery
 import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OtaDatabase
+import com.example.otaapplication.data.PaymentMode
+import com.example.otaapplication.data.PaymentRepository
+import com.example.otaapplication.data.PaymentStatus
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
 import kotlinx.coroutines.runBlocking
@@ -31,13 +38,17 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 
-/** In-memory Supabase orders/bills/order_bills, following the SQL rules (LWW trigger, unique order_no, no FKs). */
+/** In-memory Supabase orders/bills/order_bills/payment_advices/advice_lines, following the SQL rules (LWW trigger, unique order_no, no FKs). */
 private class OrderCloudFake : OrderCloudApi {
-    val tables = mapOf("orders" to linkedMapOf<String, JSONObject>(), "bills" to linkedMapOf(), "order_bills" to linkedMapOf())
+    val tables = mapOf(
+        "orders" to linkedMapOf<String, JSONObject>(), "bills" to linkedMapOf(), "order_bills" to linkedMapOf(),
+        "payment_advices" to linkedMapOf(), "advice_lines" to linkedMapOf()
+    )
     /** Simulates a read-only / over-quota project. */
     var full = false
     private var tick = 0L
     private val numberPattern = Regex("^[1-9]20[0-9]{6}[0-9]+$")
+    private val adviceNumberPattern = Regex("^PA[1-9]20[0-9]{6}[0-9]+$")
 
     private fun nextServerTime() = Instant.parse("2026-11-07T10:00:00Z").plusNanos(++tick * 1_000).toString()
 
@@ -57,12 +68,18 @@ private class OrderCloudFake : OrderCloudApi {
         if (full) throw CloudException("cannot execute INSERT in a read-only transaction", 405, code = "25006")
         val target = tables.getValue(table.name)
         val incoming = rows.map(table.toJson)
-        if (table.name == "orders") {
-            // The whole request fails, like PostgREST, when any number is taken by another order.
+        val unique = when (table.name) {
+            "orders" -> "order_no" to numberPattern
+            "payment_advices" -> "advice_no" to adviceNumberPattern
+            else -> null
+        }
+        if (unique != null) {
+            val (column, pattern) = unique
+            // The whole request fails, like PostgREST, when any number is taken by another row.
             for (json in incoming) {
-                val no = json.getString("order_no")
-                if (no.matches(numberPattern) && target.values.any { it.getString("order_no") == no && it.getString("id") != json.getString("id") }) {
-                    throw CloudException("duplicate key value violates unique constraint \"orders_order_no_key\"", 409, code = "23505")
+                val no = json.getString(column)
+                if (no.matches(pattern) && target.values.any { it.getString(column) == no && it.getString("id") != json.getString("id") }) {
+                    throw CloudException("duplicate key value violates unique constraint \"${table.name}_${column}_key\"", 409, code = "23505")
                 }
             }
         }
@@ -101,7 +118,18 @@ private class OrderPhone(cloud: OrderCloudApi, var now: Long, val day: LocalDate
     private val prefsName = "order-test-" + UUID.randomUUID()
     val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
     val numbers = OrderNumberAllocator(prefs, local.history, repo) { day }
-    val sync = OrderSync(local, cloud, OrderCursors(), numbers::replacementFor, pageSize = 2, pushBatch = 2)
+    val payments = PaymentRepository(db) { now }
+    val adviceNumbers = AdviceNumberAllocator(prefs, payments) { day }
+    val sync = OrderSync(
+        local, cloud, OrderCursors(), numbers::replacementFor,
+        payments = payments, renumberAdvice = adviceNumbers::replacementFor, pageSize = 2, pushBatch = 2
+    )
+
+    /** Saves a new advice the way the editor does. */
+    fun newAdvice(code: Int, lines: List<Pair<String, LineAmounts>>, reference: String = "CHQ 1"): String =
+        adviceNumbers.assign(code) { no ->
+            payments.save(AdviceDraft(null, day, "Ram", "Raymond", PaymentMode.CHEQUE, reference, null, null, "", lines), no)
+        }!!.id
 
     /** Saves a new order the way the form does: number from the allocator, entry in the history. */
     fun newOrder(code: Int, buyer: String, particulars: String = "Shirting"): String {
@@ -165,7 +193,7 @@ class OrderSyncTest {
         val o2 = a.newOrder(1, "Shyam Garments")
         val o3 = a.newOrder(1, "Ram Textiles\nIndore", particulars = "Linen")
         a.repo.attachBill(listOf(o1, o2), "INV 1")
-        a.repo.attachBill(listOf(o1), "INV 2", LocalDate.of(2026, 11, 20), 12_500.0)
+        a.repo.attachBill(listOf(o1), "INV 2", BillDetails(LocalDate.of(2026, 11, 20), 12_500.0))
         assertEquals(3 + 2 + 3, a.repo.pendingCount())
 
         a.syncNow()
@@ -294,5 +322,76 @@ class OrderSyncTest {
         assertEquals(0, a.repo.pendingCount())
         assertEquals(1, cloud.tables.getValue("orders").size)
         assertNotEquals(0, cloud.tables.getValue("order_bills").size)
+    }
+
+    @Test
+    fun advicesAndLinesReachTheOtherPhone() {
+        val o1 = a.newOrder(1, "Ram")
+        val o2 = a.newOrder(1, "Ram")
+        val inv1 = a.repo.attachBill(listOf(o1, o2), "INV 1", BillDetails(LocalDate.of(2026, 11, 7), 10_000.0, lrNo = "LR 5"))
+        val inv2 = a.repo.attachBill(listOf(o2), "INV 2", BillDetails(LocalDate.of(2026, 11, 7), 4_000.0))
+        val first = a.newAdvice(1, listOf(inv1.id to LineAmounts(paid = 6_000.0, cdAmount = 200.0), inv2.id to LineAmounts(paid = 4_000.0)))
+        a.now = 11_000
+        val second = a.newAdvice(1, listOf(inv1.id to LineAmounts(paid = 3_800.0)), reference = "UTR 9")
+        assertEquals(2 + 3, a.payments.pendingCount())
+
+        a.syncNow()
+        assertEquals(0, a.payments.pendingCount())
+        assertEquals(0, a.repo.pendingCount())
+        assertEquals(setOf("PA120261107001", "PA120261107002"), cloud.tables.getValue("payment_advices").values.map { it.getString("advice_no") }.toSet())
+        assertEquals(3, cloud.tables.getValue("advice_lines").size)
+        assertEquals("LR 5", cloud.tables.getValue("bills").getValue(inv1.id).getString("lr_no"))
+
+        b.syncNow()
+        assertEquals(PaymentStatus.PAID, b.repo.bill(inv1.id)!!.status)
+        assertEquals(PaymentStatus.PAID, b.repo.bill(inv2.id)!!.status)
+        assertEquals(listOf("PA120261107001", "PA120261107002"), b.payments.advicesForBill(inv1.id).map { it.adviceNo })
+        assertEquals(listOf(second), b.payments.search("utr").map { it.id })
+        assertEquals(0, b.payments.pendingCount())
+        // B's advice counter moved past A's numbers.
+        assertEquals("PA120261107003", b.adviceNumbers.peek(1))
+
+        // Deleting on A reaches B and frees the bills there.
+        a.now = 12_000
+        a.payments.delete(first)
+        a.syncNow(); b.syncNow()
+        assertNull(b.payments.advice(first))
+        assertEquals(PaymentStatus.PARTLY_PAID, b.repo.bill(inv1.id)!!.status)
+        assertEquals(PaymentStatus.UNPAID, b.repo.bill(inv2.id)!!.status)
+    }
+
+    @Test
+    fun adviceNumberTakenOnAnotherPhoneIsRenumbered() {
+        val o1 = a.newOrder(1, "Ram")
+        val inv = a.repo.attachBill(listOf(o1), "INV 1", BillDetails(null, 1_000.0))
+        a.syncNow(); b.syncNow()
+        val fromA = a.newAdvice(1, listOf(inv.id to LineAmounts(paid = 100.0)))
+        val fromB = b.newAdvice(1, listOf(inv.id to LineAmounts(paid = 200.0)))
+        assertEquals(a.payments.advice(fromA)!!.adviceNo, b.payments.advice(fromB)!!.adviceNo)
+
+        a.syncNow()
+        val result = b.syncNow()
+        assertEquals(1, result.notices.size)
+        assertEquals("PA120261107002", b.payments.advice(fromB)!!.adviceNo)
+        assertEquals(0, b.payments.pendingCount())
+        a.syncNow()
+        assertEquals(700.0, a.repo.bill(inv.id)!!.balance!!, 0.0)
+    }
+
+    @Test
+    fun paymentForABillPurgedFromTheCloudReuploadsTheBill() {
+        val o1 = a.newOrder(1, "Ram")
+        val inv = a.repo.attachBill(listOf(o1), "INV 8", BillDetails(null, 1_000.0))
+        a.syncNow()
+        cloud.purge("orders", o1)
+        cloud.purge("bills", inv.id)
+        cloud.tables.getValue("order_bills").keys.toList().forEach { cloud.purge("order_bills", it) }
+
+        a.now = 50_000
+        a.newAdvice(1, listOf(inv.id to LineAmounts(paid = 1_000.0)))
+        a.syncNow()
+        assertEquals(0, a.payments.pendingCount())
+        assertTrue(cloud.tables.getValue("bills").containsKey(inv.id))
+        assertEquals(1, cloud.tables.getValue("advice_lines").size)
     }
 }

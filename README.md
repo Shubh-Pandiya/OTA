@@ -1,12 +1,13 @@
 # OTA Business
 
 Android app for **Onkar Textile Agency**: take shirting/suiting orders, share them as PDF,
-track bills against orders, and keep a buyer/supplier catalog.
+track bills against orders, prepare **payment advices** (shared as PDF) against those bills, and keep a
+buyer/supplier catalog.
 
 Staff must sign in before they can use the app (the sign-in screen is the first thing a new install
 shows). After that everything is stored on the phone first and works offline; a phone only returns
 to the sign-in screen after **Sign out** or when the cloud rejects its session (e.g. the account was
-removed). The **buyer and supplier catalog**, **orders** and **bills** are shared between phones through
+removed). The **buyer and supplier catalog**, **orders**, **bills** and **payment advices** are shared between phones through
 [Supabase](https://supabase.com). PDFs are never uploaded; each phone regenerates them from the
 order data.
 
@@ -41,8 +42,11 @@ Done once by the owner.
 3. **Create the tables.** **SQL Editor → New query** → paste the whole of
    [`supabase/migrations/20261107000000_catalog.sql`](supabase/migrations/20261107000000_catalog.sql)
    → **Run**. Then do the same with
-   [`supabase/migrations/20261108000000_orders.sql`](supabase/migrations/20261108000000_orders.sql).
-   Both are safe to run again.
+   [`supabase/migrations/20261108000000_orders.sql`](supabase/migrations/20261108000000_orders.sql)
+   and then
+   [`supabase/migrations/20261109000000_payment_advice.sql`](supabase/migrations/20261109000000_payment_advice.sql).
+   All are safe to run again. (Until the latest file has been run, order sync shows
+   "run the latest migration" and keeps changes on the phone.)
 4. **Add staff accounts.** **Authentication → Users → Add user → Create new user** → email + password,
    tick **Auto Confirm User** → **Create user**. Repeat for each staff member. Deleting a user here
    signs that phone out within the hour (when its sign-in token next refreshes).
@@ -110,9 +114,26 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 - Size: about 1 KB per order including a bill link, so the 500 MB free database holds hundreds of
   thousands of orders; with the default 30-day retention the cloud only ever holds about a month.
 
+### Bills and payment advices
+
+- A **bill** has its number, date, amount, LR (bilty) number and cash discount (% and ₹), and is
+  linked to one or more orders. Its **balance** is the amount minus everything settled against it
+  (paid + cash discount + goods return + rate difference over all advices), shown as Unpaid /
+  Partly paid / Paid. Tap a bill on an order to see its advices and edit its details.
+- A **payment advice** (`PA{staff digit}{YYYYMMDD}{001…}`, own daily counter, same rules as order
+  numbers) records one buyer paying one supplier: payment date, mode (cheque no / online txn id /
+  cash), one line per bill (paid, CD, goods return, rate difference) and the Dr/Cr balance. The app
+  suggests the outstanding total for that buyer → supplier as a tap-to-use Dr/Cr hint; what you
+  enter is stored. A bill can be paid across several advices.
+- Only bills whose linked orders are for that buyer and supplier can be added. Bills whose orders
+  are for more than one buyer/supplier pair are still offered but flagged "mixed parties"; bills
+  with no linked order are not offered.
+- The advice PDF is saved in `Documents/OTA Orders/{year}/{Month}/Payment Advices/` and shared from
+  the advice screen; it is never uploaded.
+
 ### Cloud retention (desktop app)
 
-The cloud keeps orders only for `retention_days` (default 30). The desktop app keeps everything: it
+The cloud keeps orders and payment advices only for `retention_days` (default 30). The desktop app keeps everything: it
 pulls all orders, marks the stored ones archived, and then purges archived orders older than the
 retention period. Rows that were never archived, or changed after archiving, are never purged.
 Phones keep all their own orders; a purge never removes anything from a phone. Buyers and

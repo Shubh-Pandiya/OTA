@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /**
- * Local-first store for the catalog, bills and the order search index.
+ * Local-first store for the catalog, bills, payment advices and the order search index.
  *
  * Every synced table follows the same contract so it can later be mirrored to the cloud:
  * UUID text primary key, `created_at`/`updated_at` (epoch millis), a soft-delete flag
@@ -69,6 +69,9 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
                 bill_key TEXT NOT NULL UNIQUE,
                 bill_date TEXT,
                 amount REAL,
+                lr_no TEXT NOT NULL DEFAULT '',
+                cd_percent REAL,
+                cd_amount REAL,
                 $SYNC_COLUMNS
             )
             """.trimIndent()
@@ -86,6 +89,50 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             """.trimIndent()
         )
         db.execSQL("CREATE INDEX idx_order_bills_bill ON order_bills(bill_id)")
+        createPaymentTables(db)
+    }
+
+    /**
+     * v4: bill details (LR number, cash discount) and payment advices. An advice is one buyer
+     * paying one supplier; its lines say how much of each bill it settles (many-to-many).
+     */
+    private fun createPaymentTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE payment_advices (
+                id TEXT PRIMARY KEY NOT NULL,
+                advice_no TEXT NOT NULL,
+                pay_date TEXT,
+                buyer TEXT NOT NULL DEFAULT '',
+                supplier TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT 'CASH',
+                reference TEXT NOT NULL DEFAULT '',
+                balance_amount REAL,
+                balance_side TEXT,
+                remarks TEXT NOT NULL DEFAULT '',
+                search_text TEXT NOT NULL DEFAULT '',
+                $SYNC_COLUMNS
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX idx_advices_date ON payment_advices(is_deleted, pay_date)")
+        db.execSQL(
+            """
+            CREATE TABLE advice_lines (
+                id TEXT PRIMARY KEY NOT NULL,
+                advice_id TEXT NOT NULL,
+                bill_id TEXT NOT NULL,
+                paid REAL NOT NULL DEFAULT 0,
+                cd_percent REAL,
+                cd_amount REAL,
+                goods_return REAL,
+                rate_diff REAL,
+                $SYNC_COLUMNS,
+                UNIQUE(advice_id, bill_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX idx_advice_lines_bill ON advice_lines(bill_id)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -98,6 +145,15 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             }
         }
         if (oldVersion < 3) rekeyBills(db)
+        if (oldVersion < 4) {
+            val hasBills = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bills'", null).use { it.moveToFirst() }
+            if (hasBills) {
+                db.execSQL("ALTER TABLE bills ADD COLUMN lr_no TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE bills ADD COLUMN cd_percent REAL")
+                db.execSQL("ALTER TABLE bills ADD COLUMN cd_amount REAL")
+            }
+            createPaymentTables(db)
+        }
     }
 
     /**
@@ -133,7 +189,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 3
+        const val VERSION = 4
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

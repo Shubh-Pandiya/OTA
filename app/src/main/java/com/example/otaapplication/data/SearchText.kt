@@ -31,6 +31,9 @@ object SearchText {
 
     fun firstLine(text: String): String = text.lineSequence().firstOrNull().orEmpty().trim()
 
+    /** Matches a buyer or supplier by name: the first line of a "Name & Address" field, normalised. */
+    fun partyKey(text: String): String = normalize(firstLine(text))
+
     /** Splits a typed "Name & Address" field into (name, address). */
     fun splitNameAndAddress(text: String): Pair<String, String> {
         val lines = text.lines()

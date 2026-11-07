@@ -4,7 +4,10 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderNumber
+import com.example.otaapplication.AdviceNumber
+import com.example.otaapplication.data.AdviceValue
 import com.example.otaapplication.data.LocalOrders
+import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.SyncTime
@@ -34,12 +37,15 @@ data class OrderSyncResult(val pulledChanges: Int, val pushed: Int, val notices:
  *
  * [renumber] gives a free number for an order whose number the cloud already has (the same
  * staff member made orders offline on two phones); null when the number can't be replaced.
+ * [payments] adds payment advices and their lines; [renumberAdvice] does the same for advices.
  */
 class OrderSync(
     private val orders: LocalOrders,
     private val api: OrderCloudApi,
     private val cursors: CursorStore,
     private val renumber: (String) -> String?,
+    private val payments: PaymentRepository? = null,
+    private val renumberAdvice: (String) -> String? = { null },
     private val pageSize: Int = 500,
     private val pushBatch: Int = 200
 ) {
@@ -50,11 +56,19 @@ class OrderSync(
         changed += pull(OrderTable.ORDERS) { withContext(Dispatchers.IO) { orders.applyPulled(it) } }
         changed += pull(OrderTable.BILLS) { withContext(Dispatchers.IO) { repo.applyRemoteBills(it) } }
         changed += pull(OrderTable.LINKS) { withContext(Dispatchers.IO) { repo.applyRemoteLinks(it) } }
+        if (payments != null) {
+            changed += pull(OrderTable.ADVICES) { withContext(Dispatchers.IO) { payments.applyRemoteAdvices(it) } }
+            changed += pull(OrderTable.ADVICE_LINES) { withContext(Dispatchers.IO) { payments.applyRemoteLines(it) } }
+        }
 
         val notices = ArrayList<String>()
         var pushed = pushOrders(notices)
         pushed += push(OrderTable.BILLS) { repo.pendingBills(pushBatch) }
         pushed += push(OrderTable.LINKS) { repo.pendingLinks(pushBatch) }
+        if (payments != null) {
+            pushed += pushNumbered(OrderTable.ADVICES, notices, { payments.pendingAdvices(pushBatch) }) { row -> resolveAdviceDuplicate(payments, row) }
+            pushed += push(OrderTable.ADVICE_LINES) { payments.pendingLines(pushBatch) }
+        }
         return OrderSyncResult(changed, pushed, notices)
     }
 
@@ -95,33 +109,44 @@ class OrderSync(
         return sent
     }
 
-    private suspend fun pushOrders(notices: MutableList<String>): Int {
+    private suspend fun pushOrders(notices: MutableList<String>): Int =
+        pushNumbered(OrderTable.ORDERS, notices, ::pendingOrders, ::resolveDuplicate)
+
+    /**
+     * Pushes rows that carry a per-staff number (orders, advices). If the cloud already has a
+     * number, rows go one by one to find it and [resolve] gives that row a new number.
+     */
+    private suspend fun <T> pushNumbered(
+        table: OrderTable<T>,
+        notices: MutableList<String>,
+        pending: () -> List<PendingRow<T>>,
+        resolve: suspend (PendingRow<T>) -> Pair<String?, Boolean>
+    ): Int {
         var sent = 0
         var batches = 0
         var progress = true
         // Stops once a batch makes no progress (nothing uploaded or renumbered), so a row the
         // cloud keeps refusing can never loop forever.
         while (progress && batches++ < MAX_PAGES) {
-            val batch = withContext(Dispatchers.IO) { pendingOrders() }
+            val batch = withContext(Dispatchers.IO) { pending() }
             if (batch.isEmpty()) break
             progress = false
             try {
-                api.push(OrderTable.ORDERS, batch)
-                markOrdersSynced(batch)
+                api.push(table, batch)
+                markSynced(table, batch)
                 sent += batch.size
                 progress = true
             } catch (e: CloudException) {
                 if (!e.duplicateKey) throw e
-                // Some order number is already in the cloud: send one by one to find it.
                 for (row in batch) {
                     try {
-                        api.push(OrderTable.ORDERS, listOf(row))
-                        markOrdersSynced(listOf(row))
+                        api.push(table, listOf(row))
+                        markSynced(table, listOf(row))
                         sent++
                         progress = true
                     } catch (e: CloudException) {
                         if (!e.duplicateKey) throw e
-                        val (notice, renumbered) = resolveDuplicate(row)
+                        val (notice, renumbered) = resolve(row)
                         notice?.let(notices::add)
                         if (renumbered) progress = true
                     }
@@ -131,6 +156,24 @@ class OrderSync(
         return sent
     }
 
+    private suspend fun <T> markSynced(table: OrderTable<T>, rows: List<PendingRow<T>>) =
+        withContext(Dispatchers.IO) { orders.index.markSynced(table.name, rows.map { it.id to it.updatedAt }) }
+
+    private suspend fun resolveAdviceDuplicate(payments: PaymentRepository, row: PendingRow<AdviceValue>): Pair<String?, Boolean> =
+        withContext(Dispatchers.IO) {
+            if (row.deleted) {
+                payments.markSynced(OrderTable.ADVICES.name, listOf(row.id to row.updatedAt))
+                return@withContext null to true
+            }
+            val old = row.value.adviceNo
+            val replacement = if (AdviceNumber.prefixOf(old) != null) renumberAdvice(old) else null
+            if (replacement != null && payments.renumber(row.id, replacement)) {
+                "Payment advice $old was also used on another phone; this copy is now $replacement." to true
+            } else {
+                "Payment advice $old could not be uploaded: the cloud already has another advice with that number." to false
+            }
+        }
+
     private fun pendingOrders(): List<PendingRow<OrderFormData>> {
         val refs = orders.index.pendingOrders(pushBatch)
         val content = orders.contentOf(refs.filterNot { it.deleted }.map { it.id })
@@ -139,9 +182,6 @@ class OrderSync(
             data?.let { PendingRow(ref.id, it, ref.deleted, ref.updatedAt) }
         }
     }
-
-    private suspend fun markOrdersSynced(rows: List<PendingRow<OrderFormData>>) =
-        withContext(Dispatchers.IO) { orders.index.markSynced(OrderTable.ORDERS.name, rows.map { it.id to it.updatedAt }) }
 
     /** Returns the notice for the user and whether the order got a new number to retry with. */
     private suspend fun resolveDuplicate(row: PendingRow<OrderFormData>): Pair<String?, Boolean> = withContext(Dispatchers.IO) {

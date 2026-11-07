@@ -7,6 +7,8 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -60,10 +62,13 @@ fun FormDialog(
     title: String,
     icon: ImageVector,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
-    confirmEnabled: Boolean,
+    onConfirm: (() -> Unit)?,
+    confirmEnabled: Boolean = true,
     confirmLabel: String = "Save",
     busy: Boolean = false,
+    navigationIcon: ImageVector = Icons.Default.Close,
+    actions: @Composable RowScope.() -> Unit = {},
+    bottomBar: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(
@@ -89,7 +94,9 @@ fun FormDialog(
                 Column(Modifier.fillMaxSize()) {
                     TopAppBar(
                         navigationIcon = {
-                            IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Cancel") }
+                            IconButton(onClick = onDismiss) {
+                                Icon(navigationIcon, contentDescription = if (onConfirm != null) "Cancel" else "Close")
+                            }
                         },
                         title = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -99,16 +106,19 @@ fun FormDialog(
                             }
                         },
                         actions = {
-                            Button(
-                                onClick = onConfirm,
-                                enabled = confirmEnabled && !busy,
-                                modifier = Modifier.padding(end = 8.dp)
-                            ) {
-                                if (busy) {
-                                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(8.dp))
+                            actions()
+                            if (onConfirm != null) {
+                                Button(
+                                    onClick = onConfirm,
+                                    enabled = confirmEnabled && !busy,
+                                    modifier = Modifier.padding(end = 8.dp)
+                                ) {
+                                    if (busy) {
+                                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                    }
+                                    Text(confirmLabel)
                                 }
-                                Text(confirmLabel)
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -125,6 +135,9 @@ fun FormDialog(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         content = content
                     )
+                    bottomBar?.let { bar ->
+                        Box(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))) { bar() }
+                    }
                 }
             }
         }

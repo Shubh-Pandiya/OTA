@@ -86,7 +86,14 @@ data class PendingRow<T>(val id: String, val value: T, val deleted: Boolean, val
 /** Index facts about an order waiting to be pushed; the content comes from the history file. */
 data class PendingOrderRef(val id: String, val offerNo: String, val date: String, val updatedAt: Long, val deleted: Boolean)
 
-data class BillValue(val billNo: String, val billDate: String?, val amount: Double?)
+data class BillValue(
+    val billNo: String,
+    val billDate: String?,
+    val amount: Double?,
+    val lrNo: String = "",
+    val cdPercent: Double? = null,
+    val cdAmount: Double? = null
+)
 
 data class LinkValue(val orderId: String, val billId: String)
 
@@ -98,4 +105,8 @@ object SyncIds {
     fun bill(billKey: String): String = UUID.nameUUIDFromBytes("ota-bill:$billKey".toByteArray()).toString()
 
     fun link(orderId: String, billId: String): String = UUID.nameUUIDFromBytes("ota-link:$orderId:$billId".toByteArray()).toString()
+
+    /** A bill appears at most once on an advice. */
+    fun adviceLine(adviceId: String, billId: String): String =
+        UUID.nameUUIDFromBytes("ota-advice-line:$adviceId:$billId".toByteArray()).toString()
 }

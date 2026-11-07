@@ -4,11 +4,13 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import androidx.core.content.edit
+import com.example.otaapplication.AdviceNumberAllocator
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PartyType
+import com.example.otaapplication.data.PaymentRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,13 +63,15 @@ class CloudSync private constructor(private val context: Context) {
     private val client = PostgrestClient(config, auth)
     private val engine = CatalogSync(repository, PostgrestCatalogApi(client), cursors)
     private val orders = LocalOrders.get(context)
+    private val payments = PaymentRepository.get(context)
     private val orderApi = PostgrestOrderApi(client)
     private val orderCursors = PrefsCursorStore(prefs)
+    private val numberPrefs = context.getSharedPreferences(OrderNumberAllocator.PREFS, Context.MODE_PRIVATE)
     private val orderEngine = OrderSync(
         orders, orderApi, orderCursors,
-        renumber = OrderNumberAllocator(
-            context.getSharedPreferences(OrderNumberAllocator.PREFS, Context.MODE_PRIVATE), orders.history, orders.index
-        )::replacementFor
+        renumber = OrderNumberAllocator(numberPrefs, orders.history, orders.index)::replacementFor,
+        payments = payments,
+        renumberAdvice = AdviceNumberAllocator(numberPrefs, payments)::replacementFor
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncLock = Mutex()
@@ -104,6 +108,7 @@ class CloudSync private constructor(private val context: Context) {
     init {
         // Order edits (new, changed, deleted, bills) upload shortly after they are made.
         orders.index.onLocalChange = { requestSync(delayMillis = 1_500) }
+        payments.onLocalChange = { requestSync(delayMillis = 1_500) }
         scope.launch { refreshPending() }
         if (config.isConfigured && auth.session.value != null) CatalogSyncWorker.schedule(context)
         // Retry as soon as the phone is back online after an offline failure.
@@ -257,7 +262,7 @@ class CloudSync private constructor(private val context: Context) {
         _status.update { it.copy(pending = pending) }
     }
 
-    private fun pendingCount() = repository.pendingCount() + orders.index.pendingCount()
+    private fun pendingCount() = repository.pendingCount() + orders.index.pendingCount() + payments.pendingCount()
 
     fun dismissNotice() = _status.update { it.copy(notice = null) }
 
@@ -323,7 +328,9 @@ class CloudSync private constructor(private val context: Context) {
         private const val KEY_STORAGE_FULL = "cloud_storage_full"
         /** How often a known staff code is checked again (codes rarely change). */
         private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L
-        private val ORDER_TABLES = listOf(OrderTable.ORDERS.name, OrderTable.BILLS.name, OrderTable.LINKS.name)
+        private val ORDER_TABLES = listOf(
+            OrderTable.ORDERS.name, OrderTable.BILLS.name, OrderTable.LINKS.name, OrderTable.ADVICES.name, OrderTable.ADVICE_LINES.name
+        )
         /** A foreground sync is skipped if any sync started less than this long ago. */
         private const val FOREGROUND_MIN_GAP_MS = 5_000L
         /** Pull interval while the app is on screen (two small requests when nothing changed). */

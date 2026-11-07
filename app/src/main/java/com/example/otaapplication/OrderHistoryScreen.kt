@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.otaapplication.data.Bill
+import com.example.otaapplication.data.BillDetails
 import com.example.otaapplication.data.BillStatusFilter
 import com.example.otaapplication.data.OrderCounts
 import com.example.otaapplication.data.OrderQuery
@@ -83,13 +84,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private val chipDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM yy")
-private val billDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("dd MMM yyyy")
-private val amountFormat: NumberFormat = NumberFormat.getNumberInstance(Locale.forLanguageTag("en-IN")).apply {
-    minimumFractionDigits = 0; maximumFractionDigits = 2
-}
-
-private fun LocalDate.toPickerMillis(): Long = atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
-private fun Long.pickerMillisToDate(): LocalDate = Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
 
 private sealed interface DetailLoad {
     data object Loading : DetailLoad
@@ -97,12 +91,13 @@ private sealed interface DetailLoad {
 }
 
 /** Bill number + optional details entered in the attach dialog. */
-private data class BillInput(val billNo: String, val date: LocalDate?, val amount: Double?)
+private data class BillInput(val billNo: String, val details: BillDetails)
 
 @Composable
 fun OrderHistoryScreen(
     activity: MainActivity,
     orders: OrderRepository,
+    paymentDeps: PaymentDeps,
     remoteChanges: Int = 0,
     onOrderFocused: (OrderFormData, String?) -> Unit
 ) {
@@ -120,6 +115,7 @@ fun OrderHistoryScreen(
     var detail by remember { mutableStateOf<OrderSummary?>(null) }
     var attachFor by remember { mutableStateOf<List<String>?>(null) }
     var showDateRange by remember { mutableStateOf(false) }
+    var pages by remember { mutableStateOf<List<PaymentPage>>(emptyList()) }
     val listState = rememberLazyListState()
 
     val query = OrderQuery(
@@ -203,6 +199,7 @@ fun OrderHistoryScreen(
                 load = load,
                 bills = bills,
                 onAddBill = { attachFor = listOf(selected.id) },
+                onOpenBill = { bill -> pages = listOf(PaymentPage.BillView(bill.id)) },
                 onRemoveBill = { bill ->
                     scope.launch {
                         withContext(Dispatchers.IO) { orders.detachBill(selected.id, bill.id) }
@@ -240,7 +237,7 @@ fun OrderHistoryScreen(
                 attachFor = null
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
-                        runCatching { orders.attachBill(targets, input.billNo, input.date, input.amount) }
+                        runCatching { orders.attachBill(targets, input.billNo, input.details) }
                     }
                     result.onSuccess { bill ->
                         val what = if (targets.size == 1) "order" else "${targets.size} orders"
@@ -254,6 +251,8 @@ fun OrderHistoryScreen(
             }
         )
     }
+
+    PaymentPages(stack = pages, onStackChange = { pages = it }, deps = paymentDeps, version = dataVersion, onChanged = { dataVersion++ })
 
     if (showDateRange) {
         DateRangeDialog(
@@ -591,7 +590,7 @@ private fun BillStatusBadge(received: Boolean, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun BillChip(billNo: String) {
+internal fun BillChip(billNo: String) {
     Row(
         modifier = Modifier
             .clip(MaterialTheme.shapes.small)
@@ -714,6 +713,7 @@ private fun OrderDetailScreen(
     load: DetailLoad,
     bills: List<Bill>?,
     onAddBill: () -> Unit,
+    onOpenBill: (Bill) -> Unit,
     onRemoveBill: (Bill) -> Unit,
     onDismiss: () -> Unit,
     onDelete: () -> Unit,
@@ -751,7 +751,7 @@ private fun OrderDetailScreen(
                     DetailCard("General Information", Icons.Default.Description) {
                         DetailRow("Date", order.date); DetailRow("Offer No", order.offerNo); DetailRow("Buyer", order.buyer); DetailRow("Supplier", order.supplier)
                     }
-                    BillsCard(bills = bills, onAddBill = onAddBill, onRemoveBill = { billToRemove = it })
+                    BillsCard(bills = bills, onAddBill = onAddBill, onOpenBill = onOpenBill, onRemoveBill = { billToRemove = it })
                     DetailCard("Items List", Icons.Default.Inventory2) {
                         order.items.forEachIndexed { i, item ->
                             if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
@@ -826,8 +826,9 @@ private fun OrderDetailScreen(
             title = { Text("Remove bill ${bill.billNo}?") },
             text = {
                 Text(
-                    if (bill.orderCount > 1) "The bill stays attached to ${bill.orderCount - 1} other order${if (bill.orderCount == 2) "" else "s"}; only this order is unlinked."
-                    else "This order will go back to Pending if it has no other bills."
+                    (if (bill.orderCount > 1) "The bill stays attached to ${bill.orderCount - 1} other order${if (bill.orderCount == 2) "" else "s"}; only this order is unlinked."
+                    else "This order will go back to Pending if it has no other bills.") +
+                        (if (bill.adviceCount > 0) " Its payment advices keep their record of this bill." else "")
                 )
             },
             confirmButton = { TextButton(onClick = { billToRemove = null; onRemoveBill(bill) }) { Text("Remove") } },
@@ -837,7 +838,7 @@ private fun OrderDetailScreen(
 }
 
 @Composable
-private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onRemoveBill: (Bill) -> Unit) {
+private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onOpenBill: (Bill) -> Unit, onRemoveBill: (Bill) -> Unit) {
     FormSection(
         title = "Bills",
         icon = Icons.AutoMirrored.Filled.ReceiptLong,
@@ -857,7 +858,7 @@ private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onRemoveBill: (
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    else -> list.forEach { bill -> BillRow(bill = bill, onRemove = { onRemoveBill(bill) }) }
+                    else -> list.forEach { bill -> BillSummaryRow(bill = bill, onClick = { onOpenBill(bill) }, onRemove = { onRemoveBill(bill) }) }
                 }
             }
         }
@@ -870,35 +871,6 @@ private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onRemoveBill: (
 }
 
 @Composable
-private fun BillRow(bill: Bill, onRemove: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.small)
-            .background(BillReceivedContainer.copy(alpha = 0.55f))
-            .padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(Icons.Default.TaskAlt, contentDescription = null, tint = OnBillReceivedContainer, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Bill ${bill.billNo}", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
-            val details = listOfNotNull(
-                bill.billDate?.format(billDateFormat),
-                bill.amount?.let { "₹ ${amountFormat.format(it)}" },
-                if (bill.orderCount > 1) "covers ${bill.orderCount} orders" else null
-            )
-            if (details.isNotEmpty()) {
-                Text(details.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        IconButton(onClick = onRemove) {
-            Icon(Icons.Default.Close, contentDescription = "Remove bill ${bill.billNo}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
 private fun AttachBillDialog(
     targets: List<String>,
     orders: OrderRepository,
@@ -906,9 +878,7 @@ private fun AttachBillDialog(
     onConfirm: (BillInput) -> Unit
 ) {
     var billNo by rememberSaveable { mutableStateOf("") }
-    var billDay by rememberSaveable { mutableStateOf<Long?>(null) }
-    var amountText by rememberSaveable { mutableStateOf("") }
-    var showDatePicker by remember { mutableStateOf(false) }
+    val fields = remember { BillFieldsState() }
     var existing by remember { mutableStateOf<List<Bill>>(emptyList()) }
     val addingAnother by produceState(false, targets) {
         if (targets.size == 1) value = withContext(Dispatchers.IO) { orders.billsForOrder(targets.first()).isNotEmpty() }
@@ -919,9 +889,7 @@ private fun AttachBillDialog(
         existing = withContext(Dispatchers.IO) { orders.suggestBills(billNo, targets) }
             .filterNot { SearchText.billKey(it.billNo) == SearchText.billKey(billNo) }
     }
-    val amount = amountText.replace(",", "").trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
-    val amountError = amountText.isNotBlank() && amount == null
-    val canSave = billNo.isNotBlank() && !amountError
+    val canSave = billNo.isNotBlank() && fields.valid
 
     FormDialog(
         title = when {
@@ -932,7 +900,7 @@ private fun AttachBillDialog(
         icon = Icons.AutoMirrored.Filled.ReceiptLong,
         onDismiss = onDismiss,
         confirmEnabled = canSave,
-        onConfirm = { onConfirm(BillInput(billNo, billDay?.let(LocalDate::ofEpochDay), amount)) }
+        onConfirm = { onConfirm(BillInput(billNo, fields.details())) }
     ) {
         val focus = remember { FocusRequester() }
         LaunchedEffect(Unit) { focus.requestFocus() }
@@ -954,8 +922,7 @@ private fun AttachBillDialog(
                         SuggestionChip(
                             onClick = {
                                 billNo = bill.billNo
-                                if (billDay == null) billDay = bill.billDate?.toEpochDay()
-                                if (amountText.isBlank()) amountText = bill.amount?.let { amountFormat.format(it).replace(",", "") }.orEmpty()
+                                fields.fillBlanks(bill)
                             },
                             label = { Text("${bill.billNo} · ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}") },
                             icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -964,48 +931,7 @@ private fun AttachBillDialog(
                 }
             }
         }
-        val dateInteraction = remember { MutableInteractionSource() }
-        LaunchedEffect(dateInteraction) {
-            dateInteraction.interactions.collect { if (it is PressInteraction.Release) showDatePicker = true }
-        }
-        OutlinedTextField(
-            value = billDay?.let { LocalDate.ofEpochDay(it).format(billDateFormat) }.orEmpty(),
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Bill date (optional)") },
-            leadingIcon = { Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(20.dp)) },
-            trailingIcon = if (billDay != null) {
-                { IconButton(onClick = { billDay = null }) { Icon(Icons.Default.Close, contentDescription = "Clear bill date") } }
-            } else null,
-            singleLine = true,
-            interactionSource = dateInteraction,
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = amountText,
-            onValueChange = { amountText = it },
-            label = { Text("Amount (optional)") },
-            leadingIcon = { Text("₹", style = MaterialTheme.typography.titleMedium) },
-            singleLine = true,
-            isError = amountError,
-            supportingText = if (amountError) { { Text("Enter a number") } } else null,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-            modifier = Modifier.fillMaxWidth()
-        )
-    }
-
-    if (showDatePicker) {
-        val state = rememberDatePickerState(initialSelectedDateMillis = (billDay?.let(LocalDate::ofEpochDay) ?: LocalDate.now()).toPickerMillis())
-        DatePickerDialog(
-            onDismissRequest = { showDatePicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    state.selectedDateMillis?.let { billDay = it.pickerMillisToDate().toEpochDay() }
-                    showDatePicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
-        ) { DatePicker(state = state) }
+        BillFields(fields, optional = true)
     }
 }
 

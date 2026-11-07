@@ -77,7 +77,28 @@ data class Bill(
     val billNo: String,
     val billDate: LocalDate? = null,
     val amount: Double? = null,
-    val orderCount: Int = 0
+    val orderCount: Int = 0,
+    /** LR (bilty) number of the consignment. */
+    val lrNo: String = "",
+    /** Agreed cash discount, as a percentage and/or in rupees. */
+    val cdPercent: Double? = null,
+    val cdAmount: Double? = null,
+    /** Settled so far by payment advices: paid + cash discount + goods return + rate difference. */
+    val settled: Double = 0.0,
+    val adviceCount: Int = 0
+) {
+    /** Amount still due; null when the bill amount isn't known. */
+    val balance: Double? get() = PaymentMath.balance(amount, settled)
+    val status: PaymentStatus get() = PaymentMath.status(amount, settled)
+}
+
+/** Editable details of a bill (everything except its number). */
+data class BillDetails(
+    val billDate: LocalDate? = null,
+    val amount: Double? = null,
+    val lrNo: String = "",
+    val cdPercent: Double? = null,
+    val cdAmount: Double? = null
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

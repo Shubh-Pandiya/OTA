@@ -3,6 +3,8 @@ package com.example.otaapplication.data
 import android.content.ContentValues
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import com.example.otaapplication.data.BillSql.stringOrNull
+import com.example.otaapplication.data.BillSql.toBills
 import java.security.MessageDigest
 import java.time.LocalDate
 
@@ -130,7 +132,7 @@ class OrderRepository(
     fun billsForOrder(orderId: String): List<Bill> =
         helper.readableDatabase.rawQuery(
             """
-            SELECT b.id, b.bill_no, b.bill_date, b.amount, $BILL_ORDER_COUNT
+            SELECT ${BillSql.COLUMNS}
             FROM order_bills ob JOIN bills b ON b.id = ob.bill_id
             WHERE ob.order_id = ? AND ob.is_deleted = 0 AND b.is_deleted = 0
             ORDER BY ob.created_at, b.bill_no COLLATE NOCASE
@@ -138,7 +140,6 @@ class OrderRepository(
             arrayOf(orderId)
         ).use { it.toBills() }
 
-    /** Existing bills whose number contains [text], most recently touched first. */
     /** Existing bills whose number contains [text], skipping bills already on every one of [forOrders]. */
     fun suggestBills(text: String, forOrders: Collection<String> = emptyList(), limit: Int = 5): List<Bill> {
         val token = SearchText.normalize(text)
@@ -150,7 +151,7 @@ class OrderRepository(
             """
         return helper.readableDatabase.rawQuery(
             """
-            SELECT b.id, b.bill_no, b.bill_date, b.amount, $BILL_ORDER_COUNT
+            SELECT ${BillSql.COLUMNS}
             FROM bills b
             WHERE b.is_deleted = 0 AND lower(b.bill_no) LIKE ? ESCAPE '\'
             $notOnAllTargets
@@ -164,9 +165,9 @@ class OrderRepository(
     /**
      * Marks each order in [orderIds] as "bill received" with bill [billNo]. A bill number that is
      * already known is reused (so one bill can cover many orders); a new one is created otherwise.
-     * [billDate]/[amount], when given, update the bill's details.
+     * [details], when given, update the bill's date, amount, LR number and cash discount.
      */
-    fun attachBill(orderIds: Collection<String>, billNo: String, billDate: LocalDate? = null, amount: Double? = null): Bill {
+    fun attachBill(orderIds: Collection<String>, billNo: String, details: BillDetails? = null): Bill {
         val display = billNo.trim().replace(Regex("\\s+"), " ")
         require(display.isNotEmpty()) { "Bill number is required" }
         require(orderIds.isNotEmpty()) { "Select at least one order" }
@@ -175,20 +176,14 @@ class OrderRepository(
         val now = clock()
         db.beginTransaction()
         try {
-            val billId = db.rawQuery("SELECT id, is_deleted, bill_date, amount FROM bills WHERE bill_key = ?", arrayOf(key)).use { c ->
+            val billId = db.rawQuery("SELECT id FROM bills WHERE bill_key = ?", arrayOf(key)).use { c ->
                 if (c.moveToFirst()) {
                     val id = c.getString(0)
-                    val wasDeleted = c.getInt(1) != 0
-                    val dateChanged = billDate != null && billDate.toString() != c.getStringOrNull(2)
-                    val amountChanged = amount != null && (c.isNull(3) || c.getDouble(3) != amount)
                     // Uploaded again even when unchanged: the cloud may already have purged an
                     // old bill, and other phones need it to show the new link.
                     db.update("bills", ContentValues().apply {
-                        if (wasDeleted || dateChanged || amountChanged) {
-                            put("is_deleted", 0)
-                            if (billDate != null) put("bill_date", billDate.toString())
-                            if (amount != null) put("amount", amount)
-                        }
+                        put("is_deleted", 0)
+                        details?.let { putDetails(it, onlyGiven = true) }
                         put("updated_at", now); put("sync_pending", 1)
                     }, "id = ?", arrayOf(id))
                     id
@@ -196,8 +191,7 @@ class OrderRepository(
             } ?: SyncIds.bill(key).also { id ->
                 db.insertOrThrow("bills", null, ContentValues().apply {
                     put("id", id); put("bill_no", display); put("bill_key", key)
-                    if (billDate != null) put("bill_date", billDate.toString())
-                    if (amount != null) put("amount", amount)
+                    details?.let { putDetails(it) }
                     put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
                 })
             }
@@ -216,11 +210,51 @@ class OrderRepository(
                 }
             }
             db.setTransactionSuccessful()
-            return billById(db, billId)
+            return BillSql.billById(db, billId)!!
         } finally {
             db.endTransaction()
             onLocalChange?.invoke()
         }
+    }
+
+    /** Replaces a bill's date, amount, LR number and cash discount (the number stays). */
+    fun updateBillDetails(billId: String, details: BillDetails): Bill? {
+        val db = helper.writableDatabase
+        val updated = db.update("bills", ContentValues().apply {
+            putDetails(details); put("updated_at", clock()); put("sync_pending", 1)
+        }, "id = ? AND is_deleted = 0", arrayOf(billId))
+        if (updated > 0) onLocalChange?.invoke()
+        return BillSql.billById(helper.readableDatabase, billId)
+    }
+
+    fun bill(billId: String): Bill? = BillSql.billById(helper.readableDatabase, billId)
+
+    /** Orders a bill is attached to, for the bill's detail view. */
+    fun ordersForBill(billId: String): List<OrderSummary> =
+        helper.readableDatabase.rawQuery(
+            """
+            SELECT o.id, o.uuid, o.offer_no, o.order_date, o.buyer, o.supplier, o.json_path, o.pdf_file_name
+            FROM order_bills ob JOIN orders o ON o.id = ob.order_id
+            WHERE ob.bill_id = ? AND ob.is_deleted = 0 AND o.is_deleted = 0
+            ORDER BY o.day_key, o.seq
+            """.trimIndent(),
+            arrayOf(billId)
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(OrderSummary(
+                    c.getString(0), c.stringOrNull(1), c.getString(2), c.getString(3), c.getString(4), c.getString(5),
+                    c.getString(6), c.stringOrNull(7), emptyList()
+                ))
+            }
+        }
+
+    /** With [onlyGiven], blank details keep the bill's existing values. */
+    private fun ContentValues.putDetails(d: BillDetails, onlyGiven: Boolean = false) {
+        if (!onlyGiven || d.billDate != null) put("bill_date", d.billDate?.toString())
+        if (!onlyGiven || d.amount != null) put("amount", d.amount)
+        if (!onlyGiven || d.lrNo.isNotBlank()) put("lr_no", d.lrNo.trim())
+        if (!onlyGiven || d.cdPercent != null) put("cd_percent", d.cdPercent)
+        if (!onlyGiven || d.cdAmount != null) put("cd_amount", d.cdAmount)
     }
 
     /** Removes a (wrong) bill link from an order. A bill left with no orders is retired too. */
@@ -237,10 +271,6 @@ class OrderRepository(
         }
         onLocalChange?.invoke()
     }
-
-    private fun billById(db: SQLiteDatabase, id: String): Bill =
-        db.rawQuery("SELECT b.id, b.bill_no, b.bill_date, b.amount, $BILL_ORDER_COUNT FROM bills b WHERE b.id = ?", arrayOf(id))
-            .use { it.toBills().first() }
 
     private fun retireOrphanBills(db: SQLiteDatabase, now: Long) {
         db.update(
@@ -268,17 +298,8 @@ class OrderRepository(
         """.trimIndent(), null
     ).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
 
-    fun localSyncMeta(table: String, ids: Collection<String>): Map<String, LocalSyncMeta> {
-        if (ids.isEmpty()) return emptyMap()
-        val out = HashMap<String, LocalSyncMeta>()
-        ids.distinct().chunked(500).forEach { chunk ->
-            helper.readableDatabase.rawQuery(
-                "SELECT id, updated_at, sync_pending FROM ${tableName(table)} WHERE id IN (${chunk.joinToString(",") { "?" }})",
-                chunk.toTypedArray()
-            ).use { c -> while (c.moveToNext()) out[c.getString(0)] = LocalSyncMeta(c.getLong(1), c.getInt(2) != 0) }
-        }
-        return out
-    }
+    fun localSyncMeta(table: String, ids: Collection<String>): Map<String, LocalSyncMeta> =
+        BillSql.localSyncMeta(helper.readableDatabase, table, ids)
 
     /** Orders waiting to be uploaded; their content is read from the history file by the caller. */
     fun pendingOrders(limit: Int): List<PendingOrderRef> =
@@ -291,14 +312,19 @@ class OrderRepository(
 
     fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
+            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
             null
         ).use { c ->
             buildList {
                 while (c.moveToNext()) add(
                     PendingRow(
                         c.getString(0),
-                        BillValue(c.getString(1), c.getStringOrNull(2), if (c.isNull(3)) null else c.getDouble(3)),
+                        BillValue(
+                            c.getString(1), c.getStringOrNull(2), if (c.isNull(3)) null else c.getDouble(3),
+                            lrNo = c.getStringOrNull(6).orEmpty(),
+                            cdPercent = if (c.isNull(7)) null else c.getDouble(7),
+                            cdAmount = if (c.isNull(8)) null else c.getDouble(8)
+                        ),
                         c.getInt(4) != 0,
                         c.getLong(5)
                     )
@@ -321,18 +347,7 @@ class OrderRepository(
         }
 
     /** Clears the dirty flag of rows that were not edited again while the upload was running. */
-    fun markSynced(table: String, rows: List<Pair<String, Long>>) {
-        val db = helper.writableDatabase
-        db.beginTransaction()
-        try {
-            for ((id, updatedAt) in rows) {
-                db.update(tableName(table), ContentValues().apply { put("sync_pending", 0) }, "id = ? AND updated_at = ?", arrayOf(id, updatedAt.toString()))
-            }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-    }
+    fun markSynced(table: String, rows: List<Pair<String, Long>>) = BillSql.markSynced(helper.writableDatabase, table, rows)
 
     /**
      * Remembers an order that was deleted in the cloud before this phone ever saw it, so that
@@ -358,6 +373,7 @@ class OrderRepository(
                 val values = ContentValues().apply {
                     put("bill_no", row.value.billNo); put("bill_key", SearchText.billKey(row.value.billNo))
                     put("bill_date", row.value.billDate); put("amount", row.value.amount)
+                    put("lr_no", row.value.lrNo); put("cd_percent", row.value.cdPercent); put("cd_amount", row.value.cdAmount)
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
                 }
                 if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {
@@ -403,11 +419,6 @@ class OrderRepository(
             db.endTransaction()
         }
         return changed
-    }
-
-    private fun tableName(table: String) = when (table) {
-        "orders", "bills", "order_bills" -> table
-        else -> throw IllegalArgumentException(table)
     }
 
     private fun whereClause(query: OrderQuery, includeStatus: Boolean): Pair<String, Array<String>> {
@@ -463,20 +474,6 @@ class OrderRepository(
         return MessageDigest.getInstance("SHA-1").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
-    private fun Cursor.toBills(): List<Bill> {
-        val out = ArrayList<Bill>(count)
-        while (moveToNext()) {
-            out += Bill(
-                id = getString(0),
-                billNo = getString(1),
-                billDate = getStringOrNull(2)?.let { runCatching { LocalDate.parse(it) }.getOrNull() },
-                amount = if (isNull(3)) null else getDouble(3),
-                orderCount = getInt(4)
-            )
-        }
-        return out
-    }
-
     private fun Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
     private companion object {
@@ -485,7 +482,5 @@ class OrderRepository(
         const val BILL_SEPARATOR = "\u001f"
         const val HAS_BILL = """EXISTS (SELECT 1 FROM order_bills ob JOIN bills b ON b.id = ob.bill_id
             WHERE ob.order_id = o.id AND ob.is_deleted = 0 AND b.is_deleted = 0)"""
-        const val BILL_ORDER_COUNT = """(SELECT COUNT(*) FROM order_bills x JOIN orders xo ON xo.id = x.order_id
-            WHERE x.bill_id = b.id AND x.is_deleted = 0 AND xo.is_deleted = 0) AS order_count"""
     }
 }

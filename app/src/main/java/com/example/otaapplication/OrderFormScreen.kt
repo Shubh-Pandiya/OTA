@@ -393,17 +393,23 @@ private fun OrderItemRow(
     }
 }
 
-/** Name & address field with type-ahead from the buyer/supplier catalog; free typing still works. */
+/**
+ * Name & address field with type-ahead from the buyer/supplier catalog; free typing still works.
+ * [nameOnly] makes it a one-line name field (a picked entry fills just the name).
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PartyField(
+fun PartyField(
     type: PartyType,
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
     placeholder: String,
-    catalog: CatalogRepository?
+    catalog: CatalogRepository?,
+    nameOnly: Boolean = false,
+    imeAction: ImeAction = ImeAction.Default
 ) {
+    val fill: (Party) -> String = { if (nameOnly) it.name else it.toFieldText() }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
@@ -422,7 +428,7 @@ private fun PartyField(
             catalog.suggest(type, value) to (catalog.findByName(type, SearchText.firstLine(value)) != null)
         }
         // Hide suggestions once the field already holds a picked entry.
-        suggestions = if (found.any { it.toFieldText() == value.trim() }) emptyList() else found
+        suggestions = if (found.any { fill(it) == value.trim() }) emptyList() else found
         canAdd = !exists
     }
 
@@ -437,8 +443,8 @@ private fun PartyField(
             label = label,
             placeholder = placeholder,
             icon = type.icon(),
-            minLines = 3,
-            imeAction = ImeAction.Default,
+            minLines = if (nameOnly) 1 else 3,
+            imeAction = imeAction,
             modifier = Modifier.onFocusChanged { focused = it.isFocused }
         )
         AnimatedVisibility(
@@ -458,7 +464,7 @@ private fun PartyField(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    onValueChange(party.toFieldText())
+                                    onValueChange(fill(party))
                                     focusManager.clearFocus()
                                 }
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -511,7 +517,7 @@ private fun PartyField(
                 onSaved = { saved ->
                     adding = null
                     catalogVersion++
-                    onValueChange(saved.toFieldText())
+                    onValueChange(fill(saved))
                     focusManager.clearFocus()
                     Toast.makeText(context, "${saved.name} added to ${type.pluralLabel.lowercase()}", Toast.LENGTH_SHORT).show()
                 }
@@ -587,7 +593,10 @@ fun FormTextField(
     minLines: Int = 1,
     imeAction: ImeAction = ImeAction.Next,
     supportingText: String? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    singleLine: Boolean = false,
+    isError: Boolean = false
 ) {
     OutlinedTextField(
         value = value,
@@ -599,11 +608,13 @@ fun FormTextField(
         readOnly = readOnly,
         enabled = enabled,
         minLines = minLines,
+        singleLine = singleLine,
+        isError = isError,
         supportingText = supportingText?.let { { Text(it) } },
         shape = MaterialTheme.shapes.small,
         colors = formFieldColors(),
         keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Text,
+            keyboardType = keyboardType,
             imeAction = imeAction
         )
     )

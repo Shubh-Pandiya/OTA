@@ -94,7 +94,7 @@ class RepositoryTest {
     @Test
     fun oneBillCanCoverManyOrdersAndOneOrderManyBills() {
         seedOrders()
-        val bill = orders.attachBill(listOf("a", "b"), "inv-101", LocalDate.of(2026, 11, 20), 15000.0)
+        val bill = orders.attachBill(listOf("a", "b"), "inv-101", BillDetails(LocalDate.of(2026, 11, 20), 15000.0))
         assertEquals("inv-101", bill.billNo)
         assertEquals(2, bill.orderCount)
         // Same number typed differently reuses the bill.
