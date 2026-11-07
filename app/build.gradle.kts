@@ -5,16 +5,21 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// Supabase project settings come from the git-ignored local.properties (or a Gradle property /
-// environment variable on CI). Only the public publishable (anon) key belongs here, never a secret key.
-val localProperties = Properties().apply {
-    val file = rootProject.file("local.properties")
+// Supabase project settings. The committed supabase.properties has the project URL and the public
+// publishable (anon) key, so a fresh clone works as is. local.properties (git-ignored), a Gradle
+// property or an environment variable override it. Never a secret key or database password.
+fun loadProperties(name: String) = Properties().apply {
+    val file = rootProject.file(name)
     if (file.isFile) file.inputStream().use { load(it) }
 }
+val localProperties = loadProperties("local.properties")
+val supabaseProperties = loadProperties("supabase.properties")
 
 fun cloudSetting(name: String): String =
-    (localProperties.getProperty(name) ?: providers.gradleProperty(name).orNull ?: System.getenv(name) ?: "")
-        .trim().replace("\\", "").replace("\"", "")
+    sequenceOf(
+        localProperties.getProperty(name), providers.gradleProperty(name).orNull, System.getenv(name),
+        supabaseProperties.getProperty(name),
+    ).map { it?.trim()?.replace("\\", "")?.replace("\"", "") }.firstOrNull { !it.isNullOrEmpty() } ?: ""
 
 android {
     namespace = "com.example.otaapplication"
