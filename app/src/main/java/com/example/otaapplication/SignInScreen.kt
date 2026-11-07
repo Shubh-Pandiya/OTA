@@ -47,9 +47,10 @@ fun SignInScreen(cloud: CloudSync, status: CloudStatus) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // IME padding before scrolling shrinks the viewport so the focused field stays above the keyboard.
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .systemBarsPadding()
-                .imePadding()
                 .padding(horizontal = 24.dp, vertical = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {

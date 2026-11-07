@@ -923,88 +923,76 @@ private fun AttachBillDialog(
     val amountError = amountText.isNotBlank() && amount == null
     val canSave = billNo.isNotBlank() && !amountError
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null) },
-        title = {
-            Text(
-                when {
-                    targets.size > 1 -> "Attach bill to ${targets.size} orders"
-                    addingAnother -> "Add another bill"
-                    else -> "Mark bill received"
-                }
-            )
+    FormDialog(
+        title = when {
+            targets.size > 1 -> "Attach bill to ${targets.size} orders"
+            addingAnother -> "Add another bill"
+            else -> "Mark bill received"
         },
-        text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                val focus = remember { FocusRequester() }
-                LaunchedEffect(Unit) { focus.requestFocus() }
-                OutlinedTextField(
-                    value = billNo,
-                    onValueChange = { billNo = it },
-                    label = { Text("Bill number") },
-                    leadingIcon = { Icon(Icons.Default.Tag, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
-                    supportingText = { Text("Same number on several orders = one bill covering them") }
-                )
-                AnimatedVisibility(visible = existing.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Existing bills", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            existing.forEach { bill ->
-                                SuggestionChip(
-                                    onClick = {
-                                        billNo = bill.billNo
-                                        if (billDay == null) billDay = bill.billDate?.toEpochDay()
-                                        if (amountText.isBlank()) amountText = bill.amount?.let { amountFormat.format(it).replace(",", "") }.orEmpty()
-                                    },
-                                    label = { Text("${bill.billNo} · ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}") },
-                                    icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                )
-                            }
-                        }
+        icon = Icons.AutoMirrored.Filled.ReceiptLong,
+        onDismiss = onDismiss,
+        confirmEnabled = canSave,
+        onConfirm = { onConfirm(BillInput(billNo, billDay?.let(LocalDate::ofEpochDay), amount)) }
+    ) {
+        val focus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { focus.requestFocus() }
+        OutlinedTextField(
+            value = billNo,
+            onValueChange = { billNo = it },
+            label = { Text("Bill number") },
+            leadingIcon = { Icon(Icons.Default.Tag, contentDescription = null, modifier = Modifier.size(20.dp)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
+            supportingText = { Text("Same number on several orders = one bill covering them") }
+        )
+        AnimatedVisibility(visible = existing.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Existing bills", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    existing.forEach { bill ->
+                        SuggestionChip(
+                            onClick = {
+                                billNo = bill.billNo
+                                if (billDay == null) billDay = bill.billDate?.toEpochDay()
+                                if (amountText.isBlank()) amountText = bill.amount?.let { amountFormat.format(it).replace(",", "") }.orEmpty()
+                            },
+                            label = { Text("${bill.billNo} · ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}") },
+                            icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
                     }
                 }
-                val dateInteraction = remember { MutableInteractionSource() }
-                LaunchedEffect(dateInteraction) {
-                    dateInteraction.interactions.collect { if (it is PressInteraction.Release) showDatePicker = true }
-                }
-                OutlinedTextField(
-                    value = billDay?.let { LocalDate.ofEpochDay(it).format(billDateFormat) }.orEmpty(),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Bill date (optional)") },
-                    leadingIcon = { Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                    trailingIcon = if (billDay != null) {
-                        { IconButton(onClick = { billDay = null }) { Icon(Icons.Default.Close, contentDescription = "Clear bill date") } }
-                    } else null,
-                    singleLine = true,
-                    interactionSource = dateInteraction,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text("Amount (optional)") },
-                    leadingIcon = { Text("₹", style = MaterialTheme.typography.titleMedium) },
-                    singleLine = true,
-                    isError = amountError,
-                    supportingText = if (amountError) { { Text("Enter a number") } } else null,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onConfirm(BillInput(billNo, billDay?.let(LocalDate::ofEpochDay), amount)) },
-                enabled = canSave
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+        }
+        val dateInteraction = remember { MutableInteractionSource() }
+        LaunchedEffect(dateInteraction) {
+            dateInteraction.interactions.collect { if (it is PressInteraction.Release) showDatePicker = true }
+        }
+        OutlinedTextField(
+            value = billDay?.let { LocalDate.ofEpochDay(it).format(billDateFormat) }.orEmpty(),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Bill date (optional)") },
+            leadingIcon = { Icon(Icons.Default.Event, contentDescription = null, modifier = Modifier.size(20.dp)) },
+            trailingIcon = if (billDay != null) {
+                { IconButton(onClick = { billDay = null }) { Icon(Icons.Default.Close, contentDescription = "Clear bill date") } }
+            } else null,
+            singleLine = true,
+            interactionSource = dateInteraction,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = amountText,
+            onValueChange = { amountText = it },
+            label = { Text("Amount (optional)") },
+            leadingIcon = { Text("₹", style = MaterialTheme.typography.titleMedium) },
+            singleLine = true,
+            isError = amountError,
+            supportingText = if (amountError) { { Text("Enter a number") } } else null,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 
     if (showDatePicker) {
         val state = rememberDatePickerState(initialSelectedDateMillis = (billDay?.let(LocalDate::ofEpochDay) ?: LocalDate.now()).toPickerMillis())

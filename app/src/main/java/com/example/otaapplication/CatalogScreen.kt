@@ -317,139 +317,132 @@ fun PartyEditDialog(
     val canSave = name.isNotBlank() && !duplicate && !gstinError && !bankError && !saving
     val isNew = initial.id.isBlank()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(if (isNew) Icons.Default.PersonAdd else initial.type.icon(), contentDescription = null) },
-        title = { Text(if (isNew) "New ${initial.type.label.lowercase()}" else "Edit ${initial.type.label.lowercase()}") },
-        text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val focus = remember { FocusRequester() }
-                LaunchedEffect(Unit) { if (initial.name.isBlank()) focus.requestFocus() }
-                OutlinedTextField(
-                    value = name, onValueChange = { name = it },
-                    label = { Text("Name *") },
-                    singleLine = true,
-                    isError = duplicate,
-                    supportingText = if (duplicate) { { Text("A ${initial.type.label.lowercase()} with this name already exists") } } else null,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focus)
-                )
-                OutlinedTextField(
-                    value = address, onValueChange = { address = it },
-                    label = { Text("Address") },
-                    minLines = 2,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = city, onValueChange = { city = it },
-                    label = { Text("City") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = phone, onValueChange = { phone = it },
-                    label = { Text("Phone") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = gstin, onValueChange = { gstin = it.uppercase() },
-                    label = { Text("GSTIN (optional)") },
-                    singleLine = true,
-                    isError = gstinError,
-                    supportingText = if (gstinError) { { Text("GSTIN has 15 letters/digits") } } else null,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                BankSection(
-                    partyName = name,
-                    bank = bank,
-                    expanded = bankExpanded,
-                    onToggle = { bankExpanded = !bankExpanded },
-                    hasError = bankError
-                ) {
-                    OutlinedTextField(
-                        value = accountName, onValueChange = { accountName = it },
-                        label = { Text("Account holder name") },
-                        placeholder = { Text(name.ifBlank { "Same as name" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = bankName, onValueChange = { bankName = it },
-                        label = { Text("Bank name") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = accountNo, onValueChange = { accountNo = it.uppercase() },
-                        label = { Text("Account number") },
-                        singleLine = true,
-                        isError = accountNoError,
-                        supportingText = if (accountNoError) { { Text("Use 6–20 letters/digits") } } else null,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = ifsc, onValueChange = { ifsc = it.uppercase().take(11) },
-                        label = { Text("IFSC") },
-                        singleLine = true,
-                        isError = ifscError,
-                        supportingText = if (ifscError) { { Text(if (ifsc.trim().length == 11) "5th character must be 0, e.g. HDFC0001234" else "11 characters, e.g. HDFC0001234") } } else null,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = branch, onValueChange = { branch = it },
-                        label = { Text("Branch") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = upi, onValueChange = { upi = it.trim() },
-                        label = { Text("UPI ID") },
-                        singleLine = true,
-                        isError = upiError,
-                        supportingText = if (upiError) { { Text("Looks like name@bank") } } else null,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Done),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+    FormDialog(
+        title = if (isNew) "New ${initial.type.label.lowercase()}" else "Edit ${initial.type.label.lowercase()}",
+        icon = if (isNew) Icons.Default.PersonAdd else initial.type.icon(),
+        onDismiss = onDismiss,
+        confirmEnabled = canSave,
+        busy = saving,
+        onConfirm = {
+            saving = true
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) {
+                    runCatching { catalog.save(initial.copy(name = name, address = address, city = city, phone = phone, gstin = gstin, bank = bank)) }
                 }
-                if (onDelete != null) {
-                    TextButton(
-                        onClick = { confirmDelete = true },
-                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                    ) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Remove from catalog")
-                    }
-                }
+                saving = false
+                saved.onSuccess(onSaved)
             }
-        },
-        confirmButton = {
+        }
+    ) {
+        val focus = remember { FocusRequester() }
+        LaunchedEffect(Unit) { if (initial.name.isBlank()) focus.requestFocus() }
+        OutlinedTextField(
+            value = name, onValueChange = { name = it },
+            label = { Text("Name *") },
+            singleLine = true,
+            isError = duplicate,
+            supportingText = if (duplicate) { { Text("A ${initial.type.label.lowercase()} with this name already exists") } } else null,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth().focusRequester(focus)
+        )
+        OutlinedTextField(
+            value = address, onValueChange = { address = it },
+            label = { Text("Address") },
+            minLines = 2,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = city, onValueChange = { city = it },
+            label = { Text("City") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = phone, onValueChange = { phone = it },
+            label = { Text("Phone") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = gstin, onValueChange = { gstin = it.uppercase() },
+            label = { Text("GSTIN (optional)") },
+            singleLine = true,
+            isError = gstinError,
+            supportingText = if (gstinError) { { Text("GSTIN has 15 letters/digits") } } else null,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth()
+        )
+        BankSection(
+            partyName = name,
+            bank = bank,
+            expanded = bankExpanded,
+            onToggle = { bankExpanded = !bankExpanded },
+            hasError = bankError
+        ) {
+            OutlinedTextField(
+                value = accountName, onValueChange = { accountName = it },
+                label = { Text("Account holder name") },
+                placeholder = { Text(name.ifBlank { "Same as name" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = bankName, onValueChange = { bankName = it },
+                label = { Text("Bank name") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = accountNo, onValueChange = { accountNo = it.uppercase() },
+                label = { Text("Account number") },
+                singleLine = true,
+                isError = accountNoError,
+                supportingText = if (accountNoError) { { Text("Use 6–20 letters/digits") } } else null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = ifsc, onValueChange = { ifsc = it.uppercase().take(11) },
+                label = { Text("IFSC") },
+                singleLine = true,
+                isError = ifscError,
+                supportingText = if (ifscError) { { Text(if (ifsc.trim().length == 11) "5th character must be 0, e.g. HDFC0001234" else "11 characters, e.g. HDFC0001234") } } else null,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = branch, onValueChange = { branch = it },
+                label = { Text("Branch") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = upi, onValueChange = { upi = it.trim() },
+                label = { Text("UPI ID") },
+                singleLine = true,
+                isError = upiError,
+                supportingText = if (upiError) { { Text("Looks like name@bank") } } else null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Done),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (onDelete != null) {
             TextButton(
-                enabled = canSave,
-                onClick = {
-                    saving = true
-                    scope.launch {
-                        val saved = withContext(Dispatchers.IO) {
-                            runCatching { catalog.save(initial.copy(name = name, address = address, city = city, phone = phone, gstin = gstin, bank = bank)) }
-                        }
-                        saving = false
-                        saved.onSuccess(onSaved)
-                    }
-                }
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+                onClick = { confirmDelete = true },
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Remove from catalog")
+            }
+        }
+    }
 
     if (confirmDelete && onDelete != null) {
         AlertDialog(
