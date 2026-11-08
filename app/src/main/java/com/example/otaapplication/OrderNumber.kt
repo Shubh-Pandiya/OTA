@@ -7,7 +7,8 @@ import java.time.format.DateTimeFormatter
  * Order (Offer No) numbers.
  *
  * Current format, one agency-wide series per financial year (1 April – 31 March):
- * {FY start YY}-{FY end YY}{4-digit serial}, e.g. 26-270001 is the first order of FY 2026-27.
+ * {FY start YY}{FY end YY}{4-digit serial}, e.g. 26270001 is the first order of FY 2026-27.
+ * Always 8 digits, so it never looks like an older 12-digit number.
  * The cloud hands the numbers out (rpc ota_allocate_order_no), so they are unique across every
  * phone and the desktop. An order saved offline has a blank number ("Pending number") until the
  * next sync gives it one.
@@ -66,8 +67,14 @@ object OrderNumber {
     /** Start year of the financial year [date] falls in (FY 2026-27 starts on 1 April 2026). */
     fun fyStartYear(date: LocalDate): Int = if (date.monthValue >= 4) date.year else date.year - 1
 
-    /** Financial-year part of the number, e.g. "26-27" for any date from 1 Apr 2026 to 31 Mar 2027. */
+    /** Financial-year part of the number, e.g. "2627" for any date from 1 Apr 2026 to 31 Mar 2027. */
     fun fyPrefix(date: LocalDate): String {
+        val start = fyStartYear(date)
+        return String.format(java.util.Locale.ROOT, "%02d%02d", start % 100, (start + 1) % 100)
+    }
+
+    /** Financial year as people write it, e.g. "26-27". */
+    fun fyLabel(date: LocalDate): String {
         val start = fyStartYear(date)
         return String.format(java.util.Locale.ROOT, "%02d-%02d", start % 100, (start + 1) % 100)
     }
@@ -77,10 +84,10 @@ object OrderNumber {
         return fyPrefix(date) + serial.toString().padStart(FY_SERIAL_DIGITS, '0')
     }
 
-    fun isFy(offerNo: String): Boolean = FY.matches(offerNo.trim())
+    fun isFy(offerNo: String): Boolean = offerNo.trim().let { FY.matches(it) && consecutiveYears(it) }
 
     /** Serial of a financial-year number, or null for any other number. */
-    fun fySerialOf(offerNo: String): Int? = offerNo.trim().takeIf { FY.matches(it) }?.takeLast(FY_SERIAL_DIGITS)?.toInt()
+    fun fySerialOf(offerNo: String): Int? = offerNo.trim().takeIf { isFy(it) }?.takeLast(FY_SERIAL_DIGITS)?.toInt()
 
     /** Order date as typed in the form (dd-MM-yyyy); null if it can't be read. */
     fun parseOrderDate(text: String): LocalDate? =
@@ -89,7 +96,9 @@ object OrderNumber {
     private val orderDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("dd-MM-yyyy")
     private const val FY_SERIAL_DIGITS = 4
     // Same pattern as the cloud's unique index on financial-year numbers.
-    private val FY = Regex("^[0-9]{2}-[0-9]{6}$")
+    private val FY = Regex("^[0-9]{8}$")
+    // "2627…" yes, "1234…" no: the second pair is the year after the first.
+    private fun consecutiveYears(no: String) = no.substring(2, 4).toInt() == (no.substring(0, 2).toInt() + 1) % 100
     private const val PREFIX_LENGTH = 9
     private const val SERIAL_DIGITS = 3
     // Same pattern as the cloud's unique index on order_no.

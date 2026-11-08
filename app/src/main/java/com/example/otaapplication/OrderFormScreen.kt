@@ -116,7 +116,7 @@ fun OrderFormScreen(
                     icon = Icons.Default.Tag,
                     readOnly = true,
                     supportingText = when {
-                        isNewOrder -> "Next number for FY ${OrderNumber.fyPrefix(OrderNumber.parseOrderDate(formData.date) ?: LocalDate.now())}; offline it is given on the next sync"
+                        isNewOrder -> "Next number for FY ${OrderNumber.fyLabel(OrderNumber.parseOrderDate(formData.date) ?: LocalDate.now())}; offline it is given on the next sync"
                         OrderNumber.isPending(formData.offerNo) -> "Saved offline; the number and PDF come with the next sync"
                         else -> "Existing order number"
                     }

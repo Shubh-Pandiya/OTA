@@ -97,40 +97,46 @@ class OrderNumberTest {
 
     @Test
     fun financialYearRunsFromAprilToMarch() {
-        assertEquals("25-26", OrderNumber.fyPrefix(LocalDate.of(2026, 3, 31)))
-        assertEquals("26-27", OrderNumber.fyPrefix(LocalDate.of(2026, 4, 1)))
-        assertEquals("26-27", OrderNumber.fyPrefix(LocalDate.of(2027, 3, 31)))
-        assertEquals("27-28", OrderNumber.fyPrefix(LocalDate.of(2027, 4, 1)))
-        assertEquals("99-00", OrderNumber.fyPrefix(LocalDate.of(2099, 12, 1)))
+        assertEquals("2526", OrderNumber.fyPrefix(LocalDate.of(2026, 3, 31)))
+        assertEquals("2627", OrderNumber.fyPrefix(LocalDate.of(2026, 4, 1)))
+        assertEquals("2627", OrderNumber.fyPrefix(LocalDate.of(2027, 3, 31)))
+        assertEquals("2728", OrderNumber.fyPrefix(LocalDate.of(2027, 4, 1)))
+        assertEquals("9900", OrderNumber.fyPrefix(LocalDate.of(2099, 12, 1)))
+        assertEquals("26-27", OrderNumber.fyLabel(LocalDate.of(2026, 4, 1)))
+        assertEquals("25-26", OrderNumber.fyLabel(LocalDate.of(2026, 3, 31)))
     }
 
     @Test
     fun formatsFinancialYearNumbers() {
-        assertEquals("26-270001", OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 1))
-        assertEquals("25-269999", OrderNumber.formatFy(LocalDate.of(2026, 1, 5), 9999))
+        assertEquals("26270001", OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 1))
+        assertEquals("25269999", OrderNumber.formatFy(LocalDate.of(2026, 1, 5), 9999))
         assertThrows(IllegalArgumentException::class.java) { OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 10000) }
         assertThrows(IllegalArgumentException::class.java) { OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 0) }
     }
 
     @Test
     fun readsBothFormats() {
-        assertTrue(OrderNumber.isFy("26-270001"))
-        assertEquals(1, OrderNumber.fySerialOf("26-270001"))
-        assertEquals(9999, OrderNumber.fySerialOf(" 26-279999 "))
+        assertTrue(OrderNumber.isFy("26270001"))
+        assertTrue(OrderNumber.isFy("99000001"))
+        assertEquals(1, OrderNumber.fySerialOf("26270001"))
+        assertEquals(9999, OrderNumber.fySerialOf(" 26279999 "))
         assertFalse(OrderNumber.isFy("120261107001"))
         assertNull(OrderNumber.fySerialOf("120261107001"))
-        assertNull(OrderNumber.prefixOf("26-270001"))
+        assertNull(OrderNumber.prefixOf("26270001"))
         assertEquals("120261107", OrderNumber.prefixOf("120261107001"))
-        assertFalse(OrderNumber.isFy("26-27001"))
+        assertFalse(OrderNumber.isFy("2627001"))
+        // Dashed numbers from the first draft of this format and unrelated 8-digit numbers.
+        assertFalse(OrderNumber.isFy("26-270001"))
+        assertFalse(OrderNumber.isFy("12345678"))
     }
 
     @Test
     fun pendingNumbers() {
         assertTrue(OrderNumber.isPending(OrderNumber.PENDING))
         assertTrue(OrderNumber.isPending("  "))
-        assertFalse(OrderNumber.isPending("26-270001"))
+        assertFalse(OrderNumber.isPending("26270001"))
         assertEquals("Pending number", OrderNumber.display(""))
-        assertEquals("26-270001", OrderNumber.display("26-270001"))
+        assertEquals("26270001", OrderNumber.display("26270001"))
     }
 
     @Test

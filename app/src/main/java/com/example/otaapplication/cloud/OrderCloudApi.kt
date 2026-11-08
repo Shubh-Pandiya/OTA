@@ -260,7 +260,7 @@ interface OrderCloudApi {
     suspend fun usage(): CloudUsage? = null
 
     /**
-     * The next agency-wide order number for the financial year of [orderDate] (e.g. 26-270001).
+     * The next agency-wide order number for the financial year of [orderDate] (e.g. 26270001).
      * Each call uses up a number. Throws [OrderLimitReached] once the year's 9999 are used.
      */
     suspend fun allocateOrderNo(orderDate: LocalDate): String = throw UnsupportedOperationException("allocateOrderNo")
@@ -309,7 +309,7 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
         } catch (e: CloudException) {
             if (e.message.orEmpty().contains(ORDER_LIMIT_CODE)) {
                 throw OrderLimitReached(
-                    "All ${OrderNumber.FY_MAX_SERIAL} order numbers for FY ${OrderNumber.fyPrefix(orderDate)} are used. " +
+                    "All ${OrderNumber.FY_MAX_SERIAL} order numbers for FY ${OrderNumber.fyLabel(orderDate)} are used. " +
                         "No more orders can be numbered this financial year; contact the owner."
                 )
             }
