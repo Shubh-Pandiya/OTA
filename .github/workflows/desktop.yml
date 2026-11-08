@@ -81,6 +81,28 @@ jobs:
           path: desktop/build/test-results/test/*.xml
           if-no-files-found: ignore
 
+      # The Compose plugin downloads WiX from a GitHub release asset that often answers 504; provide
+      # WiX ourselves (pinned NuGet package, else a runner-installed copy) and point WIX_PATH at it,
+      # which makes the plugin skip its own download.
+      - name: Provide WiX toolset
+        run: |
+          $pkg = Join-Path $env:RUNNER_TEMP "wix.3.11.2.zip"
+          $sha = "ac2fff0541f87756b530c93ca3a45ff2dfb1ebe392c269901de0c19074bec5d0"
+          $ok = $false
+          for ($round = 1; $round -le 5 -and -not $ok; $round++) {
+            curl.exe -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 -o $pkg "https://www.nuget.org/api/v2/package/wix/3.11.2"
+            if ($LASTEXITCODE -eq 0 -and (Get-FileHash $pkg -Algorithm SHA256).Hash -ieq $sha) { $ok = $true } else { Start-Sleep -Seconds (15 * $round) }
+          }
+          if ($ok) {
+            Expand-Archive $pkg -DestinationPath (Join-Path $env:RUNNER_TEMP "wixpkg") -Force
+            $bin = Join-Path $env:RUNNER_TEMP "wixpkg\tools"
+          } else {
+            $bin = Resolve-Path "${env:ProgramFiles(x86)}\WiX Toolset v3*\bin" -ErrorAction SilentlyContinue | Select-Object -Last 1 -ExpandProperty Path
+          }
+          if (-not $bin -or -not (Test-Path (Join-Path $bin "candle.exe"))) { throw "WiX toolset unavailable" }
+          Write-Host "WiX at $bin"
+          "WIX_PATH=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build installers (MSI + EXE)
         run: ./gradlew.bat packageMsi packageExe -PpgPlatform=windows-amd64 --console=plain
 
