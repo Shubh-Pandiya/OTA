@@ -548,7 +548,7 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
                     d.orders.forEach { order ->
                         LinkRow(
                             icon = Icons.Default.Description,
-                            title = "Offer ${order.offerNo}",
+                            title = "Offer ${OrderNumber.display(order.offerNo)}",
                             subtitle = listOf(order.date, SearchText.firstLine(order.buyer), SearchText.firstLine(order.supplier))
                                 .filter { it.isNotBlank() }.joinToString(" · "),
                             onClick = null

@@ -184,7 +184,15 @@ fun OrderHistoryScreen(
                 onToggleSelect = { id -> selection = if (id in selection) selection - id else selection + id },
                 onSelectAll = { selection = selection + results.orEmpty().map { it.id } },
                 onClearSelection = { selection = emptySet() },
-                onAttachToSelection = { attachFor = selection.toList() },
+                onAttachToSelection = {
+                    // A bill is linked only to numbered orders (see OrderNumber.PENDING).
+                    val pending = results.orEmpty().filter { OrderNumber.isPending(it.offerNo) }.mapTo(HashSet()) { it.id }
+                    val targets = selection.filterNot { it in pending }
+                    if (targets.size < selection.size) {
+                        Toast.makeText(activity, "Orders with a pending number were skipped: add bills once they have their number.", Toast.LENGTH_LONG).show()
+                    }
+                    if (targets.isNotEmpty()) attachFor = targets
+                },
                 onOpen = { detail = it },
                 listState = listState
             )
@@ -626,7 +634,7 @@ private fun HistoryCard(
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.large)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .semantics { contentDescription = "Order ${item.offerNo}" },
+            .semantics { contentDescription = "Order ${OrderNumber.display(item.offerNo)}" },
         shape = MaterialTheme.shapes.large,
         color = container,
         border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor)
@@ -658,9 +666,9 @@ private fun HistoryCard(
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "Offer No: ${item.offerNo}",
+                        text = "Offer No: ${OrderNumber.display(item.offerNo)}",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = if (OrderNumber.isPending(item.offerNo)) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -732,7 +740,7 @@ private fun OrderDetailScreen(
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = "Order Details", style = MaterialTheme.typography.titleLarge)
                 if (order != null) {
-                    Text(text = "Offer No ${order.offerNo}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = "Offer No ${OrderNumber.display(order.offerNo)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (bills != null) BillStatusBadge(received = bills.isNotEmpty())
@@ -749,9 +757,9 @@ private fun OrderDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     DetailCard("General Information", Icons.Default.Description) {
-                        DetailRow("Date", order.date); DetailRow("Offer No", order.offerNo); DetailRow("Buyer", order.buyer); DetailRow("Supplier", order.supplier)
+                        DetailRow("Date", order.date); DetailRow("Offer No", OrderNumber.display(order.offerNo)); DetailRow("Buyer", order.buyer); DetailRow("Supplier", order.supplier)
                     }
-                    BillsCard(bills = bills, onAddBill = onAddBill, onOpenBill = onOpenBill, onRemoveBill = { billToRemove = it })
+                    BillsCard(bills = bills, numberPending = OrderNumber.isPending(order.offerNo), onAddBill = onAddBill, onOpenBill = onOpenBill, onRemoveBill = { billToRemove = it })
                     DetailCard("Items List", Icons.Default.Inventory2) {
                         order.items.forEachIndexed { i, item ->
                             if (i > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
@@ -813,7 +821,7 @@ private fun OrderDetailScreen(
             onDismissRequest = { showDeleteConfirmation = false },
             icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             title = { Text("Permanently Delete?") },
-            text = { Text("Are you absolutely sure you want to permanently delete Offer No ${order.offerNo}? This action will completely erase the sync record from your system storage.") },
+            text = { Text("Are you absolutely sure you want to permanently delete Offer No ${OrderNumber.display(order.offerNo)}? This action will completely erase the sync record from your system storage.") },
             confirmButton = { TextButton(onClick = { showDeleteConfirmation = false; onDelete() }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("PERMANENTLY DELETE") } },
             dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text("CANCEL") } }
         )
@@ -838,7 +846,7 @@ private fun OrderDetailScreen(
 }
 
 @Composable
-private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onOpenBill: (Bill) -> Unit, onRemoveBill: (Bill) -> Unit) {
+private fun BillsCard(bills: List<Bill>?, numberPending: Boolean, onAddBill: () -> Unit, onOpenBill: (Bill) -> Unit, onRemoveBill: (Bill) -> Unit) {
     FormSection(
         title = "Bills",
         icon = Icons.AutoMirrored.Filled.ReceiptLong,
@@ -862,7 +870,14 @@ private fun BillsCard(bills: List<Bill>?, onAddBill: () -> Unit, onOpenBill: (Bi
                 }
             }
         }
-        FilledTonalButton(onClick = onAddBill, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium) {
+        if (numberPending) {
+            Text(
+                "This order was saved offline. Bills can be added once it gets its number on the next sync.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary
+            )
+        }
+        FilledTonalButton(onClick = onAddBill, enabled = !numberPending, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium) {
             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             Text(if (bills.isNullOrEmpty()) "Mark bill received" else "Add another bill")

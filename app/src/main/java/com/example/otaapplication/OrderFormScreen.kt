@@ -1,5 +1,6 @@
 package com.example.otaapplication
 
+import java.time.LocalDate
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
@@ -106,12 +107,19 @@ fun OrderFormScreen(
                     )
                 }
                 FormTextField(
-                    value = formData.offerNo,
+                    value = when {
+                        isNewOrder -> "Assigned when saved"
+                        else -> OrderNumber.display(formData.offerNo)
+                    },
                     onValueChange = {},
                     label = "Offer No",
                     icon = Icons.Default.Tag,
                     readOnly = true,
-                    supportingText = if (isNewOrder) "Auto-generated, assigned when the PDF is saved" else "Existing order number"
+                    supportingText = when {
+                        isNewOrder -> "Next number for FY ${OrderNumber.fyPrefix(OrderNumber.parseOrderDate(formData.date) ?: LocalDate.now())}; offline it is given on the next sync"
+                        OrderNumber.isPending(formData.offerNo) -> "Saved offline; the number and PDF come with the next sync"
+                        else -> "Existing order number"
+                    }
                 )
                 AnimatedVisibility(visible = numberMissingMessage != null) {
                     StaffCodeNotice(numberMissingMessage.orEmpty(), onOpenSyncSettings)

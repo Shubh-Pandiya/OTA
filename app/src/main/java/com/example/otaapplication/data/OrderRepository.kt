@@ -318,11 +318,19 @@ class OrderRepository(
     /** Orders waiting to be uploaded; their content is read from the history file by the caller. */
     fun pendingOrders(limit: Int): List<PendingOrderRef> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, offer_no, order_date, updated_at, is_deleted FROM orders WHERE sync_pending = 1 AND $SYNCABLE_ORDER ORDER BY updated_at, id LIMIT $limit",
+            "SELECT id, offer_no, order_date, updated_at, is_deleted FROM orders WHERE sync_pending = 1 AND $SYNCABLE_ORDER AND offer_no <> '' ORDER BY updated_at, id LIMIT $limit",
             null
-        ).use { c ->
-            buildList { while (c.moveToNext()) add(PendingOrderRef(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getInt(4) != 0)) }
-        }
+        ).use(::orderRefs)
+
+    /** Orders saved offline that are still waiting for their number from the cloud, oldest first. */
+    fun unnumberedOrders(): List<PendingOrderRef> =
+        helper.readableDatabase.rawQuery(
+            "SELECT id, offer_no, order_date, updated_at, is_deleted FROM orders WHERE sync_pending = 1 AND $SYNCABLE_ORDER AND offer_no = '' ORDER BY day_key, seq, id",
+            null
+        ).use(::orderRefs)
+
+    private fun orderRefs(c: android.database.Cursor): List<PendingOrderRef> =
+        buildList { while (c.moveToNext()) add(PendingOrderRef(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getInt(4) != 0)) }
 
     fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
         helper.readableDatabase.rawQuery(
@@ -467,7 +475,7 @@ class OrderRepository(
         put("particulars", e.particulars)
         put("json_path", e.jsonPath)
         put("pdf_file_name", e.pdfFileName)
-        put("search_text", SearchText.normalize(listOf(e.offerNo, e.date, e.buyer, e.supplier, e.particulars).joinToString(" ")))
+        put("search_text", SearchText.normalize(listOf(e.offerNo.ifBlank { "pending number" }, e.date, e.buyer, e.supplier, e.particulars).joinToString(" ")))
         put("fingerprint", fingerprint)
         put("updated_at", now)
         put("is_deleted", 0)

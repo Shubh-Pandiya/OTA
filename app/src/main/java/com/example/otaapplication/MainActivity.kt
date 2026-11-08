@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
+import com.example.otaapplication.cloud.OrderLimitReached
 import com.example.otaapplication.data.BillQuery
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.HomeStats
@@ -71,6 +72,7 @@ import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -140,9 +142,7 @@ class MainActivity : ComponentActivity() {
     private val cloud by lazy { CloudSync.get(this) }
     internal val localOrders by lazy { LocalOrders.get(this) }
     internal val orderRepository: OrderRepository get() = localOrders.index
-    private val numberAllocator by lazy {
-        OrderNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), localOrders.history, localOrders.index)
-    }
+    private val orderFiles by lazy { OrderFiles(this, localOrders) }
     private val payments by lazy { PaymentRepository.get(this) }
     private val adviceNumbers by lazy {
         AdviceNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), payments)
@@ -207,8 +207,6 @@ class MainActivity : ComponentActivity() {
         // uuid of the order reopened from history; saving updates that order in place.
         var focusedUuid by remember { mutableStateOf<String?>(null) }
         var isGenerating by remember { mutableStateOf(false) }
-        var nextOfferNo by remember { mutableStateOf("") }
-        var offerNoRefresh by remember { mutableIntStateOf(0) }
         val resumed = resumeTick
         val cloudStatus by cloud.status.collectAsState()
         val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
@@ -217,12 +215,6 @@ class MainActivity : ComponentActivity() {
         val staffCode = staff?.code
         val paymentDeps = remember(staffCode, cloudStatus.signedIn) {
             PaymentDeps(orderRepository, payments, catalogRepository, adviceNumbers, staffCode, staffCodeMessage(cloudStatus.signedIn).replace("order number", "advice number"))
-        }
-
-        LaunchedEffect(currentScreen, offerNoRefresh, resumed, staffCode, remoteOrderChanges) {
-            if (currentScreen == Screen.OrderEntry) {
-                nextOfferNo = staffCode?.let { code -> withContext(Dispatchers.IO) { numberAllocator.peek(code) } }.orEmpty()
-            }
         }
 
         fun navigate(screen: Screen) {
@@ -319,33 +311,26 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                         Screen.OrderEntry -> OrderFormScreen(
-                            // New orders show the next auto-generated number; orders reopened
+                            // New orders get their number from the cloud when saved; orders reopened
                             // from history keep their original one.
-                            formData = focusedOrderState ?: formData.copy(offerNo = nextOfferNo),
+                            formData = focusedOrderState ?: formData,
                             onFormChange = { if (focusedOrderState != null) focusedOrderState = it else formData = it },
                             isNewOrder = focusedOrderState == null,
                             isGenerating = isGenerating,
                             catalog = catalogRepository,
-                            numberMissingMessage = if (focusedOrderState == null && staffCode == null) staffCodeMessage(cloudStatus.signedIn) else null,
                             onOpenSyncSettings = { currentScreen = Screen.SyncSettings },
                             onGeneratePdf = { data ->
                                 val isNewOrder = focusedOrderState == null
-                                val code = staffCode
-                                if (isNewOrder && code == null) {
-                                    Toast.makeText(this@MainActivity, staffCodeMessage(cloudStatus.signedIn), Toast.LENGTH_LONG).show()
-                                } else if (!isGenerating) {
+                                if (!isGenerating) {
                                     isGenerating = true
                                     val existingUuid = focusedUuid
                                     scope.launch {
-                                        val (ok, message) = withContext(Dispatchers.IO) {
-                                            if (isNewOrder) generateNewOrderPdf(data, code!!) else generateOrderPdf(data, existingUuid)
-                                        }
+                                        val (ok, message) = if (isNewOrder) saveNewOrder(data) else saveEditedOrder(data, existingUuid)
                                         Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                                         if (ok) {
                                             focusedOrderState = null
                                             focusedUuid = null
                                             formData = OrderFormData()
-                                            offerNoRefresh++
                                         }
                                         isGenerating = false
                                     }
@@ -442,116 +427,40 @@ class MainActivity : ComponentActivity() {
     internal fun deleteOrderPermanently(uuid: String?, syncFilePath: String, pdfName: String?): Boolean =
         localOrders.delete(uuid, syncFilePath, pdfName)
 
-    private fun createStaticLayout(text: String, width: Int, textPaint: TextPaint): StaticLayout {
-        return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, width).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1f).setIncludePad(false).build()
-    }
-
     private fun staffCodeMessage(signedIn: Boolean): String =
         if (signedIn) "Your login has no order number code yet. Ask the owner to add it, then tap Sync now in Sync Settings."
         else "Sign in once in Sync Settings to get your order numbers."
 
     /**
-     * Runs on a background thread. Assigns this staff member's next order number at save time and
-     * only consumes it when the PDF was written, so abandoned or failed attempts don't use up numbers.
+     * Saves a new order under the next agency-wide number from the cloud. Offline (or when the
+     * cloud can't be reached) it is saved with a pending number instead: no PDF is made until the
+     * next sync gives it a number, so an order is never shared under a temporary number.
+     * Returns (success, user message).
      */
-    private fun generateNewOrderPdf(data: OrderFormData, staffCode: Int): Pair<Boolean, String> {
-        var result = false to "Could not save the order"
-        val offerNo = numberAllocator.assign(staffCode) { number ->
-            result = generateOrderPdf(data.copy(offerNo = number), existingUuid = null)
-            result.first
+    private suspend fun saveNewOrder(data: OrderFormData): Pair<Boolean, String> {
+        val date = OrderNumber.parseOrderDate(data.date) ?: LocalDate.now()
+        val number = try {
+            cloud.allocateOrderNo(date)
+        } catch (e: OrderLimitReached) {
+            return false to e.message.orEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
         }
-        return if (offerNo != null) true to "Order $offerNo saved. ${result.second}" else result
+        val (ok, message) = withContext(Dispatchers.IO) { orderFiles.save(data.copy(offerNo = number ?: OrderNumber.PENDING), existingUuid = null) }
+        return when {
+            !ok -> false to message
+            number != null -> true to "Order $number saved. $message"
+            else -> true to "Saved offline with a pending number. The order number and PDF are made on the next sync."
+        }
     }
 
-    /**
-     * Runs on a background thread; returns (success, user message). With [existingUuid] the saved
-     * order is updated in place (same uuid, bills kept) and its old files are replaced.
-     */
-    private fun generateOrderPdf(data: OrderFormData, existingUuid: String?): Pair<Boolean, String> = localOrders.history.locked {
-        val now = LocalDateTime.now(); val year = now.year.toString(); val monthName = now.month.name.lowercase().replaceFirstChar { it.uppercase() }
-        val dateStamp = now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-        val sharedPrefs = getSharedPreferences("OTA_Prefs", MODE_PRIVATE)
-        val deviceId = sharedPrefs.getString("device_id", "")?.takeIf { it.isNotBlank() } ?: "UnknownDevice"
-        val uniqueId = existingUuid ?: java.util.UUID.randomUUID().toString()
-        val baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-        val otaDir = File(baseDir, "OTA Orders/$year/$monthName")
-        if (!otaDir.exists()) otaDir.mkdirs()
-        val ordersToday = otaDir.listFiles { file -> file.name.contains("Order") && file.name.contains(dateStamp) }?.size ?: 0
-        val pdfFile = PublicFiles.orderPdf(otaDir, ordersToday + 1) { "Order_${it}_${dateStamp}_${deviceId}.pdf" }
-        val fileName = pdfFile.name
-        try {
-            writeOrderPdf(data, pdfFile)
-            try {
-                val syncDir = File(otaDir, "SyncData"); if (!syncDir.exists()) syncDir.mkdirs()
-                val jsonFileName = "Order_${deviceId}_${uniqueId}.json"; val jsonFile = File(syncDir, jsonFileName)
-                val jsonRoot = OrderJson.putFields(JSONObject(), data)
-                jsonRoot.put("deviceId", deviceId); jsonRoot.put("uuid", uniqueId); jsonRoot.put("pdfFileName", fileName); jsonRoot.put("filePath", jsonFile.absolutePath)
-                jsonRoot.put("items", OrderJson.itemsArray(data.items)); jsonFile.writeText(jsonRoot.toString())
-                val previous = existingUuid?.let { localOrders.history.find(it) }
-                localOrders.history.upsert(OrderJson.historyEntry(data, uniqueId, jsonFile.absolutePath, fileName))
-                localOrders.reindex()
-                if (previous != null) removeReplacedFiles(previous, jsonFile, pdfFile)
-            } catch (e: Exception) { e.printStackTrace() }
-            return@locked true to "PDF Generated: ${pdfFile.absolutePath}"
-        } catch (e: Exception) { e.printStackTrace(); if (pdfFile.length() == 0L) pdfFile.delete(); return@locked false to "Error: ${e.message}" }
-    }
-
-    /** Draws the order form PDF into [pdfFile]. Throws if it can't be written. */
-    private fun writeOrderPdf(data: OrderFormData, pdfFile: File) {
-        val bhagvaOrange = android.graphics.Color.parseColor("#FF6F00")
-        val pdfDocument = PdfDocument(); val paint = Paint(); val textPaint = TextPaint()
-        var currentPageNumber = 1; var pageInfo = PdfDocument.PageInfo.Builder(595, 842, currentPageNumber).create()
-        var page = pdfDocument.startPage(pageInfo); var canvas = page.canvas; var currentY: Float; var pageTableTop = 230f
-        fun drawTableGrid(top: Float, bottom: Float) {
-            paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK; paint.strokeWidth = 1f
-            canvas.drawRect(40f, top, 555f, bottom, paint); canvas.drawLine(85f, top, 85f, bottom, paint); canvas.drawLine(300f, top, 300f, bottom, paint); canvas.drawLine(380f, top, 380f, bottom, paint); canvas.drawLine(445f, top, 445f, bottom, paint)
-        }
-        fun startNewPage() {
-            drawTableGrid(pageTableTop, 780f); pdfDocument.finishPage(page); currentPageNumber++
-            pageInfo = PdfDocument.PageInfo.Builder(595, 842, currentPageNumber).create(); page = pdfDocument.startPage(pageInfo); canvas = page.canvas
-            pageTableTop = 50f; currentY = pageTableTop; paint.style = Paint.Style.FILL; paint.color = bhagvaOrange
-            canvas.drawRect(40f, currentY, 555f, currentY + 22f, paint); paint.color = android.graphics.Color.WHITE
-            paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; paint.textAlign = Paint.Align.LEFT
-            canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES", 400f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint); currentY += 22f
-        }
-        PdfMarks.drawLogo(this, canvas, RectF(40f, 40f, 100f, 100f))
-        val centerX = 595f / 2f
-        paint.textAlign = Paint.Align.RIGHT; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); paint.textSize = 9f
-        canvas.drawText("Mob.: 94250-57961", 555f, 45f, paint); canvas.drawText("94068-03061", 555f, 58f, paint)
-        paint.textAlign = Paint.Align.CENTER; paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); paint.textSize = 18f; paint.color = bhagvaOrange
-        canvas.drawText("ONKAR TEXTILE AGENCY", centerX, 55f, paint); paint.color = android.graphics.Color.BLACK; paint.textSize = 11f; canvas.drawText("TEXTILE INDENTING AGENT — SINCE 1991", centerX, 72f, paint); paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL); paint.textSize = 10f; canvas.drawText("290, M.T. Cloth Market, INDORE - 452 002 (M.P.)", centerX, 88f, paint); paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); paint.textSize = 12f; canvas.drawText("ORDER FORM", centerX, 112f, paint)
-        paint.textAlign = Paint.Align.LEFT; paint.textSize = 11f; canvas.drawText("Offer No: ${data.offerNo}", 40f, 135f, paint); canvas.drawText("Date: ${data.date}", 450f, 135f, paint)
-        paint.style = Paint.Style.STROKE; canvas.drawRect(40f, 145f, 290f, 215f, paint); canvas.drawRect(290f, 145f, 555f, 215f, paint); paint.style = Paint.Style.FILL; paint.typeface = Typeface.DEFAULT_BOLD; canvas.drawText("BUYER:", 45f, 160f, paint); canvas.drawText("SUPPLIER:", 295f, 160f, paint)
-        textPaint.textSize = 10f; textPaint.typeface = Typeface.DEFAULT
-        val buyerLayout = createStaticLayout(data.buyer, 240, textPaint); val supplierLayout = createStaticLayout(data.supplier, 255, textPaint)
-        canvas.save(); canvas.translate(45f, 165f); buyerLayout.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(295f, 165f); supplierLayout.draw(canvas); canvas.restore()
-        pageTableTop = 230f; currentY = pageTableTop; paint.style = Paint.Style.FILL; paint.color = bhagvaOrange; canvas.drawRect(40f, currentY, 555f, currentY + 22f, paint); paint.color = android.graphics.Color.WHITE; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES", 400f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint)
-        val sidebarStartY = currentY + 22f; val sidebarTotalHeight = 200f; val sidebarCellHeight = sidebarTotalHeight / 5; val sidebarHeaders = listOf("DELIVERY READY", "TRANSPORT TO", "CASH PAYMENT", "LESS / DISC", "SIDE"); val sidebarValues = listOf(data.deliveryReady, data.transportTo, data.cashPayment, data.lessDisc, data.side)
-        paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK
-        for (i in 1..4) { val y = sidebarStartY + (i * sidebarCellHeight); canvas.drawLine(445f, y, 555f, y, paint) }
-        paint.style = Paint.Style.FILL
-        for (i in 0..4) {
-            val y = sidebarStartY + (i * sidebarCellHeight); paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 8f; canvas.drawText(sidebarHeaders[i], 448f, y + 10f, paint)
-            val valL = createStaticLayout(sidebarValues[i], 100, TextPaint().apply { textSize = 9f }); canvas.save(); canvas.translate(448f, y + 12f); valL.draw(canvas); canvas.restore()
-        }
-        currentY += 22f; val sidebarEndPage1 = sidebarStartY + sidebarTotalHeight
-        for (item in data.items) {
-            textPaint.textSize = 10f; textPaint.typeface = Typeface.DEFAULT; textPaint.color = android.graphics.Color.BLACK
-            val partL = createStaticLayout(item.particulars, 210, textPaint); val qtyL = createStaticLayout(Units.display(item), 75, textPaint); val rateL = createStaticLayout(item.rate, 60, textPaint); val rowH = maxOf(20f, partL.height.toFloat(), qtyL.height.toFloat(), rateL.height.toFloat()) + 10f
-            if (currentY + rowH > 780f) startNewPage()
-            paint.style = Paint.Style.FILL; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.DEFAULT; paint.textSize = 10f; canvas.drawText(item.serialNo, 45f, currentY + 15f, paint)
-            canvas.save(); canvas.translate(90f, currentY + 5f); partL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(305f, currentY + 5f); qtyL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(385f, currentY + 5f); rateL.draw(canvas); canvas.restore(); currentY += rowH; paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK; canvas.drawLine(40f, currentY, 445f, currentY, paint)
-        }
-        if (currentPageNumber == 1) currentY = maxOf(currentY, sidebarEndPage1)
-        drawTableGrid(pageTableTop, currentY); currentY += 20f
-        val warningText = "Self Bilty not accepted, compulsorily attach duplicate with R.R. or M.R."; val termsTitle = "Terms and Conditions :"; val rulesText = "1. Indent once given shall under no circumstances be cancelled by the Indenters.\n2. The Rates and time stated in Indore are subject to fluctuation and confirmation of suppliers who have right to alter the indent also.\n3. Executing or not executing the whole part of indent goods depend upon choice of the supplier, or agent of the company.\n4. Every consignment refused or not taken delivery of will be sold by publication and the indenter is responsible for this loss, damage and other charges must be incurred by the concerned."
-        val remarksL = createStaticLayout(data.remarks, 500, TextPaint().apply { textSize = 10f }); val rulesL = createStaticLayout(rulesText, 515, TextPaint().apply { textSize = 10f }); val footerHeightNeeded = 25f + 25f + remarksL.height + 25f + rulesL.height + 120f
-        if (currentY + footerHeightNeeded > 780f) { pdfDocument.finishPage(page); currentPageNumber++; pageInfo = PdfDocument.PageInfo.Builder(595, 842, currentPageNumber).create(); page = pdfDocument.startPage(pageInfo); canvas = page.canvas; currentY = 60f }
-        paint.style = Paint.Style.FILL; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD); paint.textSize = 11f; paint.textAlign = Paint.Align.CENTER; canvas.drawText(warningText, 297.5f, currentY, paint); paint.textAlign = Paint.Align.LEFT; currentY += 25f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 11f; canvas.drawText("REMARKS / TERMS:", 40f, currentY, paint); currentY += 10f; canvas.save(); canvas.translate(40f, currentY); remarksL.draw(canvas); canvas.restore(); currentY += remarksL.height + 25f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; canvas.drawText(termsTitle, 40f, currentY, paint); currentY += 5f; canvas.save(); canvas.translate(40f, currentY); rulesL.draw(canvas); canvas.restore(); currentY += rulesL.height
-        val sigY = currentY + 120f; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; paint.style = Paint.Style.STROKE; canvas.drawLine(40f, sigY, 180f, sigY, paint); paint.style = Paint.Style.FILL; canvas.drawText("Signature of Indenter", 40f, sigY + 15f, paint); paint.style = Paint.Style.STROKE; canvas.drawLine(415f, sigY, 555f, sigY, paint); paint.style = Paint.Style.FILL; canvas.drawText("Agent's Signature", 445f, sigY + 15f, paint)
-        PdfMarks.drawStamp(this, canvas, RectF(410f, sigY - 105f, 510f, sigY - 5f))
-        pdfDocument.finishPage(page)
-        try { FileOutputStream(pdfFile).use { pdfDocument.writeTo(it) } } finally { pdfDocument.close() }
+    /** Saves an order reopened from history in place; a pending one still waits for its number. */
+    private suspend fun saveEditedOrder(data: OrderFormData, uuid: String?): Pair<Boolean, String> {
+        val (ok, message) = withContext(Dispatchers.IO) { orderFiles.save(data, uuid) }
+        val pending = ok && uuid != null && withContext(Dispatchers.IO) { localOrders.get(uuid)?.offerNo?.let(OrderNumber::isPending) == true }
+        return ok to if (pending) "Order saved. Its number and PDF are made on the next sync." else message
     }
 
     /**
@@ -577,7 +486,7 @@ class MainActivity : ComponentActivity() {
                 // Named without "Order" so a leftover never counts toward the daily file index.
                 val tmp = File(pdf.parentFile, ".shrink.tmp").apply { delete() }
                 runCatching {
-                    writeOrderPdf(OrderJson.parse(record), tmp)
+                    orderFiles.writePdf(OrderJson.parse(record), tmp)
                     check(tmp.length() in 1 until pdf.length())
                     check(tmp.renameTo(pdf))
                 }.onFailure { e -> e.printStackTrace(); tmp.delete(); ok = false }
@@ -586,18 +495,7 @@ class MainActivity : ComponentActivity() {
         if (ok) prefs.edit().putBoolean(PREF_PDFS_SHRUNK, true).apply()
     }
 
-    /** After an in-place update, deletes the order's previous sync JSON and PDF if they are different files. */
-    private fun removeReplacedFiles(previous: JSONObject, newJson: File, newPdf: File) {
-        val oldPath = previous.optString("filePath")
-        if (oldPath.isBlank()) return
-        val oldJson = File(oldPath)
-        if (oldJson.absolutePath != newJson.absolutePath) oldJson.delete()
-        val oldPdfName = if (previous.has("pdfFileName")) previous.optString("pdfFileName") else ""
-        if (oldPdfName.isNotBlank()) {
-            val oldPdf = File(oldJson.parentFile?.parentFile, oldPdfName)
-            if (oldPdf.absolutePath != newPdf.absolutePath) oldPdf.delete()
-        }
-    }
+
 }
 
 

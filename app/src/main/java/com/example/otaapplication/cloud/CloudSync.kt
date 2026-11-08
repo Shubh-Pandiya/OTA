@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import androidx.core.content.edit
 import com.example.otaapplication.AdviceNumberAllocator
+import com.example.otaapplication.OrderFiles
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.LocalOrders
@@ -25,6 +26,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.LocalDate
 import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
@@ -71,7 +74,11 @@ class CloudSync private constructor(private val context: Context) {
         orders, orderApi, orderCursors,
         renumber = OrderNumberAllocator(numberPrefs, orders.history, orders.index)::replacementFor,
         payments = payments,
-        renumberAdvice = AdviceNumberAllocator(numberPrefs, payments)::replacementFor
+        renumberAdvice = AdviceNumberAllocator(numberPrefs, payments)::replacementFor,
+        numberOrder = { uuid, offerNo ->
+            // Saved again under its number, which also makes the order PDF it had to wait for.
+            orders.get(uuid)?.let { OrderFiles(context, orders).save(it.copy(offerNo = offerNo), uuid).first } ?: false
+        }
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncLock = Mutex()
@@ -188,6 +195,16 @@ class CloudSync private constructor(private val context: Context) {
      * Runs one sync round. Manual, automatic and background syncs share [syncLock], so they never
      * overlap; a caller that arrives while a round is running waits and then runs its own round.
      */
+    /**
+     * The next agency-wide order number from the cloud, for a new order dated [orderDate].
+     * Throws when offline or not signed in (the order is then saved with a pending number) and
+     * [OrderLimitReached] when the financial year's numbers are used up.
+     */
+    suspend fun allocateOrderNo(orderDate: LocalDate): String {
+        if (!config.isConfigured || auth.session.value == null) throw CloudException("Not signed in")
+        return withTimeoutOrNull(ALLOCATE_TIMEOUT_MS) { orderApi.allocateOrderNo(orderDate) } ?: throw SocketTimeoutException("No answer from the cloud")
+    }
+
     suspend fun syncNow(): SyncOutcome {
         if (!config.isConfigured || auth.session.value == null) return SyncOutcome.SKIPPED
         return syncLock.withLock {
@@ -327,6 +344,7 @@ class CloudSync private constructor(private val context: Context) {
         private const val KEY_USAGE = "cloud_usage"
         private const val KEY_STORAGE_FULL = "cloud_storage_full"
         /** How often a known staff code is checked again (codes rarely change). */
+        private const val ALLOCATE_TIMEOUT_MS = 10_000L
         private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L
         private val ORDER_TABLES = listOf(
             OrderTable.ORDERS.name, OrderTable.BILLS.name, OrderTable.LINKS.name, OrderTable.ADVICES.name, OrderTable.ADVICE_LINES.name

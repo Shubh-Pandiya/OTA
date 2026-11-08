@@ -13,6 +13,7 @@ import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.SyncTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 
 /** Pull cursors (last server `updated_at` seen) by table name. */
 interface CursorStore {
@@ -38,6 +39,7 @@ data class OrderSyncResult(val pulledChanges: Int, val pushed: Int, val notices:
  * [renumber] gives a free number for an order whose number the cloud already has (the same
  * staff member made orders offline on two phones); null when the number can't be replaced.
  * [payments] adds payment advices and their lines; [renumberAdvice] does the same for advices.
+ * [numberOrder] stores the number the cloud gave an order saved offline (and makes its PDF).
  */
 class OrderSync(
     private val orders: LocalOrders,
@@ -46,6 +48,7 @@ class OrderSync(
     private val renumber: (String) -> String?,
     private val payments: PaymentRepository? = null,
     private val renumberAdvice: (String) -> String? = { null },
+    private val numberOrder: (uuid: String, offerNo: String) -> Boolean = orders::renumber,
     private val pageSize: Int = 500,
     private val pushBatch: Int = 200
 ) {
@@ -62,6 +65,7 @@ class OrderSync(
         }
 
         val notices = ArrayList<String>()
+        numberPendingOrders(notices)
         var pushed = pushOrders(notices)
         pushed += push(OrderTable.BILLS) { repo.pendingBills(pushBatch) }
         pushed += push(OrderTable.LINKS) { repo.pendingLinks(pushBatch) }
@@ -107,6 +111,34 @@ class OrderSync(
             sent += batch.size
         }
         return sent
+    }
+
+    /**
+     * Orders saved offline have no number yet: each gets the next one from the cloud before
+     * anything is uploaded (an order never reaches the cloud without its number). Deleted before
+     * they were numbered, they never existed anywhere else, so they are simply dropped.
+     */
+    private suspend fun numberPendingOrders(notices: MutableList<String>) {
+        val refs = withContext(Dispatchers.IO) { orders.index.unnumberedOrders() }
+        for (ref in refs) {
+            if (ref.deleted) {
+                withContext(Dispatchers.IO) { orders.index.markSynced(OrderTable.ORDERS.name, listOf(ref.id to ref.updatedAt)) }
+                continue
+            }
+            val date = OrderNumber.parseOrderDate(ref.date) ?: LocalDate.now()
+            val number = try {
+                api.allocateOrderNo(date)
+            } catch (e: OrderLimitReached) {
+                notices += e.message.orEmpty()
+                return
+            } catch (e: CloudException) {
+                // e.g. the cloud doesn't have the numbering function yet: the rest still syncs.
+                if (e.authFailed || e.storageFull) throw e
+                notices += "Orders saved offline could not get a number yet: ${e.message}"
+                return
+            }
+            if (withContext(Dispatchers.IO) { numberOrder(ref.id, number) }) notices += "An order saved offline is now order $number."
+        }
     }
 
     private suspend fun pushOrders(notices: MutableList<String>): Int =

@@ -2,6 +2,7 @@ package com.example.otaapplication.cloud
 
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceLineValue
 import com.example.otaapplication.data.AdviceValue
 import com.example.otaapplication.data.BillValue
@@ -12,6 +13,8 @@ import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.SyncTime
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
+import java.time.LocalDate
 
 /** The staff member's order number digit, read from the cloud `staff` table. */
 data class StaffInfo(val code: Int, val name: String)
@@ -255,7 +258,16 @@ interface OrderCloudApi {
 
     /** Storage use and retention (ota_cloud_status); null when not available. */
     suspend fun usage(): CloudUsage? = null
+
+    /**
+     * The next agency-wide order number for the financial year of [orderDate] (e.g. 26-270001).
+     * Each call uses up a number. Throws [OrderLimitReached] once the year's 9999 are used.
+     */
+    suspend fun allocateOrderNo(orderDate: LocalDate): String = throw UnsupportedOperationException("allocateOrderNo")
 }
+
+/** All 9999 order numbers of a financial year are used; new orders can't get a number. */
+class OrderLimitReached(message: String) : Exception(message)
 
 class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
 
@@ -290,4 +302,25 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
 
     override suspend fun usage(): CloudUsage? =
         CloudUsage.parse(client.call("POST", "rpc/ota_cloud_status", body = "{}").trim().takeUnless { it == "null" })
+
+    override suspend fun allocateOrderNo(orderDate: LocalDate): String {
+        val body = try {
+            client.call("POST", "rpc/ota_allocate_order_no", body = JSONObject().put("p_date", orderDate.toString()).toString())
+        } catch (e: CloudException) {
+            if (e.message.orEmpty().contains(ORDER_LIMIT_CODE)) {
+                throw OrderLimitReached(
+                    "All ${OrderNumber.FY_MAX_SERIAL} order numbers for FY ${OrderNumber.fyPrefix(orderDate)} are used. " +
+                        "No more orders can be numbered this financial year; contact the owner."
+                )
+            }
+            throw e
+        }
+        val number = JSONTokener(body.trim()).nextValue() as? String
+        if (number == null || !OrderNumber.isFy(number)) throw CloudException("Unexpected order number from the cloud: $body", 200)
+        return number
+    }
+
+    private companion object {
+        const val ORDER_LIMIT_CODE = "ORDER_LIMIT_REACHED"
+    }
 }

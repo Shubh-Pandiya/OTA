@@ -2,7 +2,10 @@ package com.example.otaapplication
 
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OrderNumberTest {
@@ -90,5 +93,49 @@ class OrderNumberTest {
         assertNull(OrderNumber.prefixOf("2026110701"))
         assertNull(OrderNumber.prefixOf("0202611071"))
         assertNull(OrderNumber.prefixOf("OF-77"))
+    }
+
+    @Test
+    fun financialYearRunsFromAprilToMarch() {
+        assertEquals("25-26", OrderNumber.fyPrefix(LocalDate.of(2026, 3, 31)))
+        assertEquals("26-27", OrderNumber.fyPrefix(LocalDate.of(2026, 4, 1)))
+        assertEquals("26-27", OrderNumber.fyPrefix(LocalDate.of(2027, 3, 31)))
+        assertEquals("27-28", OrderNumber.fyPrefix(LocalDate.of(2027, 4, 1)))
+        assertEquals("99-00", OrderNumber.fyPrefix(LocalDate.of(2099, 12, 1)))
+    }
+
+    @Test
+    fun formatsFinancialYearNumbers() {
+        assertEquals("26-270001", OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 1))
+        assertEquals("25-269999", OrderNumber.formatFy(LocalDate.of(2026, 1, 5), 9999))
+        assertThrows(IllegalArgumentException::class.java) { OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 10000) }
+        assertThrows(IllegalArgumentException::class.java) { OrderNumber.formatFy(LocalDate.of(2026, 11, 12), 0) }
+    }
+
+    @Test
+    fun readsBothFormats() {
+        assertTrue(OrderNumber.isFy("26-270001"))
+        assertEquals(1, OrderNumber.fySerialOf("26-270001"))
+        assertEquals(9999, OrderNumber.fySerialOf(" 26-279999 "))
+        assertFalse(OrderNumber.isFy("120261107001"))
+        assertNull(OrderNumber.fySerialOf("120261107001"))
+        assertNull(OrderNumber.prefixOf("26-270001"))
+        assertEquals("120261107", OrderNumber.prefixOf("120261107001"))
+        assertFalse(OrderNumber.isFy("26-27001"))
+    }
+
+    @Test
+    fun pendingNumbers() {
+        assertTrue(OrderNumber.isPending(OrderNumber.PENDING))
+        assertTrue(OrderNumber.isPending("  "))
+        assertFalse(OrderNumber.isPending("26-270001"))
+        assertEquals("Pending number", OrderNumber.display(""))
+        assertEquals("26-270001", OrderNumber.display("26-270001"))
+    }
+
+    @Test
+    fun parsesOrderDates() {
+        assertEquals(LocalDate.of(2026, 4, 1), OrderNumber.parseOrderDate("01-04-2026"))
+        assertNull(OrderNumber.parseOrderDate("2026-04-01"))
     }
 }

@@ -103,7 +103,7 @@ fun HomeScreen(stats: HomeStats?, cloudStatus: CloudStatus, staffName: String?, 
                         stats.recentOrders.forEach { order ->
                             HomeRow(
                                 icon = Icons.Default.Description,
-                                title = "Offer ${order.offerNo}",
+                                title = "Offer ${OrderNumber.display(order.offerNo)}",
                                 subtitle = listOf(order.date, SearchText.firstLine(order.buyer)).filter { it.isNotBlank() }.joinToString(" · "),
                                 value = if (order.billNos.isEmpty()) "Bill due" else "Billed",
                                 valueColor = if (order.billNos.isEmpty()) MaterialTheme.colorScheme.tertiary else Color(0xFF2E7D32),
