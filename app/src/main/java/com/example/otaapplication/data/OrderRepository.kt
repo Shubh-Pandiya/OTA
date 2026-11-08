@@ -165,7 +165,7 @@ class OrderRepository(
     /**
      * Marks each order in [orderIds] as "bill received" with bill [billNo]. A bill number that is
      * already known is reused (so one bill can cover many orders); a new one is created otherwise.
-     * [details], when given, update the bill's date, amount, LR number and cash discount.
+     * [details], when given, update the bill's date, amount, LR number, cash discount and item lines.
      */
     fun attachBill(orderIds: Collection<String>, billNo: String, details: BillDetails? = null): Bill {
         val display = billNo.trim().replace(Regex("\\s+"), " ")
@@ -217,7 +217,7 @@ class OrderRepository(
         }
     }
 
-    /** Replaces a bill's date, amount, LR number and cash discount (the number stays). */
+    /** Replaces a bill's date, amount, LR number, cash discount and item lines (the number stays). */
     fun updateBillDetails(billId: String, details: BillDetails): Bill? {
         val db = helper.writableDatabase
         val updated = db.update("bills", ContentValues().apply {
@@ -228,6 +228,19 @@ class OrderRepository(
     }
 
     fun bill(billId: String): Bill? = BillSql.billById(helper.readableDatabase, billId)
+
+    /** Cloud ids (uuids) of the given local orders, in the given order; orders without one are left out. */
+    fun uuidsOf(orderIds: Collection<String>): List<String> {
+        if (orderIds.isEmpty()) return emptyList()
+        val found = HashMap<String, String>()
+        orderIds.chunked(500).forEach { chunk ->
+            helper.readableDatabase.rawQuery(
+                "SELECT id, uuid FROM orders WHERE uuid IS NOT NULL AND id IN (${chunk.joinToString(",") { "?" }})",
+                chunk.toTypedArray()
+            ).use { c -> while (c.moveToNext()) found[c.getString(0)] = c.getString(1) }
+        }
+        return orderIds.mapNotNull(found::get)
+    }
 
     /** Orders a bill is attached to, for the bill's detail view. */
     fun ordersForBill(billId: String): List<OrderSummary> =
@@ -255,6 +268,7 @@ class OrderRepository(
         if (!onlyGiven || d.lrNo.isNotBlank()) put("lr_no", d.lrNo.trim())
         if (!onlyGiven || d.cdPercent != null) put("cd_percent", d.cdPercent)
         if (!onlyGiven || d.cdAmount != null) put("cd_amount", d.cdAmount)
+        if (!onlyGiven || d.items.isNotEmpty()) put("items", BillSql.itemsToText(d.items))
     }
 
     /** Removes a (wrong) bill link from an order. A bill left with no orders is retired too. */
@@ -312,7 +326,7 @@ class OrderRepository(
 
     fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
+            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount, items FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
             null
         ).use { c ->
             buildList {
@@ -323,7 +337,8 @@ class OrderRepository(
                             c.getString(1), c.getStringOrNull(2), if (c.isNull(3)) null else c.getDouble(3),
                             lrNo = c.getStringOrNull(6).orEmpty(),
                             cdPercent = if (c.isNull(7)) null else c.getDouble(7),
-                            cdAmount = if (c.isNull(8)) null else c.getDouble(8)
+                            cdAmount = if (c.isNull(8)) null else c.getDouble(8),
+                            items = BillSql.itemsFromText(c.getStringOrNull(9))
                         ),
                         c.getInt(4) != 0,
                         c.getLong(5)
@@ -374,6 +389,7 @@ class OrderRepository(
                     put("bill_no", row.value.billNo); put("bill_key", SearchText.billKey(row.value.billNo))
                     put("bill_date", row.value.billDate); put("amount", row.value.amount)
                     put("lr_no", row.value.lrNo); put("cd_percent", row.value.cdPercent); put("cd_amount", row.value.cdAmount)
+                    put("items", BillSql.itemsToText(row.value.items))
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
                 }
                 if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {

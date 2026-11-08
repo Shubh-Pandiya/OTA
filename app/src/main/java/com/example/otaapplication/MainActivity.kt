@@ -17,6 +17,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.animateFloatAsState
@@ -58,7 +61,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
+import com.example.otaapplication.data.BillQuery
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.HomeStats
+import com.example.otaapplication.data.OrderQuery
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderJson
 import com.example.otaapplication.data.OrderRepository
@@ -71,6 +77,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -84,18 +91,33 @@ data class OrderHistoryItem(
     val uuid: String? = null
 )
 
-enum class Screen(val title: String) {
-    OrderEntry("Order Entry"),
-    OrderHistory("Order History"),
-    Payments("Payment Advice"),
-    Catalog("Buyers & Suppliers"),
-    SyncSettings("Sync Settings")
+enum class Screen(val title: String, val tabLabel: String) {
+    Home("OTA Business", "Home"),
+    OrderEntry("Order Entry", "New order"),
+    OrderHistory("Order History", "Orders"),
+    Bills("Bills", "Bills"),
+    Advices("Payment Advices", "Advices"),
+    Catalog("Buyers & Suppliers", "Parties"),
+    SyncSettings("Sync Settings", "Sync")
 }
 
+/** The bottom bar; the rest live in the drawer. */
+private val bottomTabs = listOf(Screen.Home, Screen.OrderEntry, Screen.OrderHistory, Screen.Bills, Screen.Advices)
+
+/** Drawer groups: orders and payments are separate sections. */
+private val drawerGroups = listOf(
+    null to listOf(Screen.Home),
+    "Orders" to listOf(Screen.OrderEntry, Screen.OrderHistory),
+    "Payments" to listOf(Screen.Bills, Screen.Advices),
+    "Manage" to listOf(Screen.Catalog, Screen.SyncSettings)
+)
+
 private val screenIcons = mapOf(
+    Screen.Home to Icons.Default.Home,
     Screen.OrderEntry to Icons.Default.EditNote,
     Screen.OrderHistory to Icons.Default.History,
-    Screen.Payments to Icons.Default.Payments,
+    Screen.Bills to Icons.AutoMirrored.Filled.ReceiptLong,
+    Screen.Advices to Icons.Default.Payments,
     Screen.Catalog to Icons.Default.Contacts,
     Screen.SyncSettings to Icons.Default.Settings
 )
@@ -171,12 +193,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
     @Composable
     private fun SignedInApp() {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
-        var currentScreen by rememberSaveable { mutableStateOf(Screen.OrderEntry) }
+        var currentScreen by rememberSaveable { mutableStateOf(Screen.Home) }
+        // A bill or advice tapped on Home, opened once its section is showing.
+        var pendingPage by remember { mutableStateOf<PaymentPage?>(null) }
 
         var formData by remember { mutableStateOf(OrderFormData()) }
         var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
@@ -207,7 +231,12 @@ class MainActivity : ComponentActivity() {
         }
 
         BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
-        BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.OrderEntry) { currentScreen = Screen.OrderEntry }
+        BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.Home) { currentScreen = Screen.Home }
+
+        val homeStats by produceState<HomeStats?>(null, currentScreen == Screen.Home, resumed, remoteOrderChanges, cloudStatus.lastSyncAt) {
+            if (currentScreen == Screen.Home) value = withContext(Dispatchers.IO) { runCatching { loadHomeStats() }.onFailure { it.printStackTrace() }.getOrNull() } ?: value
+        }
+        val imeVisible = WindowInsets.isImeVisible
 
         ModalNavigationDrawer(
             drawerState = drawerState,
@@ -236,6 +265,29 @@ class MainActivity : ComponentActivity() {
                         )
                     )
                 },
+                bottomBar = {
+                    AnimatedVisibility(
+                        visible = !imeVisible,
+                        enter = expandVertically(tween(220), expandFrom = Alignment.Top) + fadeIn(tween(220)),
+                        exit = shrinkVertically(tween(160), shrinkTowards = Alignment.Top) + fadeOut(tween(120))
+                    ) {
+                        NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest, tonalElevation = 0.dp) {
+                            bottomTabs.forEach { tab ->
+                                NavigationBarItem(
+                                    selected = currentScreen == tab,
+                                    onClick = { currentScreen = tab },
+                                    icon = { Icon(screenIcons.getValue(tab), contentDescription = null) },
+                                    label = { Text(tab.tabLabel, maxLines = 1, softWrap = false) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                        selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        selectedTextColor = MaterialTheme.colorScheme.primary
+                                    )
+                                )
+                            }
+                        }
+                    }
+                },
                 contentWindowInsets = WindowInsets(0, 0, 0, 0)
             ) { innerPadding ->
                 AnimatedContent(
@@ -248,6 +300,24 @@ class MainActivity : ComponentActivity() {
                     label = "screen"
                 ) { screen ->
                     when (screen) {
+                        Screen.Home -> HomeScreen(
+                            stats = homeStats,
+                            cloudStatus = cloudStatus,
+                            staffName = staff?.name,
+                            actions = remember {
+                                HomeActions(
+                                    newOrder = { currentScreen = Screen.OrderEntry },
+                                    newAdvice = { pendingPage = PaymentPage.AdviceEdit(null); currentScreen = Screen.Advices },
+                                    orders = { currentScreen = Screen.OrderHistory },
+                                    bills = { currentScreen = Screen.Bills },
+                                    advices = { currentScreen = Screen.Advices },
+                                    parties = { currentScreen = Screen.Catalog },
+                                    openBill = { pendingPage = PaymentPage.BillView(it); currentScreen = Screen.Bills },
+                                    openAdvice = { pendingPage = PaymentPage.AdviceView(it); currentScreen = Screen.Advices },
+                                    sync = { scope.launch { cloud.syncNow() } }
+                                )
+                            }
+                        )
                         Screen.OrderEntry -> OrderFormScreen(
                             // New orders show the next auto-generated number; orders reopened
                             // from history keep their original one.
@@ -294,7 +364,13 @@ class MainActivity : ComponentActivity() {
                                 currentScreen = Screen.OrderEntry
                             }
                         )
-                        Screen.Payments -> PaymentAdviceScreen(deps = paymentDeps, remoteChanges = remoteOrderChanges)
+                        Screen.Bills, Screen.Advices -> PaymentAdviceScreen(
+                            deps = paymentDeps,
+                            remoteChanges = remoteOrderChanges,
+                            tab = if (screen == Screen.Bills) PaymentTab.BILLS else PaymentTab.ADVICES,
+                            openPage = pendingPage,
+                            onPageOpened = { pendingPage = null }
+                        )
                         Screen.Catalog -> CatalogScreen(
                             catalog = catalogRepository,
                             cloudStatus = cloudStatus,
@@ -311,6 +387,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun loadHomeStats(): HomeStats {
+        syncOrderIndex()
+        val today = LocalDate.now()
+        return HomeStats.compute(
+            today = today,
+            ordersToday = orderRepository.counts(OrderQuery(from = today, to = today)).total,
+            ordersThisMonth = orderRepository.counts(OrderQuery(from = today.withDayOfMonth(1), to = today)).total,
+            ordersAwaitingBill = orderRepository.counts(OrderQuery()).pending,
+            recentOrders = orderRepository.search(OrderQuery()).take(3),
+            bills = payments.bills(BillQuery()),
+            advices = payments.search("")
+        )
     }
 
     private fun countTotalOrders(): Int {
@@ -557,9 +647,18 @@ private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigat
             }
         }
         Spacer(Modifier.height(4.dp))
-        Screen.entries.forEach { screen ->
-            NavigationDrawerItem(
-                label = { Text(screen.title, fontWeight = FontWeight.SemiBold) },
+        drawerGroups.forEach { (group, screens) ->
+            if (group != null) {
+                Text(
+                    group.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 28.dp, top = 14.dp, bottom = 4.dp)
+                )
+            }
+            screens.forEach { screen -> NavigationDrawerItem(
+                label = { Text(if (screen == Screen.Home) screen.tabLabel else screen.title, fontWeight = FontWeight.SemiBold) },
                 selected = currentScreen == screen,
                 onClick = { onNavigate(screen) },
                 icon = { Icon(screenIcons.getValue(screen), contentDescription = null) },
@@ -569,7 +668,7 @@ private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigat
                     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
-            )
+            ) }
         }
     }
 }

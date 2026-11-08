@@ -19,6 +19,8 @@ data class BillListItem(val bill: Bill, val buyer: String, val supplier: String)
  */
 class PaymentRepository(
     private val helper: OtaDatabase,
+    /** Where the advice images are kept; null in tests that don't use images. */
+    val images: AdviceImageFiles? = null,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
     /** Called after a local change that should be uploaded. */
@@ -34,6 +36,7 @@ class PaymentRepository(
         val db = helper.writableDatabase
         val now = clock()
         val id: String
+        var removedImages = emptyList<String>()
         db.beginTransaction()
         try {
             val existingNo = draft.id?.let { adviceId ->
@@ -41,6 +44,9 @@ class PaymentRepository(
             }
             id = if (existingNo != null) draft.id!! else UUID.randomUUID().toString()
             val adviceNo = existingNo ?: requireNotNull(newNumber) { "New advice needs a number" }
+            val oldImages = if (existingNo != null) imagesOf(db, id) else emptyList()
+            // Images picked in the editor wait in staging until the advice has an id.
+            val newImages = draft.images.distinct().filter { images?.commit(id, it) ?: true }
             val values = ContentValues().apply {
                 put("pay_date", draft.payDate.toString())
                 put("buyer", SearchText.firstLine(draft.buyer))
@@ -51,6 +57,7 @@ class PaymentRepository(
                 put("balance_side", draft.balanceAmount?.let { draft.balanceSide?.name })
                 put("remarks", draft.remarks.trim())
                 put("search_text", searchText(adviceNo, draft))
+                put("images", newImages.joinToString(","))
                 put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
             }
             if (existingNo != null) {
@@ -74,6 +81,8 @@ class PaymentRepository(
                     put("cd_amount", amounts.cdAmount?.let(PaymentMath::round2))
                     put("goods_return", amounts.goodsReturn?.let(PaymentMath::round2))
                     put("rate_diff", amounts.rateDiff?.let(PaymentMath::round2))
+                    put("claim", amounts.claim?.let(PaymentMath::round2))
+                    put("claim_note", amounts.claimNote.trim())
                     put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
                 }
                 if (db.update("advice_lines", line, "id = ?", arrayOf(lineId)) == 0) {
@@ -87,10 +96,12 @@ class PaymentRepository(
             for (removed in live) {
                 db.update("advice_lines", BillSql.tombstone(now), "id = ?", arrayOf(SyncIds.adviceLine(id, removed)))
             }
+            removedImages = (oldImages - newImages.toSet()).map { AdviceImageFiles.path(id, it) }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+        removedImages.forEach { images?.delete(it) }
         onLocalChange?.invoke()
         return advice(id)!!
     }
@@ -100,13 +111,17 @@ class PaymentRepository(
         val now = clock()
         db.beginTransaction()
         val deleted: Boolean
+        val paths: List<String>
         try {
+            paths = imagesOf(db, adviceId).map { AdviceImageFiles.path(adviceId, it) }
             deleted = db.update("payment_advices", BillSql.tombstone(now), "id = ? AND is_deleted = 0", arrayOf(adviceId)) > 0
             db.update("advice_lines", BillSql.tombstone(now), "advice_id = ? AND is_deleted = 0", arrayOf(adviceId))
+            if (deleted) db.execSQL("UPDATE payment_advices SET images = '' WHERE id = ?", arrayOf(adviceId))
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+        if (deleted) paths.forEach { images?.delete(it) }
         if (deleted) onLocalChange?.invoke()
         return deleted
     }
@@ -115,17 +130,17 @@ class PaymentRepository(
         val db = helper.readableDatabase
         val lines = db.rawQuery(
             """
-            SELECT ${BillSql.COLUMNS}, l.id, l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff
+            SELECT ${BillSql.COLUMNS}, l.id, $LINE_AMOUNTS
             FROM advice_lines l JOIN bills b ON b.id = l.bill_id
             WHERE l.advice_id = ? AND l.is_deleted = 0
             ORDER BY b.bill_date IS NULL, b.bill_date, b.bill_no
             """.trimIndent(),
             arrayOf(adviceId)
         ).use { c ->
-            buildList { while (c.moveToNext()) add(AdviceLine(c.getString(10), c.toBill(), c.lineAmounts(11))) }
+            buildList { while (c.moveToNext()) add(AdviceLine(c.getString(11), c.toBill(), c.lineAmounts(12))) }
         }
         return db.rawQuery(
-            "SELECT advice_no, pay_date, buyer, supplier, mode, reference, balance_amount, balance_side, remarks FROM payment_advices WHERE id = ? AND is_deleted = 0",
+            "SELECT advice_no, pay_date, buyer, supplier, mode, reference, balance_amount, balance_side, remarks, images FROM payment_advices WHERE id = ? AND is_deleted = 0",
             arrayOf(adviceId)
         ).use { c ->
             if (!c.moveToFirst()) return null
@@ -140,7 +155,8 @@ class PaymentRepository(
                 balanceAmount = c.doubleOrNull(6),
                 balanceSide = BalanceSide.parse(c.stringOrNull(7)),
                 remarks = c.getString(8),
-                lines = lines
+                lines = lines,
+                images = splitImages(c.getString(9))
             )
         }
     }
@@ -152,10 +168,10 @@ class PaymentRepository(
         for (token in SearchText.tokens(text)) {
             where.append(
                 """ AND (a.search_text LIKE ? ESCAPE '\' OR EXISTS (SELECT 1 FROM advice_lines sl JOIN bills sb ON sb.id = sl.bill_id
-                    WHERE sl.advice_id = a.id AND sl.is_deleted = 0 AND lower(sb.bill_no) LIKE ? ESCAPE '\'))"""
+                    WHERE sl.advice_id = a.id AND sl.is_deleted = 0 AND (lower(sb.bill_no) LIKE ? ESCAPE '\' OR lower(sl.claim_note) LIKE ? ESCAPE '\')))"""
             )
             val pattern = SearchText.containsPattern(token)
-            args += pattern; args += pattern
+            repeat(3) { args += pattern }
         }
         return helper.readableDatabase.rawQuery(
             """
@@ -189,7 +205,7 @@ class PaymentRepository(
     fun advicesForBill(billId: String): List<BillPayment> =
         helper.readableDatabase.rawQuery(
             """
-            SELECT a.id, a.advice_no, a.pay_date, l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff
+            SELECT a.id, a.advice_no, a.pay_date, $LINE_AMOUNTS
             FROM advice_lines l JOIN payment_advices a ON a.id = l.advice_id
             WHERE l.bill_id = ? AND l.is_deleted = 0 AND a.is_deleted = 0
             ORDER BY a.pay_date, a.advice_no
@@ -237,7 +253,7 @@ class PaymentRepository(
             ).use { c ->
                 while (c.moveToNext()) {
                     val bill = c.toBill()
-                    out += PairBill(bill, PaymentMath.round2(c.getDouble(10)), mixedParties = eligible.getValue(bill.id).size > 1)
+                    out += PairBill(bill, PaymentMath.round2(c.getDouble(11)), mixedParties = eligible.getValue(bill.id).size > 1)
                 }
             }
         }
@@ -272,7 +288,7 @@ class PaymentRepository(
                 while (c.moveToNext()) {
                     val bill = c.toBill()
                     if (query.status == null || bill.status == query.status) {
-                        add(BillListItem(bill, SearchText.firstLine(c.stringOrNull(10).orEmpty()), SearchText.firstLine(c.stringOrNull(11).orEmpty())))
+                        add(BillListItem(bill, SearchText.firstLine(c.stringOrNull(11).orEmpty()), SearchText.firstLine(c.stringOrNull(12).orEmpty())))
                     }
                 }
             }
@@ -335,7 +351,7 @@ class PaymentRepository(
     fun pendingLines(limit: Int): List<PendingRow<AdviceLineValue>> =
         helper.readableDatabase.rawQuery(
             """
-            SELECT l.id, l.advice_id, l.bill_id, l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff, l.is_deleted, l.updated_at
+            SELECT l.id, l.advice_id, l.bill_id, $LINE_AMOUNTS, l.is_deleted, l.updated_at
             FROM advice_lines l JOIN payment_advices a ON a.id = l.advice_id JOIN bills b ON b.id = l.bill_id
             WHERE l.sync_pending = 1 AND a.sync_pending = 0 AND b.sync_pending = 0
             ORDER BY l.updated_at, l.id LIMIT $limit
@@ -344,7 +360,7 @@ class PaymentRepository(
         ).use { c ->
             buildList {
                 while (c.moveToNext()) add(PendingRow(
-                    c.getString(0), AdviceLineValue(c.getString(1), c.getString(2), c.lineAmounts(3)), c.getInt(8) != 0, c.getLong(9)
+                    c.getString(0), AdviceLineValue(c.getString(1), c.getString(2), c.lineAmounts(3)), c.getInt(10) != 0, c.getLong(11)
                 ))
             }
         }
@@ -355,6 +371,7 @@ class PaymentRepository(
         val db = helper.writableDatabase
         val local = BillSql.localSyncMeta(db, ADVICES, rows.map { it.id })
         var changed = 0
+        val dropped = ArrayList<String>()
         db.beginTransaction()
         try {
             for (row in rows) {
@@ -369,9 +386,12 @@ class PaymentRepository(
                     continue
                 }
                 if (SyncMerge.onPulled(meta, row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                // Images never leave the phone; an advice deleted elsewhere takes its local ones along.
+                if (row.deleted) dropped += imagesOf(db, row.id).map { AdviceImageFiles.path(row.id, it) }
                 val values = ContentValues().apply {
                     put("advice_no", v.adviceNo); put("pay_date", v.payDate)
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                    if (row.deleted) put("images", "")
                     // A tombstone carries only the number and date; keep the local content.
                     if (!row.deleted) {
                         put("buyer", v.buyer); put("supplier", v.supplier); put("mode", PaymentMode.parse(v.mode).name)
@@ -390,6 +410,7 @@ class PaymentRepository(
         } finally {
             db.endTransaction()
         }
+        dropped.forEach { images?.delete(it) }
         return changed
     }
 
@@ -406,6 +427,7 @@ class PaymentRepository(
                 val values = ContentValues().apply {
                     put("paid", a.paid); put("cd_percent", a.cdPercent); put("cd_amount", a.cdAmount)
                     put("goods_return", a.goodsReturn); put("rate_diff", a.rateDiff)
+                    put("claim", a.claim); put("claim_note", a.claimNote)
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
                 }
                 if (db.update(LINES, values, "id = ?", arrayOf(row.id)) == 0) {
@@ -431,17 +453,30 @@ class PaymentRepository(
         listOf(adviceNo, SearchText.firstLine(d.buyer), SearchText.firstLine(d.supplier), d.mode.label, d.reference, d.remarks).joinToString(" ")
     )
 
+    // ---- Advice images (kept on this phone only, for the advice PDF) ----
+
+    private fun imagesOf(db: SQLiteDatabase, adviceId: String): List<String> =
+        db.rawQuery("SELECT images FROM payment_advices WHERE id = ?", arrayOf(adviceId))
+            .use { c -> if (c.moveToFirst()) splitImages(c.getString(0)) else emptyList() }
+
+    private fun splitImages(text: String?): List<String> = text?.split(",")?.filter { it.isNotBlank() }.orEmpty()
+
     private fun Cursor.lineAmounts(start: Int) = LineAmounts(
         paid = getDouble(start),
         cdPercent = doubleOrNull(start + 1),
         cdAmount = doubleOrNull(start + 2),
         goodsReturn = doubleOrNull(start + 3),
-        rateDiff = doubleOrNull(start + 4)
+        rateDiff = doubleOrNull(start + 4),
+        claim = doubleOrNull(start + 5),
+        claimNote = stringOrNull(start + 6).orEmpty()
     )
 
     companion object {
         const val ADVICES = "payment_advices"
         const val LINES = "advice_lines"
+
+        /** Line amount columns read by [lineAmounts]; the line table must be aliased `l`. */
+        private const val LINE_AMOUNTS = "l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff, l.claim, l.claim_note"
         private const val SEPARATOR = "\u001f"
 
         /** Advice numbers are picked and saved under this lock (see AdviceNumberAllocator). */
@@ -451,6 +486,8 @@ class PaymentRepository(
         private var instance: PaymentRepository? = null
 
         fun get(context: Context): PaymentRepository =
-            instance ?: synchronized(this) { instance ?: PaymentRepository(OtaDatabase.get(context)).also { instance = it } }
+            instance ?: synchronized(this) {
+                instance ?: PaymentRepository(OtaDatabase.get(context), AdviceImageFiles.forContext(context)).also { instance = it }
+            }
     }
 }

@@ -407,9 +407,9 @@ private fun OrderItemRow(
 /** Compact unit picker shown next to the quantity. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UnitField(unit: String, onUnitChange: (String) -> Unit) {
+internal fun UnitField(unit: String, onUnitChange: (String) -> Unit, modifier: Modifier = Modifier.width(104.dp)) {
     var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = Modifier.width(104.dp)) {
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
         OutlinedTextField(
             value = QtyUnit.ofCode(unit)?.label.orEmpty(),
             onValueChange = {},

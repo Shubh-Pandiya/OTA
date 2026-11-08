@@ -38,10 +38,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.otaapplication.data.AdviceDraft
+import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.AdviceSummary
 import com.example.otaapplication.data.AdviceTotals
 import com.example.otaapplication.data.BalanceSide
@@ -61,12 +63,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-private enum class PaymentTab(val label: String) { ADVICES("Advices"), BILLS("Bills") }
+enum class PaymentTab { ADVICES, BILLS }
 
-/** Payment advices (receipts for bill payments) and the bills they settle. */
+/**
+ * The Payment advices section (receipts for bill payments) or the Bills section, which share the
+ * same detail and editor pages. [openPage] opens a page on arrival (e.g. a bill tapped on Home).
+ */
 @Composable
-fun PaymentAdviceScreen(deps: PaymentDeps, remoteChanges: Int) {
-    var tab by rememberSaveable { mutableStateOf(PaymentTab.ADVICES) }
+fun PaymentAdviceScreen(
+    deps: PaymentDeps,
+    remoteChanges: Int,
+    tab: PaymentTab,
+    openPage: PaymentPage? = null,
+    onPageOpened: () -> Unit = {}
+) {
     var searchText by rememberSaveable { mutableStateOf("") }
     var billStatus by rememberSaveable { mutableStateOf<PaymentStatus?>(null) }
     var version by remember { mutableIntStateOf(0) }
@@ -74,6 +84,12 @@ fun PaymentAdviceScreen(deps: PaymentDeps, remoteChanges: Int) {
     var advices by remember { mutableStateOf<List<AdviceSummary>?>(null) }
     var bills by remember { mutableStateOf<List<BillListItem>?>(null) }
     val focusManager = LocalFocusManager.current
+    LaunchedEffect(openPage) {
+        if (openPage != null) {
+            stack = listOf(openPage)
+            onPageOpened()
+        }
+    }
 
     LaunchedEffect(searchText, tab, billStatus, version, remoteChanges) {
         delay(200)
@@ -109,27 +125,9 @@ fun PaymentAdviceScreen(deps: PaymentDeps, remoteChanges: Int) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() })
             )
-            SecondaryTabRow(
-                selectedTabIndex = tab.ordinal,
-                containerColor = MaterialTheme.colorScheme.background,
-                modifier = Modifier.padding(top = 4.dp)
-            ) {
-                PaymentTab.entries.forEach { t ->
-                    Tab(
-                        selected = tab == t,
-                        onClick = { tab = t },
-                        text = { Text(t.label, fontWeight = FontWeight.SemiBold) },
-                        icon = { Icon(if (t == PaymentTab.ADVICES) Icons.Default.Payments else Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(20.dp)) }
-                    )
-                }
-            }
-            AnimatedContent(
-                targetState = tab,
-                transitionSpec = { fadeIn(tween(220, delayMillis = 60)) togetherWith fadeOut(tween(100)) },
-                modifier = Modifier.weight(1f),
-                label = "paymentTab"
-            ) { t ->
-                if (t == PaymentTab.ADVICES) {
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.weight(1f)) {
+                if (tab == PaymentTab.ADVICES) {
                     AdviceList(advices, filtered = searchText.isNotBlank(), onOpen = { stack = listOf(PaymentPage.AdviceView(it.id)) })
                 } else {
                     Column {
@@ -139,12 +137,14 @@ fun PaymentAdviceScreen(deps: PaymentDeps, remoteChanges: Int) {
                 }
             }
         }
-        ExtendedFloatingActionButton(
-            onClick = { stack = listOf(PaymentPage.AdviceEdit(null)) },
-            icon = { Icon(Icons.Default.Add, contentDescription = null) },
-            text = { Text("New advice") },
-            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp)
-        )
+        if (tab == PaymentTab.ADVICES) {
+            ExtendedFloatingActionButton(
+                onClick = { stack = listOf(PaymentPage.AdviceEdit(null)) },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("New advice") },
+                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp)
+            )
+        }
     }
 
     PaymentPages(stack = stack, onStackChange = { stack = it }, deps = deps, version = version + remoteChanges, onChanged = { version++ })
@@ -441,6 +441,7 @@ internal fun AdviceDetailPage(
                                 am.cdAmount?.let { "CD ${rupees(it)}" + (am.cdPercent?.let { p -> " (${PaymentMath.plain(p)}%)" } ?: "") },
                                 am.goodsReturn?.let { "GR ${rupees(it)}" },
                                 am.rateDiff?.let { "RD ${rupees(it)}" },
+                                am.claim?.let { "Claim ${rupees(it)}" + am.claimNote.takeIf { n -> n.isNotBlank() }?.let { n -> " ($n)" }.orEmpty() },
                                 line.bill.balance?.let { "now due ${rupees(it)}" }
                             ).joinToString(" · "),
                             onClick = { onOpen(PaymentPage.BillView(line.bill.id)) }
@@ -448,6 +449,13 @@ internal fun AdviceDetailPage(
                     }
                 }
                 TotalsSection(totals, a.balanceAmount, a.balanceSide)
+                if (a.images.isNotEmpty()) {
+                    val store = remember { AdviceImageFiles.forContext(context) }
+                    val shown = remember(a.images) { mutableStateListOf<String>().apply { addAll(a.images) } }
+                    FormSection(title = "Cheque / payment proof", icon = Icons.Default.Image) {
+                        AdviceAttachments(images = shown, fileFor = { store.file(a.id, it) }, editable = false)
+                    }
+                }
                 if (a.remarks.isNotBlank()) {
                     FormSection(title = "Remarks", icon = Icons.Default.RateReview) {
                         Text(a.remarks, style = MaterialTheme.typography.bodyMedium)
@@ -489,6 +497,7 @@ private fun TotalsSection(totals: AdviceTotals, balanceAmount: Double?, balanceS
             DetailRow("Cash discount", rupees(totals.cashDiscount))
             DetailRow("Goods return", rupees(totals.goodsReturn))
             DetailRow("Rate difference", rupees(totals.rateDiff))
+            if (totals.claim != 0.0) DetailRow("Claim / defect", rupees(totals.claim))
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
             DetailRow("Total adjusted", rupees(totals.settled))
             DetailRow("Balance (Dr/Cr)", balanceAmount?.let { "${rupees(it)} ${balanceSide?.label.orEmpty()}".trim() }.orEmpty())
@@ -499,22 +508,35 @@ private fun TotalsSection(totals: AdviceTotals, balanceAmount: Double?, balanceS
 // ---------------------------------------------------------------------------------------------
 // Advice editor
 
-private class LineState(val pair: PairBill, paid: String, cdPercent: String, cdAmount: String, goodsReturn: String, rateDiff: String) {
+private class LineState(
+    val pair: PairBill,
+    paid: String,
+    cdPercent: String,
+    cdAmount: String,
+    goodsReturn: String,
+    rateDiff: String,
+    claim: String = "",
+    claimNote: String = ""
+) {
     var paid by mutableStateOf(paid)
     var cdPercent by mutableStateOf(cdPercent)
     var cdAmount by mutableStateOf(cdAmount)
     var goodsReturn by mutableStateOf(goodsReturn)
     var rateDiff by mutableStateOf(rateDiff)
+    var claim by mutableStateOf(claim)
+    var claimNote by mutableStateOf(claimNote)
 
     val billId: String get() = pair.bill.id
-    val valid: Boolean get() = listOf(paid, cdPercent, cdAmount, goodsReturn, rateDiff).all(::amountValid)
+    val valid: Boolean get() = listOf(paid, cdPercent, cdAmount, goodsReturn, rateDiff, claim).all(::amountValid)
 
     fun amounts() = LineAmounts(
         paid = PaymentMath.parse(paid) ?: 0.0,
         cdPercent = PaymentMath.parse(cdPercent),
         cdAmount = PaymentMath.parse(cdAmount),
         goodsReturn = PaymentMath.parse(goodsReturn),
-        rateDiff = PaymentMath.parse(rateDiff)
+        rateDiff = PaymentMath.parse(rateDiff),
+        claim = PaymentMath.parse(claim),
+        claimNote = if (PaymentMath.parse(claim) == null) "" else claimNote.trim()
     )
 
     companion object {
@@ -527,7 +549,8 @@ private class LineState(val pair: PairBill, paid: String, cdPercent: String, cdA
         }
 
         fun of(pair: PairBill, a: LineAmounts) = LineState(
-            pair, PaymentMath.plain(a.paid), PaymentMath.plain(a.cdPercent), PaymentMath.plain(a.cdAmount), PaymentMath.plain(a.goodsReturn), PaymentMath.plain(a.rateDiff)
+            pair, PaymentMath.plain(a.paid), PaymentMath.plain(a.cdPercent), PaymentMath.plain(a.cdAmount), PaymentMath.plain(a.goodsReturn),
+            PaymentMath.plain(a.rateDiff), PaymentMath.plain(a.claim), a.claimNote
         )
     }
 }
@@ -548,6 +571,10 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
     var balanceSide by remember { mutableStateOf(BalanceSide.DR) }
     var remarks by remember { mutableStateOf("") }
     val lines = remember { mutableStateListOf<LineState>() }
+    val images = remember { mutableStateListOf<String>() }
+    val imageStore = remember { AdviceImageFiles.forContext(context) }
+    // Pictures picked but not saved wait in staging; drop them when the editor closes.
+    DisposableEffect(Unit) { onDispose { imageStore.clearStaging() } }
     var available by remember { mutableStateOf<List<PairBill>?>(null) }
     var presetPending by remember { mutableStateOf(page.presetBillId) }
     var busy by remember { mutableStateOf(false) }
@@ -566,6 +593,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         adviceNo = a.adviceNo; payDay = a.payDate.toEpochDay(); buyer = a.buyer; supplier = a.supplier
         mode = a.mode; reference = a.reference; balanceText = PaymentMath.plain(a.balanceAmount); balanceSide = a.balanceSide ?: BalanceSide.DR
         remarks = a.remarks
+        images.addAll(a.images)
         val byId = pairs.associateBy { it.bill.id }
         a.lines.forEach { line ->
             val pair = byId[line.bill.id] ?: PairBill(line.bill, PaymentMath.round2(line.bill.settled - line.amounts.settled), mixedParties = false)
@@ -624,7 +652,8 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
                 balanceAmount = PaymentMath.parse(balanceText),
                 balanceSide = balanceSide,
                 remarks = remarks,
-                lines = lines.map { it.billId to it.amounts() }
+                lines = lines.map { it.billId to it.amounts() },
+                images = images.toList()
             )
             busy = true
             scope.launch {
@@ -727,6 +756,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
                 DetailRow("Cash discount", rupees(totals.cashDiscount))
                 DetailRow("Goods return", rupees(totals.goodsReturn))
                 DetailRow("Rate difference", rupees(totals.rateDiff))
+                DetailRow("Claim / defect", rupees(totals.claim))
                 HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 DetailRow("Total adjusted", rupees(totals.settled))
             }
@@ -765,6 +795,18 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
                     )
                 }
             }
+        }
+
+        FormSection(
+            title = "Cheque / payment proof",
+            icon = Icons.Default.Image,
+            trailing = { if (images.isNotEmpty()) Text("${images.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        ) {
+            AdviceAttachments(
+                images = images,
+                fileFor = { id -> editingId?.let { imageStore.file(it, id) }?.takeIf { it.isFile } ?: imageStore.staging(id) },
+                editable = true
+            )
         }
 
         FormSection(title = "Remarks", icon = Icons.Default.RateReview) {
@@ -842,6 +884,25 @@ private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AmountField(value = line.goodsReturn, onValueChange = { line.goodsReturn = it }, label = "Goods return", modifier = Modifier.weight(1f))
                     AmountField(value = line.rateDiff, onValueChange = { line.rateDiff = it }, label = "Rate diff.", modifier = Modifier.weight(1f))
+                }
+                AmountField(
+                    value = line.claim,
+                    onValueChange = { line.claim = it },
+                    label = "Claim / defect deduction",
+                    supportingText = "Amount the buyer cut for defective goods"
+                )
+                AnimatedVisibility(visible = line.claim.isNotBlank(), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    OutlinedTextField(
+                        value = line.claimNote,
+                        onValueChange = { line.claimNote = it },
+                        label = { Text("Claim reason") },
+                        placeholder = { Text("e.g. 2 than shade variation") },
+                        leadingIcon = { Icon(Icons.Default.ReportProblem, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.small,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
                 val after = line.pair.balanceBefore?.let { PaymentMath.round2(it - settled) }
                 Text(

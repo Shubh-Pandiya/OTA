@@ -1,5 +1,6 @@
 package com.example.otaapplication.data
 
+import com.example.otaapplication.OrderItem
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -92,7 +93,8 @@ data class BillValue(
     val amount: Double?,
     val lrNo: String = "",
     val cdPercent: Double? = null,
-    val cdAmount: Double? = null
+    val cdAmount: Double? = null,
+    val items: List<OrderItem> = emptyList()
 )
 
 data class LinkValue(val orderId: String, val billId: String)

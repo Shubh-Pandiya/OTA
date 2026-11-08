@@ -14,7 +14,9 @@ import android.text.StaticLayout
 import android.text.TextPaint
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.PaymentAdvice
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.NumberFormat
@@ -40,15 +42,16 @@ object AdvicePdf {
     // Table columns: (header, left edge, right edge, right-aligned).
     private data class Col(val title: String, val x0: Float, val x1: Float, val numeric: Boolean)
     private val cols = listOf(
-        Col("S.No", 40f, 66f, false),
-        Col("BILL NO", 66f, 146f, false),
-        Col("BILL DATE", 146f, 204f, false),
-        Col("BILL AMT", 204f, 272f, true),
-        Col("PAID", 272f, 340f, true),
-        Col("C.D.", 340f, 396f, true),
-        Col("G.R.", 396f, 446f, true),
-        Col("R.D.", 446f, 496f, true),
-        Col("TOTAL", 496f, 555f, true)
+        Col("S.No", 40f, 62f, false),
+        Col("BILL NO", 62f, 130f, false),
+        Col("BILL DATE", 130f, 184f, false),
+        Col("BILL AMT", 184f, 246f, true),
+        Col("PAID", 246f, 308f, true),
+        Col("C.D.", 308f, 356f, true),
+        Col("G.R.", 356f, 400f, true),
+        Col("R.D.", 400f, 444f, true),
+        Col("CLAIM", 444f, 494f, true),
+        Col("TOTAL", 494f, 555f, true)
     )
 
     fun fileFor(advice: PaymentAdvice): File {
@@ -57,9 +60,34 @@ object AdvicePdf {
         return File(dir, "${advice.adviceNo}.pdf")
     }
 
-    /** Writes the PDF; runs on a background thread. */
+    /**
+     * Writes the PDF; runs on a background thread. The advice's cheque / payment images (kept
+     * on this phone only) follow as one page each after the advice page(s).
+     */
     fun write(context: Context, advice: PaymentAdvice): File {
         val file = fileFor(advice).let { it.parentFile?.mkdirs(); PublicFiles.writable(it) }
+        val store = AdviceImageFiles.forContext(context)
+        val images = advice.images.map { store.file(advice.id, it) }.filter { it.isFile }
+        val base = render(context, advice, if (images.isEmpty()) emptyList() else null)
+        val bytes = if (images.isEmpty()) base else try {
+            PdfAppend.appendJpegPages(base, images.mapIndexed { i, img ->
+                PdfAppend.Page(img.readBytes(), caption(advice, i, images.size))
+            })
+        } catch (e: IllegalArgumentException) {
+            // Unexpected PDF structure: draw the images instead (bigger file, same pages).
+            android.util.Log.w("AdvicePdf", "JPEG append failed, drawing images instead", e)
+            render(context, advice, images)
+        }
+        FileOutputStream(file).use { it.write(bytes) }
+        return file
+    }
+
+    private fun caption(advice: PaymentAdvice, index: Int, count: Int) =
+        "Payment Advice ${advice.adviceNo} - Attachment ${index + 1} of $count (${advice.mode.label}" +
+            (if (advice.reference.isNotBlank()) " ${advice.reference}" else "") + ")"
+
+    /** The advice pages, plus [drawnImages] drawn as pages (null = none, appended later). */
+    private fun render(context: Context, advice: PaymentAdvice, drawnImages: List<File>?): ByteArray {
         val doc = PdfDocument()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         var pageNo = 1
@@ -154,7 +182,7 @@ object AdvicePdf {
             canvas.drawText(bill.billDate?.format(dateFormat).orEmpty(), cols[2].x0 + 4f, y + 14f, paint)
             paint.textAlign = Paint.Align.RIGHT
             fun num(col: Int, value: Double?) { if (value != null) canvas.drawText(money.format(value), cols[col].x1 - 4f, y + 14f, paint) }
-            num(3, bill.amount); num(4, a.paid); num(5, a.cdAmount); num(6, a.goodsReturn); num(7, a.rateDiff); num(8, a.settled)
+            num(3, bill.amount); num(4, a.paid); num(5, a.cdAmount); num(6, a.goodsReturn); num(7, a.rateDiff); num(8, a.claim); num(9, a.settled)
             if (cdNote != null) {
                 paint.textSize = 7.5f; paint.color = Color.DKGRAY
                 canvas.drawText(cdNote, cols[5].x1 - 4f, y + 23f, paint)
@@ -172,25 +200,40 @@ object AdvicePdf {
         paint.color = Color.BLACK; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 9f; paint.textAlign = Paint.Align.LEFT
         canvas.drawText("TOTAL", cols[1].x0 + 4f, y + 15f, paint)
         paint.textAlign = Paint.Align.RIGHT
-        listOf(4 to t.paid, 5 to t.cashDiscount, 6 to t.goodsReturn, 7 to t.rateDiff, 8 to t.settled).forEach { (col, v) ->
+        listOf(4 to t.paid, 5 to t.cashDiscount, 6 to t.goodsReturn, 7 to t.rateDiff, 8 to t.claim, 9 to t.settled).forEach { (col, v) ->
             canvas.drawText(money.format(v), cols[col].x1 - 4f, y + 15f, paint)
         }
         paint.textAlign = Paint.Align.LEFT
         y += 22f
         grid(y)
 
+        // ---- Claim reasons, under the table
+        val claimNotes = advice.lines.filter { it.amounts.claim != null && it.amounts.claimNote.isNotBlank() }
+            .joinToString("\n") { "Bill ${it.bill.billNo}: ${it.amounts.claimNote.trim()}" }
+        if (claimNotes.isNotEmpty()) {
+            val notesLayout = layout("Claim / defect\n$claimNotes", (RIGHT - LEFT).toInt(), TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 9f; color = Color.DKGRAY })
+            if (y + notesLayout.height + 12f > BOTTOM) {
+                doc.finishPage(page); pageNo++
+                page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNo).create()); canvas = page.canvas
+                y = 50f
+            }
+            drawLayout(canvas, notesLayout, LEFT, y + 8f)
+            y += notesLayout.height + 8f
+        }
+
         // ---- Summary
         val remarksLayout = advice.remarks.takeIf { it.isNotBlank() }?.let {
             layout(it, (RIGHT - LEFT).toInt(), TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 10f })
         }
-        val summaryH = 30f + 5 * 16f + 20f + (remarksLayout?.let { it.height + 30f } ?: 0f) + 130f
+        val rows = if (t.claim != 0.0) 6 else 5
+        val summaryH = 30f + rows * 16f + 20f + (remarksLayout?.let { it.height + 30f } ?: 0f) + 130f
         if (y + summaryH > BOTTOM) {
             doc.finishPage(page); pageNo++
             page = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNo).create()); canvas = page.canvas
             y = 60f
         } else y += 24f
         val boxLeft = 330f
-        paint.style = Paint.Style.STROKE; canvas.drawRect(boxLeft, y, RIGHT, y + 5 * 16f + 30f, paint); paint.style = Paint.Style.FILL
+        paint.style = Paint.Style.STROKE; canvas.drawRect(boxLeft, y, RIGHT, y + rows * 16f + 30f, paint); paint.style = Paint.Style.FILL
         var sy = y + 16f
         fun summary(label: String, value: String, bold: Boolean = false) {
             paint.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT; paint.textSize = 10f
@@ -202,6 +245,7 @@ object AdvicePdf {
         summary("Cash discount", "₹ ${money.format(t.cashDiscount)}")
         summary("Goods return", "₹ ${money.format(t.goodsReturn)}")
         summary("Rate difference", "₹ ${money.format(t.rateDiff)}")
+        if (t.claim != 0.0) summary("Claim / defect", "₹ ${money.format(t.claim)}")
         paint.style = Paint.Style.STROKE; canvas.drawLine(boxLeft, sy - 11f, RIGHT, sy - 11f, paint); paint.style = Paint.Style.FILL
         sy += 2f
         summary("Total adjusted", "₹ ${money.format(t.settled)}", bold = true)
@@ -227,12 +271,34 @@ object AdvicePdf {
         PdfMarks.drawStamp(context, canvas, RectF(410f, sigY - 105f, 510f, sigY - 5f))
 
         doc.finishPage(page)
+        drawnImages?.forEachIndexed { i, image ->
+            pageNo++
+            val imagePage = doc.startPage(PdfDocument.PageInfo.Builder(PAGE_W, PAGE_H, pageNo).create())
+            drawImagePage(imagePage.canvas, image, caption(advice, i, drawnImages.size))
+            doc.finishPage(imagePage)
+        }
         try {
-            FileOutputStream(file).use { doc.writeTo(it) }
+            return ByteArrayOutputStream().also { doc.writeTo(it) }.toByteArray()
         } finally {
             doc.close()
         }
-        return file
+    }
+
+    private fun drawImagePage(canvas: android.graphics.Canvas, image: File, caption: String) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f; color = Color.BLACK }
+        canvas.drawText(caption, LEFT, 51f, paint)
+        val bitmap = AdviceImageImport.thumbnail(image, AdviceImageImport.MAX_EDGE) ?: return
+        try {
+            val boxW = RIGHT - LEFT
+            val boxH = PAGE_H - 80f - 40f
+            val scale = minOf(boxW / bitmap.width, boxH / bitmap.height)
+            val w = bitmap.width * scale
+            val h = bitmap.height * scale
+            val left = LEFT + (boxW - w) / 2
+            canvas.drawBitmap(bitmap, null, RectF(left, 70f, left + w, 70f + h), Paint(Paint.FILTER_BITMAP_FLAG))
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     /** Opens the share sheet for a written PDF (WhatsApp, email, …). */

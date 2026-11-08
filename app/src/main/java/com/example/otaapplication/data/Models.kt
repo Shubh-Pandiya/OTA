@@ -1,5 +1,6 @@
 package com.example.otaapplication.data
 
+import com.example.otaapplication.OrderItem
 import java.time.LocalDate
 
 enum class PartyType(val table: String, val label: String, val pluralLabel: String) {
@@ -85,8 +86,13 @@ data class Bill(
     val cdAmount: Double? = null,
     /** Settled so far by payment advices: paid + cash discount + goods return + rate difference. */
     val settled: Double = 0.0,
-    val adviceCount: Int = 0
+    val adviceCount: Int = 0,
+    /** What the supplier actually billed (may differ from the orders); empty for header-only bills. */
+    val items: List<OrderItem> = emptyList()
 ) {
+    /** Sum of the item lines (qty × rate), or null when no line has both. */
+    val linesTotal: Double? get() = PaymentMath.linesTotal(items)
+
     /** Amount still due; null when the bill amount isn't known. */
     val balance: Double? get() = PaymentMath.balance(amount, settled)
     val status: PaymentStatus get() = PaymentMath.status(amount, settled)
@@ -98,7 +104,9 @@ data class BillDetails(
     val amount: Double? = null,
     val lrNo: String = "",
     val cdPercent: Double? = null,
-    val cdAmount: Double? = null
+    val cdAmount: Double? = null,
+    /** Item lines as billed; empty = none. */
+    val items: List<OrderItem> = emptyList()
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

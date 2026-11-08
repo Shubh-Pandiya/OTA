@@ -1,5 +1,6 @@
 package com.example.otaapplication.data
 
+import com.example.otaapplication.OrderItem
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
@@ -31,10 +32,14 @@ data class LineAmounts(
     val cdPercent: Double? = null,
     val cdAmount: Double? = null,
     val goodsReturn: Double? = null,
-    val rateDiff: Double? = null
+    val rateDiff: Double? = null,
+    /** Claim / defect deduction: what the buyer cut for defective goods, with [claimNote] as the reason. */
+    val claim: Double? = null,
+    val claimNote: String = ""
 ) {
-    /** Paid + cash discount + goods return + rate difference: what comes off the bill's balance. */
-    val settled: Double get() = PaymentMath.round2(paid + (cdAmount ?: 0.0) + (goodsReturn ?: 0.0) + (rateDiff ?: 0.0))
+    /** Paid + cash discount + goods return + rate difference + claim: what comes off the bill's balance. */
+    val settled: Double
+        get() = PaymentMath.round2(paid + (cdAmount ?: 0.0) + (goodsReturn ?: 0.0) + (rateDiff ?: 0.0) + (claim ?: 0.0))
 }
 
 /** A bill on a payment advice, with the bill's own details for display and the PDF. */
@@ -57,20 +62,29 @@ data class PaymentAdvice(
     val balanceAmount: Double?,
     val balanceSide: BalanceSide?,
     val remarks: String,
-    val lines: List<AdviceLine>
+    val lines: List<AdviceLine>,
+    /** Ids of the attached cheque / transaction images, in page order. */
+    val images: List<String> = emptyList()
 ) {
     val totals: AdviceTotals get() = AdviceTotals.of(lines.map { it.amounts })
 }
 
-data class AdviceTotals(val paid: Double, val cashDiscount: Double, val goodsReturn: Double, val rateDiff: Double) {
-    val settled: Double get() = PaymentMath.round2(paid + cashDiscount + goodsReturn + rateDiff)
+data class AdviceTotals(
+    val paid: Double,
+    val cashDiscount: Double,
+    val goodsReturn: Double,
+    val rateDiff: Double,
+    val claim: Double = 0.0
+) {
+    val settled: Double get() = PaymentMath.round2(paid + cashDiscount + goodsReturn + rateDiff + claim)
 
     companion object {
         fun of(lines: List<LineAmounts>) = AdviceTotals(
             paid = PaymentMath.round2(lines.sumOf { it.paid }),
             cashDiscount = PaymentMath.round2(lines.sumOf { it.cdAmount ?: 0.0 }),
             goodsReturn = PaymentMath.round2(lines.sumOf { it.goodsReturn ?: 0.0 }),
-            rateDiff = PaymentMath.round2(lines.sumOf { it.rateDiff ?: 0.0 })
+            rateDiff = PaymentMath.round2(lines.sumOf { it.rateDiff ?: 0.0 }),
+            claim = PaymentMath.round2(lines.sumOf { it.claim ?: 0.0 })
         )
     }
 }
@@ -100,7 +114,9 @@ data class AdviceDraft(
     val balanceSide: BalanceSide?,
     val remarks: String,
     /** Bill id to amounts, in display order. */
-    val lines: List<Pair<String, LineAmounts>>
+    val lines: List<Pair<String, LineAmounts>>,
+    /** Image ids in page order; the files must already be in the image store. */
+    val images: List<String> = emptyList()
 )
 
 /** A bill that can go on an advice for a buyer/supplier pair. */
@@ -163,6 +179,19 @@ object PaymentMath {
             rounded <= -EPSILON -> -rounded to BalanceSide.CR
             else -> null
         }
+    }
+
+    /** Sum of qty × rate over [items] (rows missing either are skipped); null when nothing adds up. */
+    fun linesTotal(items: List<OrderItem>): Double? {
+        var total = BigDecimal.ZERO
+        var any = false
+        for (item in items) {
+            val qty = parse(item.quantity) ?: continue
+            val rate = parse(item.rate) ?: continue
+            total += BigDecimal.valueOf(qty).multiply(BigDecimal.valueOf(rate))
+            any = true
+        }
+        return if (any) round2(total.toDouble()) else null
     }
 
     /** Reads a typed amount ("12,500.50", "₹ 300"); null for blank or invalid text. */

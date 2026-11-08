@@ -31,6 +31,7 @@ import com.example.otaapplication.data.Bill
 import com.example.otaapplication.data.BillDetails
 import com.example.otaapplication.data.BillPayment
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OrderSummary
 import com.example.otaapplication.data.PaymentMath
@@ -149,34 +150,76 @@ fun AmountField(
 
 internal fun amountValid(text: String) = text.isBlank() || PaymentMath.parse(text) != null
 
-/** Editable bill details: date, amount, LR (bilty) number and cash discount (% and ₹). */
+/**
+ * Editable bill details: date, amount, LR (bilty) number, cash discount (% and ₹) and the item
+ * lines as billed. The amount follows the lines' total until the user types a different one.
+ */
 class BillFieldsState(
     day: Long? = null,
     amount: String = "",
     lrNo: String = "",
     cdPercent: String = "",
-    cdAmount: String = ""
+    cdAmount: String = "",
+    items: List<OrderItem> = emptyList()
 ) {
     var day by mutableStateOf(day)
     var amount by mutableStateOf(amount)
+        private set
     var lrNo by mutableStateOf(lrNo)
     var cdPercent by mutableStateOf(cdPercent)
     var cdAmount by mutableStateOf(cdAmount)
+    val items = mutableStateListOf<OrderItem>().apply { addAll(items) }
 
-    val valid: Boolean get() = amountValid(amount) && amountValid(cdPercent) && amountValid(cdAmount)
+    /** True while the amount is blank or equal to the lines' total, so it keeps following them. */
+    private var amountFollowsLines = amount.isBlank() || PaymentMath.parse(amount) == PaymentMath.linesTotal(items)
+
+    val linesTotal: Double? get() = PaymentMath.linesTotal(items)
+
+    val valid: Boolean
+        get() = amountValid(amount) && amountValid(cdPercent) && amountValid(cdAmount) &&
+            items.all { amountValid(it.quantity) && amountValid(it.rate) }
+
+    fun typeAmount(text: String) {
+        amount = text
+        amountFollowsLines = text.isBlank() || PaymentMath.parse(text) == linesTotal
+        syncDiscount()
+    }
+
+    fun setItems(updated: List<OrderItem>) {
+        items.clear()
+        items.addAll(updated.mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString()) })
+        if (amountFollowsLines) {
+            amount = PaymentMath.plain(linesTotal)
+            syncDiscount()
+        }
+    }
+
+    fun updateItem(index: Int, item: OrderItem) = setItems(items.toMutableList().also { it[index] = item })
+
+    fun addItem() = setItems(items + OrderItem(unit = Units.forNewRow(items)))
+
+    fun removeItem(index: Int) = setItems(items.toMutableList().also { it.removeAt(index) })
+
+    /** Keeps a percentage-based cash discount in step with the amount. */
+    fun syncDiscount() {
+        PaymentMath.percentOf(PaymentMath.parse(amount), PaymentMath.parse(cdPercent))?.let { cdAmount = PaymentMath.plain(it) }
+    }
 
     fun details() = BillDetails(
         billDate = day?.let(LocalDate::ofEpochDay),
         amount = PaymentMath.parse(amount),
         lrNo = lrNo.trim(),
         cdPercent = PaymentMath.parse(cdPercent),
-        cdAmount = PaymentMath.parse(cdAmount)
+        cdAmount = PaymentMath.parse(cdAmount),
+        items = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
+            .mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString(), particulars = item.particulars.trim(), quantity = item.quantity.trim(), rate = item.rate.trim()) }
     )
 
     /** Fills empty fields from an existing bill (used when an existing bill number is picked). */
     fun fillBlanks(bill: Bill) {
         if (day == null) day = bill.billDate?.toEpochDay()
-        if (amount.isBlank()) amount = PaymentMath.plain(bill.amount)
+        if (items.isEmpty() && bill.items.isNotEmpty()) setItems(bill.items)
+        if (amount.isBlank()) typeAmount(PaymentMath.plain(bill.amount))
         if (lrNo.isBlank()) lrNo = bill.lrNo
         if (cdPercent.isBlank()) cdPercent = PaymentMath.plain(bill.cdPercent)
         if (cdAmount.isBlank()) cdAmount = PaymentMath.plain(bill.cdAmount)
@@ -184,24 +227,20 @@ class BillFieldsState(
 
     companion object {
         fun of(bill: Bill) = BillFieldsState(
-            bill.billDate?.toEpochDay(), PaymentMath.plain(bill.amount), bill.lrNo, PaymentMath.plain(bill.cdPercent), PaymentMath.plain(bill.cdAmount)
+            bill.billDate?.toEpochDay(), PaymentMath.plain(bill.amount), bill.lrNo, PaymentMath.plain(bill.cdPercent),
+            PaymentMath.plain(bill.cdAmount), bill.items
         )
     }
 }
 
+/**
+ * Bill fields. [loadOrderItems], when given, offers to copy the linked orders' items into the
+ * bill lines as a starting point (what was billed often differs, so they stay editable).
+ */
 @Composable
-fun BillFields(state: BillFieldsState, optional: Boolean) {
+fun BillFields(state: BillFieldsState, optional: Boolean, loadOrderItems: (suspend () -> List<OrderItem>)? = null) {
     val suffix = if (optional) " (optional)" else ""
     DateField(label = "Bill date$suffix", day = state.day, onChange = { state.day = it })
-    AmountField(
-        value = state.amount,
-        onValueChange = { text ->
-            state.amount = text
-            // Keep a percentage-based discount in step with the amount.
-            PaymentMath.percentOf(PaymentMath.parse(text), PaymentMath.parse(state.cdPercent))?.let { state.cdAmount = PaymentMath.plain(it) }
-        },
-        label = "Bill amount$suffix"
-    )
     OutlinedTextField(
         value = state.lrNo,
         onValueChange = { state.lrNo = it },
@@ -212,12 +251,24 @@ fun BillFields(state: BillFieldsState, optional: Boolean) {
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
         modifier = Modifier.fillMaxWidth()
     )
+    BillLinesEditor(state, loadOrderItems)
+    val total = state.linesTotal
+    AmountField(
+        value = state.amount,
+        onValueChange = state::typeAmount,
+        label = "Bill amount$suffix",
+        supportingText = when {
+            total == null -> null
+            PaymentMath.parse(state.amount) == total -> "Total of the bill lines"
+            else -> "Lines total ${rupees(total)}"
+        }
+    )
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         AmountField(
             value = state.cdPercent,
             onValueChange = { text ->
                 state.cdPercent = text
-                PaymentMath.percentOf(PaymentMath.parse(state.amount), PaymentMath.parse(text))?.let { state.cdAmount = PaymentMath.plain(it) }
+                state.syncDiscount()
             },
             label = "Cash disc. %",
             prefix = "%",
@@ -232,6 +283,125 @@ fun BillFields(state: BillFieldsState, optional: Boolean) {
         )
     }
 }
+
+/** Item lines as billed by the supplier: particulars, qty + unit and rate, with each line's amount. */
+@Composable
+private fun BillLinesEditor(state: BillFieldsState, loadOrderItems: (suspend () -> List<OrderItem>)?) {
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Bill items", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Units.totals(state.items)?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (state.items.isEmpty()) {
+            Text(
+                "Optional. Enter what the supplier actually billed; it can differ from the order.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        state.items.forEachIndexed { index, item ->
+            key(item.key) {
+                BillLineRow(
+                    item = item,
+                    onChange = { state.updateItem(index, it) },
+                    onRemove = { state.removeItem(index) }
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = state::addItem, shape = MaterialTheme.shapes.small) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Add line")
+            }
+            if (loadOrderItems != null) {
+                TextButton(onClick = {
+                    scope.launch {
+                        val copied = runCatching { withContext(Dispatchers.IO) { loadOrderItems() } }.getOrDefault(emptyList())
+                        if (copied.isEmpty()) {
+                            Toast.makeText(context, "The order has no items to copy", Toast.LENGTH_SHORT).show()
+                        } else {
+                            state.setItems(state.items.filter { it.particulars.isNotBlank() } + copied.map { it.copy(key = OrderItem().key) })
+                        }
+                    }
+                }) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy from order")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BillLineRow(item: OrderItem, onChange: (OrderItem) -> Unit, onRemove: () -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Line ${item.serialNo}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.weight(1f))
+                val qty = PaymentMath.parse(item.quantity)
+                val rate = PaymentMath.parse(item.rate)
+                if (qty != null && rate != null) {
+                    Text(rupees(PaymentMath.round2(qty * rate)), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                }
+                IconButton(onClick = onRemove) {
+                    Icon(Icons.Default.Close, contentDescription = "Remove line ${item.serialNo}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Column(Modifier.padding(end = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = item.particulars,
+                    onValueChange = { onChange(item.copy(particulars = it)) },
+                    label = { Text("Particulars") },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.small,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = item.quantity,
+                        onValueChange = { onChange(item.copy(quantity = it)) },
+                        label = { Text("Qty") },
+                        singleLine = true,
+                        isError = !amountValid(item.quantity),
+                        shape = MaterialTheme.shapes.small,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                        modifier = Modifier.weight(1f)
+                    )
+                    UnitField(unit = item.unit, onUnitChange = { onChange(item.copy(unit = it)) }, modifier = Modifier.width(116.dp))
+                    OutlinedTextField(
+                        value = item.rate,
+                        onValueChange = { onChange(item.copy(rate = it)) },
+                        label = { Text("Rate") },
+                        singleLine = true,
+                        isError = !amountValid(item.rate),
+                        shape = MaterialTheme.shapes.small,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Items of the given orders, numbered afresh, as a starting point for a bill's lines. */
+internal fun orderItemsFor(context: android.content.Context, orderIds: Collection<String>): List<OrderItem> =
+    LocalOrders.get(context).contentOf(orderIds).values
+        .flatMap { order -> order.items.map(Units::splitLegacy) }
+        .filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() }
+        .mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString()) }
 
 /** Repositories and staff state the payment pages need. */
 class PaymentDeps(
@@ -352,6 +522,21 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
                         DetailRow("Cash discount", cashDiscountText(bill.cdPercent, bill.cdAmount))
                     }
                 }
+                if (bill.items.isNotEmpty()) {
+                    FormSection(
+                        title = "Bill items",
+                        icon = Icons.AutoMirrored.Filled.Segment,
+                        trailing = { Units.totals(bill.items)?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            bill.items.forEach { item -> BillItemRow(item) }
+                            bill.linesTotal?.let { total ->
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                DetailRow("Lines total", rupees(total))
+                            }
+                        }
+                    }
+                }
                 FormSection(
                     title = "Orders",
                     icon = Icons.Default.Inventory2,
@@ -384,7 +569,8 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
                             "Paid ${rupees(a.paid)}",
                             a.cdAmount?.let { "CD ${rupees(it)}" },
                             a.goodsReturn?.let { "GR ${rupees(it)}" },
-                            a.rateDiff?.let { "RD ${rupees(it)}" }
+                            a.rateDiff?.let { "RD ${rupees(it)}" },
+                            a.claim?.let { "Claim ${rupees(it)}" + a.claimNote.takeIf { n -> n.isNotBlank() }?.let { n -> " ($n)" }.orEmpty() }
                         )
                         LinkRow(
                             icon = Icons.Default.Payments,
@@ -396,6 +582,27 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BillItemRow(item: OrderItem) {
+    val qty = PaymentMath.parse(item.quantity)
+    val rate = PaymentMath.parse(item.rate)
+    Row(verticalAlignment = Alignment.Top) {
+        Text("${item.serialNo}.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(24.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.particulars.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                listOfNotNull(
+                    Units.display(item).takeIf { it.isNotBlank() },
+                    item.rate.takeIf { it.isNotBlank() }?.let { "@ ₹$it" }
+                ).joinToString(" "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (qty != null && rate != null) Text(rupees(PaymentMath.round2(qty * rate)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -485,7 +692,9 @@ private fun BillEditPage(billId: String, deps: PaymentDeps, onDone: (changed: Bo
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            BillFields(s, optional = true)
+            BillFields(s, optional = true, loadOrderItems = {
+                orderItemsFor(context, deps.orders.ordersForBill(billId).mapNotNull { it.uuid })
+            })
         }
     }
 }

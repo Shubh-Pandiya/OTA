@@ -3,12 +3,16 @@ package com.example.otaapplication.data
 import android.content.ContentValues
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import com.example.otaapplication.OrderItem
+import com.example.otaapplication.cloud.OrderTable
+import org.json.JSONArray
 import java.time.LocalDate
 
 /** Bill columns and helpers shared by the order and payment repositories. */
 internal object BillSql {
-    /** What a bill's advices settle: paid + cash discount + goods return + rate difference. */
-    private const val LINE_SETTLED = "l.paid + COALESCE(l.cd_amount, 0) + COALESCE(l.goods_return, 0) + COALESCE(l.rate_diff, 0)"
+    /** What a bill's advices settle: paid + cash discount + goods return + rate difference + claim. */
+    private const val LINE_SETTLED =
+        "l.paid + COALESCE(l.cd_amount, 0) + COALESCE(l.goods_return, 0) + COALESCE(l.rate_diff, 0) + COALESCE(l.claim, 0)"
 
     private const val LIVE_LINES = """FROM advice_lines l JOIN payment_advices a ON a.id = l.advice_id
             WHERE l.bill_id = b.id AND l.is_deleted = 0 AND a.is_deleted = 0"""
@@ -19,7 +23,8 @@ internal object BillSql {
             WHERE x.bill_id = b.id AND x.is_deleted = 0 AND xo.is_deleted = 0) AS order_count,
         b.lr_no, b.cd_percent, b.cd_amount,
         (SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES) AS settled,
-        (SELECT COUNT(*) $LIVE_LINES) AS advice_count"""
+        (SELECT COUNT(*) $LIVE_LINES) AS advice_count,
+        b.items"""
 
     /** Settled amount as a SQL expression, for filtering by payment status. */
     const val SETTLED_EXPR = "(SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES)"
@@ -43,8 +48,16 @@ internal object BillSql {
         cdPercent = doubleOrNull(6),
         cdAmount = doubleOrNull(7),
         settled = PaymentMath.round2(getDouble(8)),
-        adviceCount = getInt(9)
+        adviceCount = getInt(9),
+        items = itemsFromText(stringOrNull(10))
     )
+
+    /** Bill item lines as stored in bills.items: the compact JSON arrays used for order items. */
+    fun itemsToText(items: List<OrderItem>): String? =
+        items.takeIf { it.isNotEmpty() }?.let { OrderTable.itemsToJson(it).toString() }
+
+    fun itemsFromText(text: String?): List<OrderItem> =
+        if (text.isNullOrBlank()) emptyList() else runCatching { OrderTable.itemsFromJson(JSONArray(text)) }.getOrDefault(emptyList())
 
     fun Cursor.stringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 

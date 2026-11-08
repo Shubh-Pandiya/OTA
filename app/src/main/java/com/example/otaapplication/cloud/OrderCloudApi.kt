@@ -68,7 +68,7 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
@@ -78,6 +78,7 @@ class OrderTable<T>(
                     .put("lr_no", row.value.lrNo)
                     .put("cd_percent", row.value.cdPercent ?: JSONObject.NULL)
                     .put("cd_amount", row.value.cdAmount ?: JSONObject.NULL)
+                    .put("items", row.value.items.takeIf { it.isNotEmpty() }?.let(::itemsToJson) ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -88,7 +89,8 @@ class OrderTable<T>(
                     amount = json.number("amount"),
                     lrNo = json.text("lr_no"),
                     cdPercent = json.number("cd_percent"),
-                    cdAmount = json.number("cd_amount")
+                    cdAmount = json.number("cd_amount"),
+                    items = itemsFromJson(json.optJSONArray("items"))
                 ))
             }
         )
@@ -146,7 +148,7 @@ class OrderTable<T>(
 
         val ADVICE_LINES = OrderTable<AdviceLineValue>(
             name = "advice_lines",
-            columns = "id,advice_id,bill_id,paid,cd_percent,cd_amount,goods_return,rate_diff,deleted,updated_at,client_updated_at",
+            columns = "id,advice_id,bill_id,paid,cd_percent,cd_amount,goods_return,rate_diff,claim,claim_note,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 val a = row.value.amounts
                 JSONObject()
@@ -158,6 +160,8 @@ class OrderTable<T>(
                     .put("cd_amount", a.cdAmount ?: JSONObject.NULL)
                     .put("goods_return", a.goodsReturn ?: JSONObject.NULL)
                     .put("rate_diff", a.rateDiff ?: JSONObject.NULL)
+                    .put("claim", a.claim ?: JSONObject.NULL)
+                    .put("claim_note", a.claimNote)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -170,7 +174,9 @@ class OrderTable<T>(
                         cdPercent = json.number("cd_percent"),
                         cdAmount = json.number("cd_amount"),
                         goodsReturn = json.number("goods_return"),
-                        rateDiff = json.number("rate_diff")
+                        rateDiff = json.number("rate_diff"),
+                        claim = json.number("claim"),
+                        claimNote = json.text("claim_note")
                     )
                 ))
             }

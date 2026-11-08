@@ -90,6 +90,19 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         )
         db.execSQL("CREATE INDEX idx_order_bills_bill ON order_bills(bill_id)")
         createPaymentTables(db)
+        addBillLinesClaimsImages(db)
+    }
+
+    /**
+     * v5: bill item lines (bills.items, the compact JSON used for order items), the claim /
+     * defect deduction on advice lines, and advice images. An advice lists its image ids in
+     * page order; the files live in [AdviceImageFiles] and never leave this phone.
+     */
+    private fun addBillLinesClaimsImages(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE bills ADD COLUMN items TEXT")
+        db.execSQL("ALTER TABLE advice_lines ADD COLUMN claim REAL")
+        db.execSQL("ALTER TABLE advice_lines ADD COLUMN claim_note TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE payment_advices ADD COLUMN images TEXT NOT NULL DEFAULT ''")
     }
 
     /**
@@ -154,6 +167,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             }
             createPaymentTables(db)
         }
+        if (oldVersion < 5) addBillLinesClaimsImages(db)
     }
 
     /**
@@ -189,7 +203,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 4
+        const val VERSION = 5
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

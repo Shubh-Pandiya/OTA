@@ -49,6 +49,28 @@ class PaymentMathTest {
     }
 
     @Test
+    fun claimDeductionSettlesTheBill() {
+        val line = LineAmounts(paid = 9_000.0, cdAmount = 200.0, claim = 800.0, claimNote = "2 than torn")
+        assertEquals(10_000.0, line.settled, 0.0)
+        val totals = AdviceTotals.of(listOf(line, LineAmounts(paid = 500.0, claim = 25.5)))
+        assertEquals(825.5, totals.claim, 0.0)
+        assertEquals(10_525.5, totals.settled, 0.0)
+        assertEquals(PaymentStatus.PAID, PaymentMath.status(10_000.0, line.settled))
+    }
+
+    @Test
+    fun billLinesTotal() {
+        val items = listOf(
+            com.example.otaapplication.OrderItem(quantity = "25.5", rate = "120", unit = "M"),
+            com.example.otaapplication.OrderItem(quantity = "2", rate = "1,450.50", unit = "T"),
+            com.example.otaapplication.OrderItem(quantity = "5", rate = "", unit = "P") // no rate: skipped
+        )
+        assertEquals(5_961.0, PaymentMath.linesTotal(items)!!, 0.0)
+        assertNull(PaymentMath.linesTotal(listOf(com.example.otaapplication.OrderItem(quantity = "3"))))
+        assertNull(PaymentMath.linesTotal(emptyList()))
+    }
+
+    @Test
     fun suggestedDrCrBalance() {
         assertEquals(4_500.0 to BalanceSide.DR, PaymentMath.suggestedBalance(4_500.0))
         assertEquals(120.0 to BalanceSide.CR, PaymentMath.suggestedBalance(-120.0))
