@@ -41,6 +41,15 @@ jobs:
 
       # Unit tests boot the embedded PostgreSQL, run the migrations and exercise sync against an
       # in-process fake Supabase: no secrets needed.
+      - name: Download Gradle (retries transient 5xx)
+        run: |
+          for ($i = 1; $i -le 4; $i++) {
+            ./gradlew.bat --version
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Start-Sleep -Seconds (15 * $i)
+          }
+          exit 1
+
       - name: Test
         run: ./gradlew.bat test -PpgPlatform=windows-amd64 --console=plain
 
