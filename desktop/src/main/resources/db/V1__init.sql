@@ -122,3 +122,13 @@ create table if not exists advice_lines (
 );
 create index if not exists advice_lines_advice_idx on advice_lines (advice_id);
 create index if not exists advice_lines_bill_idx on advice_lines (bill_id);
+
+-- Same as SearchText.partyKey on the phone: first line, lower case, single spaces.
+create or replace function ota_party_key(t text) returns text language sql immutable as $$
+  select lower(btrim(regexp_replace(split_part(coalesce(t, ''), E'\n', 1), '\s+', ' ', 'g')))
+$$;
+
+-- Same as SearchText.billKey: trimmed, single spaces, upper case.
+create or replace function ota_bill_key(t text) returns text language sql immutable as $$
+  select upper(btrim(regexp_replace(coalesce(t, ''), '\s+', ' ', 'g')))
+$$;
