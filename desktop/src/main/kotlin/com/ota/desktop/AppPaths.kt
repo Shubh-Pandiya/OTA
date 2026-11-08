@@ -8,7 +8,11 @@ object AppPaths {
     val isWindows = os.contains("win")
     val isMac = os.contains("mac")
 
-    /** Per-user data folder: %LOCALAPPDATA%\OTA Business on Windows. `-Dota.home=…` overrides it (tests). */
+    /**
+     * Per-user data folder: %LOCALAPPDATA%\OTA Business Data on Windows. Kept apart from the
+     * install folder (%LOCALAPPDATA%\OTA Business) so upgrades and uninstalls never touch the
+     * database. `-Dota.home=…` overrides it (tests).
+     */
     val home: File by lazy {
         System.getProperty("ota.home")?.let { return@lazy File(it).apply { mkdirs() } }
         val base = when {
@@ -16,7 +20,7 @@ object AppPaths {
             isMac -> File(System.getProperty("user.home"), "Library/Application Support")
             else -> System.getenv("XDG_DATA_HOME")?.let(::File) ?: File(System.getProperty("user.home"), ".local/share")
         }
-        File(base, "OTA Business").apply { mkdirs() }
+        File(base, "OTA Business Data").apply { mkdirs() }
     }
 
     val pgData: File get() = File(home, "pgdata")

@@ -30,7 +30,9 @@ dependencies {
     implementation("org.jetbrains.compose.material:material-icons-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
 
-    implementation("io.zonky.test:embedded-postgres:2.2.2")
+    implementation("io.zonky.test:embedded-postgres:2.2.2") {
+        exclude(group = "io.zonky.test.postgres") // it pulls binaries for every OS; keep only ours below
+    }
     implementation(enforcedPlatform("io.zonky.test.postgres:embedded-postgres-binaries-bom:17.11.0"))
     implementation("io.zonky.test.postgres:embedded-postgres-binaries-$pgPlatform")
     implementation("org.slf4j:slf4j-nop:2.0.17")
@@ -109,6 +111,14 @@ sourceSets {
         kotlin.srcDir(generateBuildConfig.map { buildConfigOut.get() })
         resources.srcDir(copyMarks.map { marksOut.get() })
     }
+}
+
+// Regenerates packaging/ota.ico, ota.icns and ota.png from the vector logo (committed; run on change).
+val generateIcons by tasks.registering(JavaExec::class) {
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("com.ota.desktop.tools.IconGenKt")
+    args(project.file("packaging").absolutePath)
+    systemProperty("java.awt.headless", "true")
 }
 
 tasks.test {
