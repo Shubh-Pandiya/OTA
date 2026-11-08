@@ -88,7 +88,10 @@ data class Bill(
     val settled: Double = 0.0,
     val adviceCount: Int = 0,
     /** What the supplier actually billed (may differ from the orders); empty for header-only bills. */
-    val items: List<OrderItem> = emptyList()
+    val items: List<OrderItem> = emptyList(),
+    /** Parties typed on the bill itself (bills added without orders); blank = taken from its orders. */
+    val buyer: String = "",
+    val supplier: String = ""
 ) {
     /** Sum of the item lines (qty × rate), or null when no line has both. */
     val linesTotal: Double? get() = PaymentMath.linesTotal(items)
@@ -106,7 +109,10 @@ data class BillDetails(
     val cdPercent: Double? = null,
     val cdAmount: Double? = null,
     /** Item lines as billed; empty = none. */
-    val items: List<OrderItem> = emptyList()
+    val items: List<OrderItem> = emptyList(),
+    /** Parties stored on the bill; blank = taken from its orders. */
+    val buyer: String = "",
+    val supplier: String = ""
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

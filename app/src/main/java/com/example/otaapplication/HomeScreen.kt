@@ -53,6 +53,7 @@ private val ageColors = listOf(Color(0xFF43A047), Color(0xFFFFB300), Color(0xFFF
 class HomeActions(
     val newOrder: () -> Unit,
     val newAdvice: () -> Unit,
+    val addBill: () -> Unit,
     val orders: () -> Unit,
     val bills: () -> Unit,
     val advices: () -> Unit,
@@ -236,7 +237,7 @@ private fun QuickActions(actions: HomeActions) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         QuickAction(Icons.Default.EditNote, "New order", actions.newOrder)
         QuickAction(Icons.Default.Payments, "New advice", actions.newAdvice)
-        QuickAction(Icons.AutoMirrored.Filled.ReceiptLong, "Bills", actions.bills)
+        QuickAction(Icons.AutoMirrored.Filled.ReceiptLong, "Add bill", actions.addBill)
         QuickAction(Icons.Default.Contacts, "Parties", actions.parties)
     }
 }

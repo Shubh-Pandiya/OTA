@@ -137,7 +137,7 @@ class PaymentRepository(
             """.trimIndent(),
             arrayOf(adviceId)
         ).use { c ->
-            buildList { while (c.moveToNext()) add(AdviceLine(c.getString(11), c.toBill(), c.lineAmounts(12))) }
+            buildList { while (c.moveToNext()) add(AdviceLine(c.getString(BillSql.COUNT), c.toBill(), c.lineAmounts(BillSql.COUNT + 1))) }
         }
         return db.rawQuery(
             "SELECT advice_no, pay_date, buyer, supplier, mode, reference, balance_amount, balance_side, remarks, images FROM payment_advices WHERE id = ? AND is_deleted = 0",
@@ -221,8 +221,8 @@ class PaymentRepository(
 
     /**
      * Bills that can go on an advice from [buyer] to [supplier]: bills with at least one order
-     * for that pair (matched by name). A bill whose orders span several pairs is still offered,
-     * flagged as mixed; a bill without orders has no parties and is never offered.
+     * for that pair, or with that pair stored on the bill (matched by name). A bill whose orders
+     * span several pairs is still offered, flagged as mixed.
      * [excludeAdviceId] is the advice being edited: its own lines don't count as settled.
      */
     fun pairBills(buyer: String, supplier: String, excludeAdviceId: String? = null): List<PairBill> {
@@ -243,6 +243,11 @@ class PaymentRepository(
                 pairs.getOrPut(c.getString(0)) { HashSet() } += SearchText.partyKey(c.getString(1)) to SearchText.partyKey(c.getString(2))
             }
         }
+        db.rawQuery("SELECT id, buyer, supplier FROM bills WHERE is_deleted = 0 AND buyer <> '' AND supplier <> ''", null).use { c ->
+            while (c.moveToNext()) {
+                pairs.getOrPut(c.getString(0)) { HashSet() } += SearchText.partyKey(c.getString(1)) to SearchText.partyKey(c.getString(2))
+            }
+        }
         val eligible = pairs.filterValues { (buyerKey to supplierKey) in it }
         if (eligible.isEmpty()) return emptyList()
         val out = ArrayList<PairBill>()
@@ -253,7 +258,7 @@ class PaymentRepository(
             ).use { c ->
                 while (c.moveToNext()) {
                     val bill = c.toBill()
-                    out += PairBill(bill, PaymentMath.round2(c.getDouble(11)), mixedParties = eligible.getValue(bill.id).size > 1)
+                    out += PairBill(bill, PaymentMath.round2(c.getDouble(BillSql.COUNT)), mixedParties = eligible.getValue(bill.id).size > 1)
                 }
             }
         }
@@ -266,12 +271,13 @@ class PaymentRepository(
         val args = ArrayList<String>()
         for (token in SearchText.tokens(query.text)) {
             where.append(
-                """ AND (lower(b.bill_no) LIKE ? ESCAPE '\' OR lower(b.lr_no) LIKE ? ESCAPE '\' OR EXISTS (
+                """ AND (lower(b.bill_no) LIKE ? ESCAPE '\' OR lower(b.lr_no) LIKE ? ESCAPE '\'
+                    OR lower(b.buyer) LIKE ? ESCAPE '\' OR lower(b.supplier) LIKE ? ESCAPE '\' OR EXISTS (
                     SELECT 1 FROM order_bills sob JOIN orders so ON so.id = sob.order_id
                     WHERE sob.bill_id = b.id AND sob.is_deleted = 0 AND so.is_deleted = 0 AND so.search_text LIKE ? ESCAPE '\'))"""
             )
             val pattern = SearchText.containsPattern(token)
-            repeat(3) { args += pattern }
+            repeat(5) { args += pattern }
         }
         val party = """FROM order_bills pob JOIN orders po ON po.id = pob.order_id
             WHERE pob.bill_id = b.id AND pob.is_deleted = 0 AND po.is_deleted = 0 ORDER BY po.day_key, po.seq LIMIT 1"""
@@ -288,7 +294,11 @@ class PaymentRepository(
                 while (c.moveToNext()) {
                     val bill = c.toBill()
                     if (query.status == null || bill.status == query.status) {
-                        add(BillListItem(bill, SearchText.firstLine(c.stringOrNull(11).orEmpty()), SearchText.firstLine(c.stringOrNull(12).orEmpty())))
+                        add(BillListItem(
+                            bill,
+                            SearchText.firstLine(bill.buyer.ifBlank { c.stringOrNull(BillSql.COUNT).orEmpty() }),
+                            SearchText.firstLine(bill.supplier.ifBlank { c.stringOrNull(BillSql.COUNT + 1).orEmpty() })
+                        ))
                     }
                 }
             }

@@ -7,6 +7,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,7 +34,9 @@ import com.example.otaapplication.data.BillDetails
 import com.example.otaapplication.data.BillPayment
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.LocalOrders
+import com.example.otaapplication.data.OrderQuery
 import com.example.otaapplication.data.OrderRepository
+import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.OrderSummary
 import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentRepository
@@ -416,7 +420,8 @@ class PaymentDeps(
 /** Pages stacked over a screen: bill and advice details and editors link to one another. */
 sealed interface PaymentPage {
     data class BillView(val billId: String) : PaymentPage
-    data class BillEdit(val billId: String) : PaymentPage
+    /** New bill (entered from the paper bill) when [billId] is null. */
+    data class BillEdit(val billId: String?) : PaymentPage
     data class AdviceView(val adviceId: String) : PaymentPage
     /** New advice when [adviceId] is null, optionally starting from a bill and its parties. */
     data class AdviceEdit(
@@ -441,8 +446,17 @@ fun PaymentPages(
     val push = { page: PaymentPage -> onStackChange(stack + page) }
     key(stack.size, top) {
         when (top) {
-            is PaymentPage.BillView -> BillDetailPage(top.billId, deps, version, onBack = pop, onOpen = push)
-            is PaymentPage.BillEdit -> BillEditPage(top.billId, deps, onDone = { changed -> if (changed) onChanged(); pop() })
+            is PaymentPage.BillView -> BillDetailPage(top.billId, deps, version, onBack = pop, onOpen = push, onDeleted = { onChanged(); pop() })
+            is PaymentPage.BillEdit -> BillEditPage(top.billId, deps, onDone = { savedId ->
+                if (savedId == null) pop()
+                else {
+                    onChanged()
+                    // A new bill opens its detail page in place of the editor.
+                    onStackChange(stack.dropLast(1).let { below ->
+                        if (below.lastOrNull() == PaymentPage.BillView(savedId)) below else below + PaymentPage.BillView(savedId)
+                    })
+                }
+            })
             is PaymentPage.AdviceView -> AdviceDetailPage(
                 adviceId = top.adviceId,
                 deps = deps,
@@ -470,13 +484,24 @@ fun PaymentPages(
 private data class BillPageData(val bill: Bill?, val orders: List<OrderSummary>, val payments: List<BillPayment>)
 
 @Composable
-private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBack: () -> Unit, onOpen: (PaymentPage) -> Unit) {
+private fun BillDetailPage(
+    billId: String,
+    deps: PaymentDeps,
+    version: Int,
+    onBack: () -> Unit,
+    onOpen: (PaymentPage) -> Unit,
+    onDeleted: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val data by produceState<BillPageData?>(null, billId, version) {
         value = withContext(Dispatchers.IO) {
             BillPageData(deps.orders.bill(billId), deps.orders.ordersForBill(billId), deps.payments.advicesForBill(billId))
         }
     }
     val bill = data?.bill
+    val parties = data?.let { d -> d.bill?.let { billParties(it, d.orders) } }
+    var confirmDelete by remember { mutableStateOf(false) }
     FormDialog(
         title = bill?.let { "Bill ${it.billNo}" } ?: "Bill",
         icon = Icons.AutoMirrored.Filled.ReceiptLong,
@@ -485,17 +510,15 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
         navigationIcon = Icons.AutoMirrored.Filled.ArrowBack,
         actions = {
             if (bill != null) {
+                IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.DeleteOutline, contentDescription = "Delete bill") }
                 IconButton(onClick = { onOpen(PaymentPage.BillEdit(billId)) }) { Icon(Icons.Default.Edit, contentDescription = "Edit bill") }
             }
         },
-        bottomBar = if (bill != null && data!!.orders.isNotEmpty()) {
+        bottomBar = if (bill != null && parties != null) {
             {
                 Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shadowElevation = 12.dp) {
                     Button(
-                        onClick = {
-                            val first = data!!.orders.first()
-                            onOpen(PaymentPage.AdviceEdit(null, billId, SearchText.firstLine(first.buyer), SearchText.firstLine(first.supplier)))
-                        },
+                        onClick = { onOpen(PaymentPage.AdviceEdit(null, billId, parties.first, parties.second)) },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).height(50.dp),
                         shape = MaterialTheme.shapes.medium
                     ) {
@@ -516,6 +539,8 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
                 FormSection(title = "Bill details", icon = Icons.Default.Description) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         DetailRow("Bill / invoice no", bill.billNo)
+                        DetailRow("Buyer", parties?.first.orEmpty())
+                        DetailRow("Supplier", parties?.second.orEmpty())
                         DetailRow("Bill date", bill.billDate?.format(billDateFormat).orEmpty())
                         DetailRow("Amount", bill.amount?.let(::rupees).orEmpty())
                         DetailRow("LR / Bilty no", bill.lrNo)
@@ -583,6 +608,47 @@ private fun BillDetailPage(billId: String, deps: PaymentDeps, version: Int, onBa
             }
         }
     }
+    if (confirmDelete && bill != null) {
+        DeleteBillDialog(bill, onDismiss = { confirmDelete = false }) {
+            confirmDelete = false
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { runCatching { deps.orders.deleteBill(billId) } }
+                result.onSuccess {
+                    Toast.makeText(context, "Bill ${bill.billNo} deleted", Toast.LENGTH_SHORT).show()
+                    onDeleted()
+                }.onFailure { Toast.makeText(context, it.message ?: "Could not delete the bill", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeleteBillDialog(bill: Bill, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+        title = { Text("Delete bill ${bill.billNo}?") },
+        text = {
+            Text(
+                if (bill.adviceCount > 0) "This bill is on ${bill.adviceCount} payment advice${if (bill.adviceCount == 1) "" else "s"}. Remove it from the advice first."
+                else if (bill.orderCount > 0) "It will be removed from its ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}, which go back to Pending if they have no other bill."
+                else "The bill will be removed from every phone and the laptop."
+            )
+        },
+        confirmButton = {
+            if (bill.adviceCount == 0) {
+                TextButton(onClick = onConfirm, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(if (bill.adviceCount == 0) "Cancel" else "OK") } }
+    )
+}
+
+/** Buyer and supplier of a bill: those stored on it, else those of its first order; null when unknown. */
+internal fun billParties(bill: Bill, orders: List<OrderSummary>): Pair<String, String>? {
+    if (bill.buyer.isNotBlank() && bill.supplier.isNotBlank()) return bill.buyer to bill.supplier
+    val first = orders.firstOrNull() ?: return null
+    return SearchText.firstLine(bill.buyer.ifBlank { first.buyer }) to SearchText.firstLine(bill.supplier.ifBlank { first.supplier })
 }
 
 @Composable
@@ -660,41 +726,155 @@ internal fun LinkRow(icon: androidx.compose.ui.graphics.vector.ImageVector, titl
     }
 }
 
+/**
+ * Adds a bill from the supplier's paper bill ([billId] null) or edits one: number (new bills
+ * only), buyer and supplier, the orders it covers (optional) and its details. Linking an order
+ * fills blank parties from it; a bill without orders needs both parties.
+ */
 @Composable
-private fun BillEditPage(billId: String, deps: PaymentDeps, onDone: (changed: Boolean) -> Unit) {
+private fun BillEditPage(billId: String?, deps: PaymentDeps, onDone: (savedId: String?) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val bill by produceState<Bill?>(null, billId) { value = withContext(Dispatchers.IO) { deps.orders.bill(billId) } }
-    var state by remember { mutableStateOf<BillFieldsState?>(null) }
-    LaunchedEffect(bill) { if (state == null) bill?.let { state = BillFieldsState.of(it) } }
+    var ready by remember { mutableStateOf(billId == null) }
+    var billNo by remember { mutableStateOf("") }
+    var buyer by remember { mutableStateOf("") }
+    var supplier by remember { mutableStateOf("") }
+    val linked = remember { mutableStateListOf<OrderSummary>() }
+    var state by remember { mutableStateOf(if (billId == null) BillFieldsState(day = LocalDate.now().toEpochDay()) else null) }
     var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(billId) {
+        if (billId == null) return@LaunchedEffect
+        val (bill, orders) = withContext(Dispatchers.IO) { deps.orders.bill(billId) to deps.orders.ordersForBill(billId) }
+        if (bill == null) { onDone(null); return@LaunchedEffect }
+        billNo = bill.billNo
+        billParties(bill, orders)?.let { (b, s) -> buyer = b; supplier = s }
+        linked.addAll(orders)
+        state = BillFieldsState.of(bill)
+        ready = true
+    }
+    val s = state
+    val problems = buildList {
+        if (billId == null && billNo.isBlank()) add("Enter the bill number from the supplier's bill.")
+        if (linked.isEmpty() && (buyer.isBlank() || supplier.isBlank())) add("Enter the buyer and supplier, or link an order.")
+        if (s != null && !s.valid) add("Fix the amounts marked in red.")
+    }
     FormDialog(
-        title = bill?.let { "Edit bill ${it.billNo}" } ?: "Edit bill",
+        title = if (billId == null) "Add bill" else "Edit bill $billNo",
         icon = Icons.AutoMirrored.Filled.ReceiptLong,
-        onDismiss = { onDone(false) },
-        confirmEnabled = state?.valid == true,
+        onDismiss = { onDone(null) },
+        confirmEnabled = ready && s != null && problems.isEmpty(),
         busy = busy,
         onConfirm = {
-            val details = state?.details() ?: return@FormDialog
+            val fields = s ?: return@FormDialog
+            // Parties that match a linked order are left to the order, which keeps the row small.
+            val fromOrders = linked.any { SearchText.partyKey(it.buyer) == SearchText.partyKey(buyer) && SearchText.partyKey(it.supplier) == SearchText.partyKey(supplier) }
+            val details = fields.details().let { if (fromOrders) it else it.copy(buyer = buyer.trim(), supplier = supplier.trim()) }
             busy = true
             scope.launch {
-                val saved = withContext(Dispatchers.IO) { runCatching { deps.orders.updateBillDetails(billId, details) }.getOrNull() }
+                val result = withContext(Dispatchers.IO) { runCatching { deps.orders.saveBill(billId, billNo, details, linked.map { it.id }) } }
                 busy = false
-                if (saved != null) onDone(true) else Toast.makeText(context, "Could not save the bill", Toast.LENGTH_SHORT).show()
+                result.onSuccess { bill ->
+                    Toast.makeText(context, "Bill ${bill.billNo} saved", Toast.LENGTH_SHORT).show()
+                    onDone(bill.id)
+                }.onFailure { Toast.makeText(context, it.message ?: "Could not save the bill", Toast.LENGTH_LONG).show() }
             }
         }
     ) {
-        val s = state
-        if (s == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-        else {
-            Text(
-                "The bill number can't be changed. To fix a wrong number, remove the bill from its orders and add it again.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+        if (s == null) { LinearProgressIndicator(Modifier.fillMaxWidth()); return@FormDialog }
+        FormSection(title = "Bill", icon = Icons.AutoMirrored.Filled.ReceiptLong) {
+            FormTextField(
+                value = billNo,
+                onValueChange = { billNo = it },
+                label = "Bill / invoice number",
+                icon = Icons.Default.Tag,
+                readOnly = billId != null,
+                singleLine = true,
+                supportingText = if (billId != null) "The number can't be changed; delete the bill and add it again." else "As printed on the supplier's bill"
             )
-            BillFields(s, optional = true, loadOrderItems = {
-                orderItemsFor(context, deps.orders.ordersForBill(billId).mapNotNull { it.uuid })
+            val suffix = if (linked.isEmpty()) "" else " (from orders)"
+            PartyField(PartyType.BUYER, buyer, { buyer = it }, "Buyer$suffix", "Buyer name", deps.catalog, nameOnly = true, imeAction = ImeAction.Next)
+            PartyField(PartyType.SUPPLIER, supplier, { supplier = it }, "Supplier$suffix", "Supplier name", deps.catalog, nameOnly = true, imeAction = ImeAction.Next)
+        }
+        LinkedOrdersSection(linked, deps.orders) { order ->
+            linked += order
+            if (buyer.isBlank()) buyer = SearchText.firstLine(order.buyer)
+            if (supplier.isBlank()) supplier = SearchText.firstLine(order.supplier)
+        }
+        FormSection(title = "Bill details", icon = Icons.Default.Description) {
+            BillFields(s, optional = true, loadOrderItems = if (linked.isEmpty()) null else {
+                { orderItemsFor(context, linked.mapNotNull { it.uuid }) }
             })
+        }
+        if (billId != null || billNo.isNotBlank()) problems.firstOrNull()?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+/** Orders the bill covers: tap × to unlink, or search by order number / party to link more. */
+@Composable
+private fun LinkedOrdersSection(linked: MutableList<OrderSummary>, orders: OrderRepository, onLink: (OrderSummary) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<OrderSummary>>(emptyList()) }
+    var searchedFor by remember { mutableStateOf("") }
+    val resultsView = remember { BringIntoViewRequester() }
+    LaunchedEffect(query, linked.size) {
+        if (query.isBlank()) { results = emptyList(); searchedFor = ""; return@LaunchedEffect }
+        kotlinx.coroutines.delay(200)
+        val taken = linked.map { it.id }.toSet()
+        // An order still waiting for its number can't take a bill yet.
+        results = withContext(Dispatchers.IO) { orders.search(OrderQuery(text = query)) }
+            .filter { it.id !in taken && !OrderNumber.isPending(it.offerNo) }
+            .take(5)
+        searchedFor = query
+        // Keep the matches above the keyboard.
+        kotlinx.coroutines.delay(50)
+        resultsView.bringIntoView()
+    }
+    FormSection(
+        title = "Orders (optional)",
+        icon = Icons.Default.Inventory2,
+        trailing = { if (linked.isNotEmpty()) Text("${linked.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    ) {
+        linked.forEach { order ->
+            LinkRow(
+                icon = Icons.Default.Description,
+                title = "Offer ${OrderNumber.display(order.offerNo)}",
+                subtitle = listOf(order.date, SearchText.firstLine(order.buyer), SearchText.firstLine(order.supplier)).filter { it.isNotBlank() }.joinToString(" · "),
+                onClick = null,
+                trailing = {
+                    IconButton(onClick = { linked.remove(order) }) {
+                        Icon(Icons.Default.Close, contentDescription = "Unlink order ${OrderNumber.display(order.offerNo)}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            )
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text("Link an order") },
+            placeholder = { Text("Order no, buyer or supplier", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp)) },
+            singleLine = true,
+            shape = MaterialTheme.shapes.small,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Column(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().bringIntoViewRequester(resultsView)
+        ) {
+            results.forEach { order ->
+                LinkRow(
+                    icon = Icons.Default.Add,
+                    title = "Offer ${OrderNumber.display(order.offerNo)}",
+                    subtitle = listOf(order.date, SearchText.firstLine(order.buyer), SearchText.firstLine(order.supplier)).filter { it.isNotBlank() }.joinToString(" · "),
+                    onClick = { onLink(order); query = "" }
+                )
+            }
+            if (query.isNotBlank() && searchedFor == query && results.isEmpty()) {
+                Text("No matching order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

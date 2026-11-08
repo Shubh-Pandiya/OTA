@@ -24,7 +24,10 @@ internal object BillSql {
         b.lr_no, b.cd_percent, b.cd_amount,
         (SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES) AS settled,
         (SELECT COUNT(*) $LIVE_LINES) AS advice_count,
-        b.items"""
+        b.items, b.buyer, b.supplier"""
+
+    /** Number of columns in [COLUMNS]; extra select columns start at this index. */
+    const val COUNT = 13
 
     /** Settled amount as a SQL expression, for filtering by payment status. */
     const val SETTLED_EXPR = "(SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES)"
@@ -49,7 +52,9 @@ internal object BillSql {
         cdAmount = doubleOrNull(7),
         settled = PaymentMath.round2(getDouble(8)),
         adviceCount = getInt(9),
-        items = itemsFromText(stringOrNull(10))
+        items = itemsFromText(stringOrNull(10)),
+        buyer = stringOrNull(11).orEmpty(),
+        supplier = stringOrNull(12).orEmpty()
     )
 
     /** Bill item lines as stored in bills.items: the compact JSON arrays used for order items. */

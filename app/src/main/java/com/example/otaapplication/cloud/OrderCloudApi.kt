@@ -71,7 +71,7 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
@@ -82,6 +82,9 @@ class OrderTable<T>(
                     .put("cd_percent", row.value.cdPercent ?: JSONObject.NULL)
                     .put("cd_amount", row.value.cdAmount ?: JSONObject.NULL)
                     .put("items", row.value.items.takeIf { it.isNotEmpty() }?.let(::itemsToJson) ?: JSONObject.NULL)
+                    // Null (not "") when the parties come from the bill's orders: keeps rows small.
+                    .put("buyer", row.value.buyer.ifBlank { null } ?: JSONObject.NULL)
+                    .put("supplier", row.value.supplier.ifBlank { null } ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -93,7 +96,9 @@ class OrderTable<T>(
                     lrNo = json.text("lr_no"),
                     cdPercent = json.number("cd_percent"),
                     cdAmount = json.number("cd_amount"),
-                    items = itemsFromJson(json.optJSONArray("items"))
+                    items = itemsFromJson(json.optJSONArray("items")),
+                    buyer = json.text("buyer"),
+                    supplier = json.text("supplier")
                 ))
             }
         )

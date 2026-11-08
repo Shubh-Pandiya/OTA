@@ -137,14 +137,12 @@ fun PaymentAdviceScreen(
                 }
             }
         }
-        if (tab == PaymentTab.ADVICES) {
-            ExtendedFloatingActionButton(
-                onClick = { stack = listOf(PaymentPage.AdviceEdit(null)) },
-                icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                text = { Text("New advice") },
-                modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp)
-            )
-        }
+        ExtendedFloatingActionButton(
+            onClick = { stack = listOf(if (tab == PaymentTab.ADVICES) PaymentPage.AdviceEdit(null) else PaymentPage.BillEdit(null)) },
+            icon = { Icon(Icons.Default.Add, contentDescription = null) },
+            text = { Text(if (tab == PaymentTab.ADVICES) "New advice" else "Add bill") },
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp)
+        )
     }
 
     PaymentPages(stack = stack, onStackChange = { stack = it }, deps = deps, version = version + remoteChanges, onChanged = { version++ })

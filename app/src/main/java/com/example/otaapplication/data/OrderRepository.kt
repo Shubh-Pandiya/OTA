@@ -195,20 +195,7 @@ class OrderRepository(
                     put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
                 })
             }
-            for (orderId in orderIds.distinct()) {
-                val revived = db.update(
-                    "order_bills",
-                    ContentValues().apply { put("is_deleted", 0); put("updated_at", now); put("sync_pending", 1) },
-                    "order_id = ? AND bill_id = ? AND is_deleted = 1",
-                    arrayOf(orderId, billId)
-                )
-                if (revived == 0) {
-                    db.insertWithOnConflict("order_bills", null, ContentValues().apply {
-                        put("id", SyncIds.link(orderId, billId)); put("order_id", orderId); put("bill_id", billId)
-                        put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
-                    }, SQLiteDatabase.CONFLICT_IGNORE)
-                }
-            }
+            for (orderId in orderIds.distinct()) linkOrder(db, orderId, billId, now)
             db.setTransactionSuccessful()
             return BillSql.billById(db, billId)!!
         } finally {
@@ -217,17 +204,97 @@ class OrderRepository(
         }
     }
 
-    /** Replaces a bill's date, amount, LR number, cash discount and item lines (the number stays). */
-    fun updateBillDetails(billId: String, details: BillDetails): Bill? {
+    fun bill(billId: String): Bill? = BillSql.billById(helper.readableDatabase, billId)
+
+    /**
+     * Saves a bill entered from the Bills section: a new one when [billId] is null (its number
+     * must not belong to another live bill), otherwise the bill's details. Its live order links
+     * become exactly [orderIds]; a bill without orders must name its buyer and supplier, which
+     * are kept on the bill so it can still be paid through an advice.
+     */
+    fun saveBill(billId: String?, billNo: String, details: BillDetails, orderIds: Collection<String>): Bill {
+        val wanted = orderIds.distinct()
+        require(wanted.isNotEmpty() || (details.buyer.isNotBlank() && details.supplier.isNotBlank())) {
+            "Enter the buyer and supplier, or link an order"
+        }
         val db = helper.writableDatabase
-        val updated = db.update("bills", ContentValues().apply {
-            putDetails(details); put("updated_at", clock()); put("sync_pending", 1)
-        }, "id = ? AND is_deleted = 0", arrayOf(billId))
-        if (updated > 0) onLocalChange?.invoke()
-        return BillSql.billById(helper.readableDatabase, billId)
+        val now = clock()
+        db.beginTransaction()
+        try {
+            val id = if (billId == null) {
+                val display = billNo.trim().replace(Regex("\\s+"), " ")
+                require(display.isNotEmpty()) { "Bill number is required" }
+                val key = SearchText.billKey(display)
+                val existing = db.rawQuery("SELECT id, is_deleted FROM bills WHERE bill_key = ?", arrayOf(key)).use { c ->
+                    if (c.moveToFirst()) c.getString(0) to (c.getInt(1) != 0) else null
+                }
+                require(existing == null || existing.second) { "Bill $display already exists" }
+                val values = ContentValues().apply {
+                    put("bill_no", display); put("bill_key", key); putDetails(details)
+                    put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
+                }
+                if (existing != null) {
+                    db.update("bills", values, "id = ?", arrayOf(existing.first))
+                    existing.first
+                } else {
+                    SyncIds.bill(key).also { newId ->
+                        values.put("id", newId); values.put("created_at", now)
+                        db.insertOrThrow("bills", null, values)
+                    }
+                }
+            } else {
+                val updated = db.update("bills", ContentValues().apply {
+                    putDetails(details); put("updated_at", now); put("sync_pending", 1)
+                }, "id = ? AND is_deleted = 0", arrayOf(billId))
+                require(updated > 0) { "This bill was removed" }
+                billId
+            }
+            val live = db.rawQuery("SELECT order_id FROM order_bills WHERE bill_id = ? AND is_deleted = 0", arrayOf(id)).use { c ->
+                buildSet { while (c.moveToNext()) add(c.getString(0)) }
+            }
+            for (orderId in live - wanted.toSet()) {
+                db.update("order_bills", tombstone(now), "order_id = ? AND bill_id = ? AND is_deleted = 0", arrayOf(orderId, id))
+            }
+            for (orderId in wanted.filterNot(live::contains)) linkOrder(db, orderId, id, now)
+            db.setTransactionSuccessful()
+            return BillSql.billById(db, id)!!
+        } finally {
+            db.endTransaction()
+            onLocalChange?.invoke()
+        }
     }
 
-    fun bill(billId: String): Bill? = BillSql.billById(helper.readableDatabase, billId)
+    /** Deletes a bill and its order links. A bill already on a payment advice must be taken off it first. */
+    fun deleteBill(billId: String) {
+        val db = helper.writableDatabase
+        val now = clock()
+        db.beginTransaction()
+        try {
+            val bill = BillSql.billById(db, billId) ?: return
+            require(bill.adviceCount == 0) { "Bill ${bill.billNo} is on a payment advice. Remove it from the advice first." }
+            db.update("order_bills", tombstone(now), "bill_id = ? AND is_deleted = 0", arrayOf(billId))
+            db.update("bills", tombstone(now), "id = ? AND is_deleted = 0", arrayOf(billId))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        onLocalChange?.invoke()
+    }
+
+    private fun linkOrder(db: SQLiteDatabase, orderId: String, billId: String, now: Long) {
+        val revived = db.update(
+            "order_bills",
+            ContentValues().apply { put("is_deleted", 0); put("updated_at", now); put("sync_pending", 1) },
+            "order_id = ? AND bill_id = ? AND is_deleted = 1",
+            arrayOf(orderId, billId)
+        )
+        if (revived == 0) {
+            db.insertWithOnConflict("order_bills", null, ContentValues().apply {
+                put("id", SyncIds.link(orderId, billId)); put("order_id", orderId); put("bill_id", billId)
+                put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
 
     /** Cloud ids (uuids) of the given local orders, in the given order; orders without one are left out. */
     fun uuidsOf(orderIds: Collection<String>): List<String> {
@@ -269,6 +336,8 @@ class OrderRepository(
         if (!onlyGiven || d.cdPercent != null) put("cd_percent", d.cdPercent)
         if (!onlyGiven || d.cdAmount != null) put("cd_amount", d.cdAmount)
         if (!onlyGiven || d.items.isNotEmpty()) put("items", BillSql.itemsToText(d.items))
+        if (!onlyGiven || d.buyer.isNotBlank()) put("buyer", d.buyer.trim())
+        if (!onlyGiven || d.supplier.isNotBlank()) put("supplier", d.supplier.trim())
     }
 
     /** Removes a (wrong) bill link from an order. A bill left with no orders is retired too. */
@@ -286,10 +355,11 @@ class OrderRepository(
         onLocalChange?.invoke()
     }
 
+    /** Bills that name their own buyer and supplier (added from the Bills section) are kept. */
     private fun retireOrphanBills(db: SQLiteDatabase, now: Long) {
         db.update(
             "bills", tombstone(now),
-            "is_deleted = 0 AND NOT EXISTS (SELECT 1 FROM order_bills ob WHERE ob.bill_id = bills.id AND ob.is_deleted = 0)",
+            "is_deleted = 0 AND (buyer = '' OR supplier = '') AND NOT EXISTS (SELECT 1 FROM order_bills ob WHERE ob.bill_id = bills.id AND ob.is_deleted = 0)",
             null
         )
     }
@@ -334,7 +404,7 @@ class OrderRepository(
 
     fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount, items FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
+            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount, items, buyer, supplier FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
             null
         ).use { c ->
             buildList {
@@ -346,7 +416,9 @@ class OrderRepository(
                             lrNo = c.getStringOrNull(6).orEmpty(),
                             cdPercent = if (c.isNull(7)) null else c.getDouble(7),
                             cdAmount = if (c.isNull(8)) null else c.getDouble(8),
-                            items = BillSql.itemsFromText(c.getStringOrNull(9))
+                            items = BillSql.itemsFromText(c.getStringOrNull(9)),
+                            buyer = c.getStringOrNull(10).orEmpty(),
+                            supplier = c.getStringOrNull(11).orEmpty()
                         ),
                         c.getInt(4) != 0,
                         c.getLong(5)
@@ -398,6 +470,7 @@ class OrderRepository(
                     put("bill_date", row.value.billDate); put("amount", row.value.amount)
                     put("lr_no", row.value.lrNo); put("cd_percent", row.value.cdPercent); put("cd_amount", row.value.cdAmount)
                     put("items", BillSql.itemsToText(row.value.items))
+                    put("buyer", row.value.buyer); put("supplier", row.value.supplier)
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
                 }
                 if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {

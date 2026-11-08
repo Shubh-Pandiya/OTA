@@ -91,6 +91,13 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         db.execSQL("CREATE INDEX idx_order_bills_bill ON order_bills(bill_id)")
         createPaymentTables(db)
         addBillLinesClaimsImages(db)
+        addBillParties(db)
+    }
+
+    /** v6: buyer and supplier stored on a bill, for bills added without orders. */
+    private fun addBillParties(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE bills ADD COLUMN buyer TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE bills ADD COLUMN supplier TEXT NOT NULL DEFAULT ''")
     }
 
     /**
@@ -168,6 +175,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             createPaymentTables(db)
         }
         if (oldVersion < 5) addBillLinesClaimsImages(db)
+        if (oldVersion < 6) addBillParties(db)
     }
 
     /**
@@ -203,7 +211,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 5
+        const val VERSION = 6
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

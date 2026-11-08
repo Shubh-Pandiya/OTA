@@ -329,6 +329,7 @@ class MainActivity : ComponentActivity() {
                                 HomeActions(
                                     newOrder = { currentScreen = Screen.OrderEntry },
                                     newAdvice = { pendingPage = PaymentPage.AdviceEdit(null); currentScreen = Screen.Advices },
+                                    addBill = { pendingPage = PaymentPage.BillEdit(null); currentScreen = Screen.Bills },
                                     orders = { currentScreen = Screen.OrderHistory },
                                     bills = { currentScreen = Screen.Bills },
                                     advices = { currentScreen = Screen.Advices },
