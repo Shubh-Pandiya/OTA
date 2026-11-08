@@ -135,25 +135,23 @@ private fun AdviceList(selected: String?, onSelect: (String?) -> Unit, onNew: ()
             Button(onClick = onNew) { IconText(Icons.Default.Add, "New advice") }
         }
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Panel(Modifier.weight(1.35f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
+            Panel(Modifier.weight(1.5f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
                 Column(Modifier.padding(14.dp)) {
                     Field(text, { text = it }, "Search advice no, buyer, supplier, bill no, cheque / txn…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
                     Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ChipRow() {
                         listOf(Range.ALL, Range.D30, Range.D90, Range.M12, Range.FY).forEach { r -> Chip(r.label, range == r) { range = r } }
                     }
                 }
-                TableHeader(listOf(Col("Advice no", 1.3f), Col("Date", 0.9f), Col("Paid by", 1.5f), Col("Paid to", 1.5f), Col("Bills", 0.9f), Col("Paid", 1f, TextAlign.End)))
+                TableHeader(listOf(Col("Advice", 0f, width = ADVICE_NO_W), Col("Paid by", 1f), Col("Paid to", 1f), Col("Paid", 0f, TextAlign.End, AMOUNT_W)))
                 if (rows.isEmpty()) Empty("No payment advices. Create one from a bill or with New advice.")
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(rows, key = { it.id }) { a ->
                         TableRow(a.id == selected, { onSelect(a.id) }) {
-                            Cell(a.adviceNo, 1.3f, bold = true)
-                            Cell(a.payDate.dmy(), 0.9f)
-                            Cell(SearchText.firstLine(a.buyer), 1.5f)
-                            Cell(SearchText.firstLine(a.supplier), 1.5f)
-                            Cell(a.billNos.joinToString(", "), 0.9f)
-                            Cell(moneyFull(a.paid), 1f, TextAlign.End)
+                            Cell2(a.adviceNo, a.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
+                            Cell(SearchText.firstLine(a.buyer), 1f)
+                            Cell(SearchText.firstLine(a.supplier), 1f)
+                            Cell2(moneyFull(a.paid), a.billNos.joinToString(", "), 0f, TextAlign.End, width = AMOUNT_W)
                         }
                     }
                 }
@@ -187,7 +185,8 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
             Text(a.adviceNo, style = MaterialTheme.typography.titleLarge.merge(Numeric))
             Text(a.payDate.nice(), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              ChipRow(Modifier.weight(1f), spacing = 8.dp) {
                 Button(onClick = {
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) { AdvicePdf.write(a, AdvicePdf.fileFor(a, AppPaths.documents)) } }
@@ -195,7 +194,7 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
                     }
                 }) { IconText(Icons.Default.Share, "Open PDF") }
                 OutlinedButton(onClick = onEdit) { IconText(Icons.Default.Edit, "Edit") }
-                Spacer(Modifier.weight(1f))
+              }
                 IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete", tint = Brand.Red) }
             }
             Spacer(Modifier.height(14.dp))
@@ -211,14 +210,16 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
             Spacer(Modifier.height(12.dp))
             Text("Bills", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
-            TableHeader(listOf(Col("Bill", 1f), Col("Paid", 1f, TextAlign.End), Col("C.D.", 0.8f, TextAlign.End), Col("G.R.", 0.8f, TextAlign.End), Col("R.D.", 0.8f, TextAlign.End)))
+            TableHeader(listOf(Col("Bill", 1f), Col("Paid", 0f, TextAlign.End, AMOUNT_W)))
             a.lines.forEach { l ->
                 TableRow(false, { nav.go(Section.BILLS, Target.Bill(l.bill.id)) }) {
-                    Cell(l.bill.billNo, 1f, bold = true)
-                    Cell(moneyFull(l.amounts.paid), 1f, TextAlign.End)
-                    Cell(l.amounts.cdAmount?.let(::moneyFull) ?: "—", 0.8f, TextAlign.End)
-                    Cell(l.amounts.goodsReturn?.let(::moneyFull) ?: "—", 0.8f, TextAlign.End)
-                    Cell(l.amounts.rateDiff?.let(::moneyFull) ?: "—", 0.8f, TextAlign.End)
+                    val adj = listOfNotNull(
+                        l.amounts.cdAmount?.takeIf { it != 0.0 }?.let { "C.D. ${moneyFull(it)}" },
+                        l.amounts.goodsReturn?.takeIf { it != 0.0 }?.let { "G.R. ${moneyFull(it)}" },
+                        l.amounts.rateDiff?.takeIf { it != 0.0 }?.let { "R.D. ${moneyFull(it)}" }
+                    ).joinToString(" · ")
+                    Cell2(l.bill.billNo, adj, 1f, bold = true)
+                    Cell(moneyFull(l.amounts.paid), 0f, TextAlign.End, width = AMOUNT_W)
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -389,7 +390,7 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
             Column(Modifier.weight(1.5f).fillMaxHeight().verticalScroll(rememberScrollState())) {
                 Panel(Modifier.fillMaxWidth(), title = "Payment") {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        DateField(payDate, { payDate = it }, "Payment date", Modifier.width(180.dp))
+                        DateField(payDate, { payDate = it }, "Payment date", Modifier.width(160.dp))
                         PartyField(PartyType.BUYER, buyer, { buyer = it }, "Paid by (buyer)", Modifier.weight(1f))
                         PartyField(PartyType.SUPPLIER, supplier, { supplier = it }, "Paid to (supplier)", Modifier.weight(1f))
                     }
@@ -422,11 +423,12 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
                                 val b = pair.bill
                                 TableRow(false, { lines += LineState.fresh(pair) }) {
                                     Icon(Icons.Default.Add, null, tint = Brand.Saffron, modifier = Modifier.size(18.dp))
-                                    Cell("Bill ${b.billNo}", 1f, bold = true)
-                                    Cell(b.billDate.dmy(), 0.8f)
-                                    Cell(b.amount?.let { "Bill ${moneyFull(it)}" } ?: "", 1f)
-                                    Cell(pair.balanceBefore?.let { "due ${moneyFull(it)}" } ?: "amount not entered", 1f, color = Brand.Red)
-                                    Cell(if (pair.mixedParties) "orders for other parties too" else "", 1.2f, color = Brand.Amber)
+                                    Cell2(b.billNo, b.billDate.dmy(), 0f, bold = true, width = BILL_NO_W)
+                                    Cell(if (pair.mixedParties) "Orders for other parties too" else "", 1f, color = Brand.Amber, maxLines = 2)
+                                    Cell2(
+                                        pair.balanceBefore?.let { "due ${moneyFull(it)}" } ?: "amount not entered",
+                                        b.amount?.let { "bill ${moneyFull(it)}" }.orEmpty(), 0f, TextAlign.End, color = Brand.Red, width = 150.dp
+                                    )
                                 }
                             }
                         }
@@ -464,8 +466,11 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
                     Field(remarks, { remarks = it }, "Remarks (optional)", Modifier.fillMaxWidth(), singleLine = false, minLines = 2)
                 }
                 AnimatedVisibility(problems.isNotEmpty()) {
-                    Surface(Modifier.fillMaxWidth().padding(top = 14.dp), RoundedCornerShape(10.dp), color = Brand.Red.copy(alpha = 0.07f), border = BorderStroke(1.dp, Brand.Red.copy(alpha = 0.3f))) {
-                        Column(Modifier.padding(12.dp)) { problems.forEach { Text("• $it", color = Brand.Red, style = MaterialTheme.typography.bodySmall) } }
+                    Surface(Modifier.fillMaxWidth().padding(top = 14.dp), RoundedCornerShape(10.dp), color = Brand.Amber.copy(alpha = 0.08f), border = BorderStroke(1.dp, Brand.Amber.copy(alpha = 0.35f))) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("To save this advice", style = MaterialTheme.typography.labelLarge, color = Brand.SaffronDark)
+                            problems.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+                        }
                     }
                 }
             }

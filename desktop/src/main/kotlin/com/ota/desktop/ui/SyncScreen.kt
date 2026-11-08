@@ -1,5 +1,7 @@
 package com.ota.desktop.ui
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -185,10 +187,11 @@ fun ExportScreen() {
             Triple("parties", "Buyers and suppliers", "The full catalog with addresses, GSTIN and bank details.")
         )
         cards.chunked(3).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 row.forEach { (key, title, text) ->
-                    Panel(Modifier.weight(1f), title = title) {
-                        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.height(60.dp))
+                    Panel(Modifier.weight(1f).fillMaxHeight(), title = title) {
+                        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 14.dp))
+                        Spacer(Modifier.weight(1f))
                         Button(enabled = busy == null, onClick = {
                             when (key) {
                                 "all" -> export(key, "OTA all data $today.xlsx") { app.export.everything() }

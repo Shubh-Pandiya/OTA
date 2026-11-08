@@ -1,5 +1,7 @@
 package com.ota.desktop.ui
 
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -300,16 +302,16 @@ fun Gauge(percent: Double, warnAt: Int, label: String, modifier: Modifier = Modi
     }
     Box(modifier, contentAlignment = Alignment.BottomCenter) {
         Canvas(Modifier.fillMaxSize()) {
-            val stroke = size.width * 0.09f
-            val d = min(size.width - stroke, (size.height - stroke / 2) * 2)
+            val stroke = min(min(size.width, size.height * 2) * 0.09f, 18.dp.toPx())
+            val d = min(size.width - stroke, (size.height - stroke) * 2)
             val tl = Offset((size.width - d) / 2, stroke / 2)
             drawArc(Brand.Line, 180f, 180f, false, tl, Size(d, d), style = Stroke(stroke, cap = StrokeCap.Round))
             drawArc(color, 180f, 180f * animated / 100f, false, tl, Size(d, d), style = Stroke(stroke, cap = StrokeCap.Round))
             // Warning threshold tick.
             val a = Math.toRadians(180.0 + 180.0 * warnAt / 100)
             val c = Offset(size.width / 2, tl.y + d / 2)
-            val r1 = d / 2 - stroke * 0.9f
-            val r2 = d / 2 + stroke * 0.9f
+            val r1 = d / 2 - stroke * 0.8f
+            val r2 = d / 2 + stroke * 0.8f
             drawLine(Brand.Muted, Offset(c.x + r1 * kotlin.math.cos(a).toFloat(), c.y + r1 * kotlin.math.sin(a).toFloat()), Offset(c.x + r2 * kotlin.math.cos(a).toFloat(), c.y + r2 * kotlin.math.sin(a).toFloat()), 2f)
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(bottom = 4.dp)) {
@@ -327,7 +329,12 @@ fun Kpi(label: String, value: String, sub: String, accent: Color, modifier: Modi
             Box(Modifier.width(4.dp).height(84.dp).background(accent))
             Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                 Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                Text(value, style = MaterialTheme.typography.titleLarge.merge(Numeric), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // Large rupee amounts shrink to fit rather than being cut off.
+                val style = MaterialTheme.typography.titleLarge.merge(Numeric)
+                BasicText(
+                    value, style = style.copy(color = MaterialTheme.colorScheme.onSurface), maxLines = 1,
+                    autoSize = TextAutoSize.StepBased(minFontSize = 13.sp, maxFontSize = style.fontSize, stepSize = 1.sp)
+                )
                 Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

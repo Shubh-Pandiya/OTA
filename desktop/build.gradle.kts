@@ -131,6 +131,16 @@ tasks.test {
     }
 }
 
+// Renders every main screen over demo data to build/screenshots (no window needed).
+tasks.register<JavaExec>("screenshots") {
+    group = "documentation"
+    dependsOn("testClasses")
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.ota.desktop.ScreenshotsKt")
+    args(layout.buildDirectory.dir("screenshots").get().asFile.absolutePath)
+    systemProperty("java.awt.headless", "true")
+}
+
 compose.desktop {
     application {
         mainClass = "com.ota.desktop.MainKt"

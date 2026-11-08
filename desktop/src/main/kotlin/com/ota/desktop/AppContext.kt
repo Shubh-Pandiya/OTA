@@ -31,7 +31,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** Everything the screens use: the local database, stores, cloud sign-in and background sync. */
-class AppContext private constructor(private val server: EmbeddedDb, val db: Db) : AutoCloseable {
+class AppContext internal constructor(private val server: EmbeddedDb, val db: Db) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val kv = Kv(db)
     val config: SupabaseConfig = SupabaseConfig.fromBuildConfig()

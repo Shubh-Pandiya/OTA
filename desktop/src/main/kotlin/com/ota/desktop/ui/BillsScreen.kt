@@ -83,28 +83,29 @@ fun BillsScreen() {
             }) { IconText(Icons.Default.Share, "Export view") }
         }
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Panel(Modifier.weight(1.35f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
+            Panel(Modifier.weight(1.5f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
                 Column(Modifier.padding(14.dp)) {
                     Field(text, { text = it }, "Search bill no, LR no, buyer, supplier…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
                     Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ChipRow() {
                         Chip("All", status == null) { status = null }
                         PaymentStatus.entries.forEach { s -> Chip(s.label, status == s) { status = s } }
                     }
                 }
-                TableHeader(listOf(Col("Bill no", 1f), Col("Date", 0.9f), Col("Buyer", 1.5f), Col("Supplier", 1.5f), Col("Amount", 1f, TextAlign.End), Col("Balance", 1f, TextAlign.End), Col("Status", 0.9f, TextAlign.End)))
+                TableHeader(listOf(Col("Bill", 0f, width = BILL_NO_W), Col("Buyer", 1f), Col("Supplier", 1f), Col("Balance", 0f, TextAlign.End, AMOUNT_W), Col("Status", 0f, TextAlign.End, STATUS_W)))
                 if (rows.isEmpty()) Empty("No bills. Attach a bill to an order to start.")
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(rows, key = { it.bill.id }) { r ->
                         val b = r.bill
                         TableRow(b.id == selected, { selected = b.id }) {
-                            Cell(b.billNo, 1f, bold = true)
-                            Cell(b.billDate.dmy(), 0.9f)
-                            Cell(SearchText.firstLine(r.buyer), 1.5f)
-                            Cell(SearchText.firstLine(r.supplier), 1.5f)
-                            Cell(rupees(b.amount), 1f, TextAlign.End)
-                            Cell(rupees(b.balance), 1f, TextAlign.End, color = if ((b.balance ?: 0.0) > 0.005) Brand.Red else Color.Unspecified)
-                            Box(Modifier.weight(0.9f), contentAlignment = Alignment.CenterEnd) { StatusPill(b.status) }
+                            Cell2(b.billNo, b.billDate.dmy(), 0f, bold = true, width = BILL_NO_W)
+                            Cell(SearchText.firstLine(r.buyer), 1f)
+                            Cell(SearchText.firstLine(r.supplier), 1f)
+                            Cell2(
+                                rupees(b.balance), b.amount?.let { "of " + moneyFull(it) }.orEmpty(), 0f, TextAlign.End,
+                                color = if ((b.balance ?: 0.0) > 0.005) Brand.Red else Color.Unspecified, width = AMOUNT_W
+                            )
+                            Box(Modifier.width(STATUS_W), contentAlignment = Alignment.CenterEnd) { StatusPill(b.status) }
                         }
                     }
                 }
@@ -138,7 +139,7 @@ private fun BillDetail(item: BillListItem) {
                 StatusPill(b.status)
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ChipRow(spacing = 8.dp) {
                 Button(onClick = { nav.go(Section.ADVICES, Target.NewAdvice(b.id)) }) { IconText(Icons.Default.Add, "New payment advice") }
                 OutlinedButton(onClick = { edit = true }) { IconText(Icons.Default.Edit, "Edit details") }
             }
@@ -158,9 +159,8 @@ private fun BillDetail(item: BillListItem) {
             Spacer(Modifier.height(4.dp))
             orders.forEach { o ->
                 TableRow(false, { nav.go(Section.ORDERS, Target.Order(o.id)) }) {
-                    Cell(o.orderNo, 1f, bold = true)
-                    Cell(o.data.date, 0.8f)
-                    Cell(SearchText.firstLine(o.data.buyer), 1.6f)
+                    Cell2(o.orderNo, o.data.date, 0f, bold = true, width = ORDER_NO_W)
+                    Cell(SearchText.firstLine(o.data.buyer), 1f)
                 }
             }
             if (orders.isEmpty()) Text("Not linked to any order on this laptop.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -168,11 +168,10 @@ private fun BillDetail(item: BillListItem) {
             Text("Payments", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             if (payments.isEmpty()) Text("No payment advice yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            else TableHeader(listOf(Col("Advice", 1.2f), Col("Date", 0.9f), Col("Paid", 1f, TextAlign.End), Col("CD + GR + RD", 1f, TextAlign.End)))
+            else TableHeader(listOf(Col("Advice", 0f, width = ADVICE_NO_W), Col("Paid", 1f, TextAlign.End), Col("CD + GR + RD", 1f, TextAlign.End)))
             payments.forEach { p ->
                 TableRow(false, { nav.go(Section.ADVICES, Target.Advice(p.adviceId)) }) {
-                    Cell(p.adviceNo, 1.2f, bold = true)
-                    Cell(p.payDate.dmy(), 0.9f)
+                    Cell2(p.adviceNo, p.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
                     Cell(moneyFull(p.amounts.paid), 1f, TextAlign.End)
                     Cell(moneyFull(PaymentMath.round2(p.amounts.settled - p.amounts.paid)), 1f, TextAlign.End)
                 }

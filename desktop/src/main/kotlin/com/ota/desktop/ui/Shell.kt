@@ -97,6 +97,7 @@ sealed interface Target {
     data class Bill(val id: String) : Target
     data class Advice(val id: String) : Target
     data class NewAdvice(val billId: String?) : Target
+    data object NewOrder : Target
 }
 
 class Navigator {
@@ -150,8 +151,7 @@ fun ago(millis: Long?): String {
 }
 
 @Composable
-fun AppShell(app: AppContext) {
-    val nav = remember { Navigator() }
+fun AppShell(app: AppContext, nav: Navigator = remember { Navigator() }) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val toast: (String) -> Unit = { msg -> scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(msg) } }

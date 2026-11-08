@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -67,6 +69,7 @@ enum class Range(val label: String) {
 fun DashboardScreen() {
     val app = LocalApp.current
     val toast = LocalToast.current
+    val nav = LocalNav.current
     val scope = rememberCoroutineScope()
     var range by rememberSaveable { mutableStateOf(Range.M6) }
     var fromText by rememberSaveable { mutableStateOf("") }
@@ -83,12 +86,14 @@ fun DashboardScreen() {
         app.analytics.dashboard(filter).also { loading = false }
     }
     val staffCodes by rememberLoad(emptyList<Int>()) {
-        app.orders.list(limit = 1_000_000).mapNotNull { Analytics.staffOfOrder(it.orderNo) }.distinct().sorted()
+        app.analytics.staffCodes()
     }
     val status by app.engine.status.collectAsState()
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader("Dashboard", dash?.let { Dashboard.filterLabel(it.filter) } ?: "Loading…") {
+            OutlinedButton(onClick = { nav.go(Section.ORDERS, Target.NewOrder) }) { IconText(Icons.Default.Add, "New order") }
+            Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val d = dash ?: return@Button
                 val file = chooseSaveFile("Export dashboard", "OTA dashboard ${LocalDate.now()}.xlsx") ?: return@Button
@@ -150,10 +155,10 @@ fun DashboardScreen() {
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = gap) {
-            Panel(Modifier.weight(1f), title = "Top buyers", actions = { Legend() }) {
+            Panel(Modifier.weight(1f), title = "Top buyers", actions = { Legend(Brand.Saffron) }) {
                 HBars(d.topBuyers.map { HBar(it.name, it.billed, it.outstanding, Brand.Saffron, "") }, Modifier.height(IntrinsicSize.Min))
             }
-            Panel(Modifier.weight(1f), title = "Top suppliers", actions = { Legend() }) {
+            Panel(Modifier.weight(1f), title = "Top suppliers", actions = { Legend(Brand.Blue) }) {
                 HBars(d.topSuppliers.map { HBar(it.name, it.billed, it.outstanding, Brand.Blue, "") })
             }
         }
@@ -210,9 +215,9 @@ fun DashboardScreen() {
 }
 
 @Composable
-private fun Legend() {
+private fun Legend(billed: androidx.compose.ui.graphics.Color) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Dot(Brand.Muted.copy(alpha = 0.5f)); Text("Billed", style = MaterialTheme.typography.labelSmall)
-        Dot(Brand.Red); Text("Outstanding", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Normal)
+        Dot(billed); Text("Billed", style = MaterialTheme.typography.labelSmall)
+        Dot(Brand.Red.copy(alpha = 0.75f)); Text("Outstanding", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Normal)
     }
 }

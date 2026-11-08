@@ -1,5 +1,8 @@
 package com.ota.desktop.ui
 
+import androidx.compose.foundation.layout.FlowRowScope
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -156,6 +159,21 @@ fun Pill(text: String, color: Color, modifier: Modifier = Modifier) {
     }
 }
 
+/** Fixed widths for table columns whose text must never be cut (numbers, dates, amounts). */
+val ORDER_NO_W = 118.dp
+val ADVICE_NO_W = 138.dp
+val BILL_NO_W = 92.dp
+val DATE_W = 88.dp
+val AMOUNT_W = 108.dp
+val STATUS_W = 96.dp
+
+/** Chips or buttons that wrap onto another line when the pane is narrow. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ChipRow(modifier: Modifier = Modifier, spacing: Dp = 6.dp, content: @Composable FlowRowScope.() -> Unit) {
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(spacing), verticalArrangement = Arrangement.spacedBy(6.dp), content = content)
+}
+
 @Composable
 fun StatusPill(status: PaymentStatus) = Pill(status.label, Brand.status(status))
 
@@ -191,7 +209,10 @@ fun Banner(text: String, color: Color, modifier: Modifier = Modifier, action: (@
 
 // ------------------------------------------------------------------------------------ tables
 
-class Col(val title: String, val weight: Float, val align: TextAlign = TextAlign.Start)
+/** A table column: [weight] shares the free width; a fixed [width] suits numbers, dates and status pills. */
+class Col(val title: String, val weight: Float, val align: TextAlign = TextAlign.Start, val width: Dp? = null)
+
+fun RowScope.colWidth(weight: Float, width: Dp?): Modifier = if (width != null) Modifier.width(width) else Modifier.weight(weight)
 
 @Composable
 fun TableHeader(cols: List<Col>) {
@@ -201,7 +222,7 @@ fun TableHeader(cols: List<Col>) {
     ) {
         cols.forEach {
             Text(
-                it.title, Modifier.weight(it.weight), style = MaterialTheme.typography.labelMedium,
+                it.title, colWidth(it.weight, it.width), style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, textAlign = it.align, maxLines = 1
             )
         }
@@ -227,11 +248,29 @@ fun TableRow(selected: Boolean, onClick: () -> Unit, content: @Composable RowSco
 }
 
 @Composable
-fun RowScope.Cell(text: String, weight: Float, align: TextAlign = TextAlign.Start, bold: Boolean = false, color: Color = Color.Unspecified, maxLines: Int = 1) {
+fun RowScope.Cell(text: String, weight: Float, align: TextAlign = TextAlign.Start, bold: Boolean = false, color: Color = Color.Unspecified, maxLines: Int = 1, width: Dp? = null) {
     Text(
-        text, Modifier.weight(weight), textAlign = align, maxLines = maxLines, overflow = TextOverflow.Ellipsis, color = color,
+        text, colWidth(weight, width), textAlign = align, maxLines = maxLines, overflow = TextOverflow.Ellipsis, color = color,
         style = MaterialTheme.typography.bodyMedium.merge(Numeric), fontWeight = if (bold) FontWeight.SemiBold else null
     )
+}
+
+/** A cell with a main line and a smaller muted line under it (e.g. a bill number and its date). */
+@Composable
+fun RowScope.Cell2(
+    top: String, bottom: String, weight: Float, align: TextAlign = TextAlign.Start, bold: Boolean = false,
+    color: Color = Color.Unspecified, width: Dp? = null
+) {
+    Column(colWidth(weight, width), horizontalAlignment = if (align == TextAlign.End) Alignment.End else Alignment.Start) {
+        Text(
+            top, maxLines = 1, overflow = TextOverflow.Ellipsis, color = color, textAlign = align,
+            style = MaterialTheme.typography.bodyMedium.merge(Numeric), fontWeight = if (bold) FontWeight.SemiBold else null
+        )
+        if (bottom.isNotEmpty()) Text(
+            bottom, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = align,
+            style = MaterialTheme.typography.labelSmall.merge(Numeric), color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
 }
 
 // ------------------------------------------------------------------------------------ inputs

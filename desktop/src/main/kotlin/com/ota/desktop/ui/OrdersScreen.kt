@@ -84,6 +84,7 @@ fun OrdersScreen() {
     LaunchedEffect(nav.target) {
         when (val t = nav.take(Section.ORDERS)) {
             is Target.Order -> { selected = t.id; editing = null }
+            Target.NewOrder -> editing = Editing(null)
             else -> {}
         }
     }
@@ -118,31 +119,32 @@ private fun OrderList(selected: String?, onSelect: (String?) -> Unit, onNew: () 
             Button(onClick = onNew) { IconText(Icons.Default.Add, "New order") }
         }
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Panel(Modifier.weight(1.35f).fillMaxHeight(), padding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+            Panel(Modifier.weight(1.5f).fillMaxHeight(), padding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
                 Column(Modifier.padding(14.dp)) {
                     Field(text, { text = it }, "Search number, buyer, supplier, item, bill…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
                     Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ChipRow {
                         listOf(Range.ALL, Range.D30, Range.D90, Range.M12).forEach { r -> Chip(r.label, range == r) { range = r } }
-                        Spacer(Modifier.width(10.dp))
+                    }
+                    ChipRow {
                         listOf(BillStatusFilter.ALL to "Any bill", BillStatusFilter.PENDING to "Bill pending", BillStatusFilter.RECEIVED to "Bill received")
                             .forEach { (f, label) -> Chip(label, bills == f) { bills = f } }
                     }
                 }
-                val cols = listOf(Col("Order no", 1.3f), Col("Date", 0.9f), Col("Buyer", 1.7f), Col("Supplier", 1.7f), Col("Bills", 1f))
+                val cols = listOf(Col("Order no", 0f, width = ORDER_NO_W), Col("Date", 0f, width = DATE_W), Col("Buyer", 1.2f), Col("Supplier", 1.1f), Col("Bills", 0.8f))
                 TableHeader(cols)
                 if (rows.isEmpty()) Empty(if (text.isBlank()) "No orders yet. Create one, or sign in and sync to fetch the phones' orders." else "No orders match \"$text\"")
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(rows, key = { it.id }) { r ->
                         TableRow(r.id == selected, { onSelect(r.id) }) {
-                            Row(Modifier.weight(1.3f), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.width(ORDER_NO_W), verticalAlignment = Alignment.CenterVertically) {
                                 Text(r.orderNo.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium.merge(Numeric), fontWeight = FontWeight.SemiBold, maxLines = 1)
                                 if (r.pending) { Spacer(Modifier.width(6.dp)); Dot(Brand.Amber, 6.dp) }
                             }
-                            Cell(r.data.date, 0.9f)
-                            Cell(SearchText.firstLine(r.data.buyer), 1.7f)
-                            Cell(SearchText.firstLine(r.data.supplier), 1.7f)
-                            Cell(r.billNos.joinToString(", ").ifEmpty { "Pending" }, 1f, color = if (r.billNos.isEmpty()) Brand.Amber else Color.Unspecified)
+                            Cell(r.data.date, 0f, width = DATE_W)
+                            Cell(SearchText.firstLine(r.data.buyer), 1.2f)
+                            Cell(SearchText.firstLine(r.data.supplier), 1.1f)
+                            Cell(r.billNos.joinToString(", ").ifEmpty { "Pending" }, 0.8f, color = if (r.billNos.isEmpty()) Brand.Amber else Color.Unspecified)
                         }
                     }
                 }
@@ -185,7 +187,8 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
                 if (row.pending) Pill("Not synced yet", Brand.Amber)
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              ChipRow(Modifier.weight(1f), spacing = 8.dp) {
                 Button(onClick = {
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) { OrderPdf.write(d, OrderPdf.fileFor(d, AppPaths.documents)) } }
@@ -194,7 +197,7 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
                 }) { IconText(Icons.Default.Share, "Open PDF") }
                 OutlinedButton(onClick = onEdit) { IconText(Icons.Default.Edit, "Edit") }
                 OutlinedButton(onClick = { attach = true }) { IconText(Icons.Default.Add, "Attach bill") }
-                Spacer(Modifier.weight(1f))
+              }
                 IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete", tint = Brand.Red) }
             }
             Spacer(Modifier.height(14.dp))
@@ -234,10 +237,9 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
             if (bills.isEmpty()) Text("No bill received yet.", color = Brand.Amber, modifier = Modifier.padding(vertical = 6.dp))
             bills.forEach { b ->
                 TableRow(false, { nav.go(Section.BILLS, Target.Bill(b.id)) }) {
-                    Cell(b.billNo, 1f, bold = true)
-                    Cell(b.billDate.dmy(), 1f)
-                    Cell(rupees(b.amount), 1f, TextAlign.End)
-                    Box(Modifier.weight(0.9f), contentAlignment = Alignment.CenterEnd) { StatusPill(b.status) }
+                    Cell2(b.billNo, b.billDate.dmy(), 1f, bold = true)
+                    Cell(rupees(b.amount), 0f, TextAlign.End, width = AMOUNT_W)
+                    Box(Modifier.width(STATUS_W), contentAlignment = Alignment.CenterEnd) { StatusPill(b.status) }
                 }
             }
         }

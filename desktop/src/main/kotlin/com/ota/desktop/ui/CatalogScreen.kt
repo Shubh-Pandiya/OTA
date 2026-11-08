@@ -65,7 +65,7 @@ fun CatalogScreen() {
             Panel(Modifier.weight(1.2f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
                 PrimaryTabRow(selectedTabIndex = type.ordinal, containerColor = androidx.compose.ui.graphics.Color.Transparent, contentColor = Brand.SaffronDark) {
                     PartyType.entries.forEach { t ->
-                        Tab(type == t, { type = t; editing = null }, text = { Text(t.pluralLabel) })
+                        Tab(type == t, { type = t; editing = null }, text = { Text(t.pluralLabel) }, selectedContentColor = Brand.SaffronDark, unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 Box(Modifier.padding(14.dp)) {

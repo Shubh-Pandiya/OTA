@@ -129,6 +129,13 @@ class Analytics(private val db: Db, private val orders: OrderStore, private val 
         }
     }
 
+    /** Staff digits that appear in order numbers, for the dashboard's staff filter. */
+    fun staffCodes(): List<Int> = db.read { c ->
+        c.query("select distinct substr(order_no, 1, 1) as d from orders where not deleted and order_no ~ '^[1-9]20[0-9]{6}[0-9]+$' order by 1") {
+            it.str("d")?.toIntOrNull()
+        }
+    }.filterNotNull()
+
     fun dashboard(filter: DashFilter, today: LocalDate = LocalDate.now()): Dashboard {
         val orderRows = orders.list(OrderFilter(from = filter.from, to = filter.to, buyer = filter.buyer, supplier = filter.supplier, staff = filter.staff), limit = 1_000_000)
         val bk = SearchText.partyKey(filter.buyer)
