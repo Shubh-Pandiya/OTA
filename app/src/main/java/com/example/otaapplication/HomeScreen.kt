@@ -64,12 +64,13 @@ class HomeActions(
 
 /** Start screen: today at a glance for the agency, with quick actions and what needs following up. */
 @Composable
-fun HomeScreen(stats: HomeStats?, cloudStatus: CloudStatus, staffName: String?, actions: HomeActions) {
+fun HomeScreen(stats: HomeStats?, cloudStatus: CloudStatus, staffName: String?, actions: HomeActions, refreshKey: Int = 0) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item(key = "today") { Reveal(0) { TodayCard(refreshKey) } }
         item(key = "hero") { Reveal(0) { HeroCard(stats, cloudStatus, staffName, actions.sync) } }
         item(key = "actions") { Reveal(1) { QuickActions(actions) } }
         item(key = "kpis") { Reveal(2) { KpiGrid(stats, actions) } }
@@ -152,7 +153,7 @@ private fun Reveal(index: Int, content: @Composable () -> Unit) {
 @Composable
 private fun HeroCard(stats: HomeStats?, cloud: CloudStatus, staffName: String?, onSync: () -> Unit) {
     val hour = remember { LocalTime.now().hour }
-    val greeting = when (hour) { in 4..11 -> "Good morning"; in 12..16 -> "Good afternoon"; else -> "Good evening" }
+    val greeting = when (hour) { in 4..11 -> "Good morning"; in 12..16 -> "Good afternoon"; in 17..22 -> "Good evening"; else -> "Hello" }
     val primary = MaterialTheme.colorScheme.primary
     Column(
         Modifier

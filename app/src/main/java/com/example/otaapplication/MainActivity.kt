@@ -1,11 +1,13 @@
 package com.example.otaapplication
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.os.Bundle
+import com.example.otaapplication.reminders.Reminders
 import android.os.Environment
 import android.text.Layout
 import android.text.StaticLayout
@@ -156,6 +158,22 @@ class MainActivity : ComponentActivity() {
         resumeTick++
     }
 
+    // Bumped when a reminder notification is tapped, which opens Home.
+    private var homeRequest by mutableIntStateOf(0)
+
+    private fun takeHomeRequest(intent: Intent?) {
+        if (intent?.getBooleanExtra(Reminders.EXTRA_OPEN_HOME, false) == true) {
+            intent.removeExtra(Reminders.EXTRA_OPEN_HOME)
+            homeRequest++
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeHomeRequest(intent)
+    }
+
     override fun onStart() {
         super.onStart()
         // Catalog sync whenever the app becomes visible, then a light poll while it stays visible.
@@ -177,6 +195,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Index existing orders (including ones saved before search existed) in the background.
         lifecycleScope.launch(Dispatchers.IO) { syncOrderIndex(); shrinkOldOrderPdfs() }
+        // Alarms are cleared when the app is force-stopped; setting them again on launch is cheap.
+        lifecycleScope.launch(Dispatchers.IO) { Reminders.rescheduleAll(this@MainActivity) }
+        takeHomeRequest(intent)
         setContent {
             OTAApplicationTheme {
                 val authStatus by cloud.status.collectAsState()
@@ -220,6 +241,14 @@ class MainActivity : ComponentActivity() {
         fun navigate(screen: Screen) {
             currentScreen = screen
             scope.launch { drawerState.close() }
+        }
+
+        val openHome = homeRequest
+        LaunchedEffect(openHome) {
+            if (openHome > 0) {
+                currentScreen = Screen.Home
+                drawerState.close()
+            }
         }
 
         BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
@@ -308,7 +337,8 @@ class MainActivity : ComponentActivity() {
                                     openAdvice = { pendingPage = PaymentPage.AdviceView(it); currentScreen = Screen.Advices },
                                     sync = { scope.launch { cloud.syncNow() } }
                                 )
-                            }
+                            },
+                            refreshKey = resumed
                         )
                         Screen.OrderEntry -> OrderFormScreen(
                             // New orders get their number from the cloud when saved; orders reopened
