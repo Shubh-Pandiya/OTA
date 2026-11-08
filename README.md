@@ -157,7 +157,7 @@ archive/purge RPCs the desktop app uses.
 
 The laptop is the agency's main store; the cloud only carries recent data between phones and the laptop.
 
-**Install:** download `OTA.Business-<version>.msi` (or the `.exe`) from the
+**Install:** download `OTA-Business-<version>.msi` (or `OTA-Business-Setup-<version>.exe`) from the
 [latest desktop release](https://github.com/Shubh-Pandiya/OTA/releases?q=desktop-v) and run it. It installs
 for the current user (no admin prompt) and needs nothing else: the installer bundles its own Java
 runtime and PostgreSQL 17. On first launch the app creates a private database under

@@ -156,14 +156,18 @@ jobs:
           version=$(grep '^otaDesktopVersion=' desktop/gradle.properties | cut -d= -f2)
           tag="${GITHUB_REF_NAME}"
           case "$tag" in desktop-v*) ;; *) tag="desktop-v$version" ;; esac
-          files=$(find dist -name '*.msi' -o -name '*.exe')
+          mkdir -p out
+          cp dist/msi/*.msi "out/OTA-Business-$version.msi"
+          cp dist/exe/*.exe "out/OTA-Business-Setup-$version.exe"
+          files=(out/*)
+          ls -la out
           notes="OTA Business for Windows $version.
 
-          Download **OTA.Business-$version.msi** (or the .exe) and run it. It installs for the current user without admin rights and sets up its own database on first launch. Sign in with your staff account once; after that it works offline and syncs with the cloud in the background.
+          Download **OTA-Business-$version.msi** (or **OTA-Business-Setup-$version.exe**) and run it. It installs for the current user without admin rights and sets up its own database on first launch. Sign in with your staff account once; after that it works offline and syncs with the cloud in the background.
 
           Windows may show a SmartScreen warning because the installer is not code-signed: choose *More info* > *Run anyway*."
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" $files --clobber
+            gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" $files --title "OTA Business Desktop $version" --notes "$notes" --target "$GITHUB_SHA"
+            gh release create "$tag" "${files[@]}" --title "OTA Business Desktop $version" --notes "$notes" --target "$GITHUB_SHA"
           fi
