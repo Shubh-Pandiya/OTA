@@ -39,17 +39,37 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # services.gradle.org / its GitHub mirror intermittently time out from hosted runners, so fetch
+      # the distribution with curl (retries + mirrors), verify the pinned SHA-256 and point the
+      # wrapper at the local copy.
+      - name: Fetch Gradle distribution
+        run: |
+          $props = "gradle/wrapper/gradle-wrapper.properties"
+          $text = Get-Content $props -Raw
+          $url = ([regex]'distributionUrl=(.+)').Match($text).Groups[1].Value.Trim().Replace('\:', ':')
+          $sha = ([regex]'distributionSha256Sum=(\w+)').Match($text).Groups[1].Value
+          $name = Split-Path $url -Leaf
+          $ver = ([regex]'gradle-(.+)-bin\.zip').Match($name).Groups[1].Value
+          $zip = Join-Path $env:RUNNER_TEMP $name
+          $mirrors = @($url, "https://github.com/gradle/gradle-distributions/releases/download/v$ver/$name", "https://mirrors.cloud.tencent.com/gradle/$name")
+          $ok = $false
+          for ($round = 1; $round -le 5 -and -not $ok; $round++) {
+            foreach ($m in $mirrors) {
+              Write-Host "Round ${round}: $m"
+              curl.exe -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 600 -o $zip $m
+              if ($LASTEXITCODE -eq 0 -and (Get-FileHash $zip -Algorithm SHA256).Hash -ieq $sha) { $ok = $true; break }
+            }
+            if (-not $ok) { Start-Sleep -Seconds (20 * $round) }
+          }
+          if (-not $ok) { throw "Could not download $name" }
+          $fileUrl = "file:///" + ($zip -replace '\\', '/')
+          $text = $text -replace 'distributionUrl=.+', ("distributionUrl=" + $fileUrl.Replace(':', '\:'))
+          Set-Content $props $text -NoNewline
+          ./gradlew.bat --version
+          if ($LASTEXITCODE -ne 0) { throw "Gradle wrapper failed" }
+
       # Unit tests boot the embedded PostgreSQL, run the migrations and exercise sync against an
       # in-process fake Supabase: no secrets needed.
-      - name: Download Gradle (retries transient 5xx)
-        run: |
-          for ($i = 1; $i -le 4; $i++) {
-            ./gradlew.bat --version
-            if ($LASTEXITCODE -eq 0) { exit 0 }
-            Start-Sleep -Seconds (15 * $i)
-          }
-          exit 1
-
       - name: Test
         run: ./gradlew.bat test -PpgPlatform=windows-amd64 --console=plain
 
