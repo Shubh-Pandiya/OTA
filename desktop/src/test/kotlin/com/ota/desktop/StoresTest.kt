@@ -2,6 +2,7 @@ package com.ota.desktop
 
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.BalanceSide
 import com.example.otaapplication.data.BillDetails
@@ -22,6 +23,7 @@ import java.time.LocalDate
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -38,7 +40,7 @@ class StoresTest {
     fun setUp() {
         db = TestDb.fresh()
         numbers = Numbers(db, Kv(db)) { day }
-        orders = OrderStore(db, numbers)
+        orders = OrderStore(db)
         payments = PaymentStore(db, numbers)
     }
 
@@ -47,35 +49,93 @@ class StoresTest {
         items = listOf(OrderItem("1", "Cotton shirting", qty, "120", "M"), OrderItem("2", "Suiting", "5", "900", "T"))
     )
 
+    private var serial = 0
+    private fun numbered(data: OrderFormData = order()) = orders.create(data, OrderNumber.formatFy(day, ++serial))
+
     @Test
-    fun ordersAreNumberedPerStaffAndDay() {
-        val a = orders.create(order(), 3)
-        val b = orders.create(order(), 3)
-        val c = orders.create(order(), 1)
-        assertEquals("320261110001", a.orderNo)
-        assertEquals("320261110002", b.orderNo)
-        assertEquals("120261110001", c.orderNo)
+    fun ordersKeepTheirFyNumberOrWaitForOne() {
+        val a = numbered()
+        val b = numbered()
+        assertEquals("26270001", a.orderNo)
+        assertEquals("26270002", b.orderNo)
+        assertFailsWith<IllegalArgumentException> { orders.create(order(), "26270001") }
+        val p1 = orders.create(order(), "")
+        val p2 = orders.create(order(), "")
+        assertTrue(OrderNumber.isPending(p1.orderNo) && OrderNumber.isPending(p2.orderNo))
         assertEquals(listOf("M", "T"), a.data.items.map { it.unit })
         assertEquals(day, a.day)
 
-        assertEquals(2, orders.list(OrderFilter(staff = 3)).size)
-        assertEquals(3, orders.list(OrderFilter(buyer = "ram traders")).size)
-        assertEquals(1, orders.list(OrderFilter(text = "320261110002")).size)
-        assertEquals(3, orders.list(OrderFilter(text = "suiting")).size)
+        assertEquals(4, orders.list(OrderFilter(buyer = "ram traders")).size)
+        assertEquals(1, orders.list(OrderFilter(text = "26270002")).size)
+        assertEquals(4, orders.list(OrderFilter(text = "suiting")).size)
+
+        // A pending order can't get a bill until it has its number.
+        assertFailsWith<IllegalArgumentException> { orders.attachBill(listOf(p1.id), "X1") }
+        assertEquals(listOf(p1.id, p2.id), orders.numberPending().map { it.first })
+        assertTrue(orders.assignNumber(p1.id, "26270003"))
+        assertFalse(orders.assignNumber(p1.id, "26270004"), "a number is given once")
+        assertEquals("26270003", orders.get(p1.id)!!.orderNo)
+        orders.attachBill(listOf(p1.id), "X1")
 
         orders.update(a.id, a.data.copy(remarks = "urgent"))
         assertEquals("urgent", orders.get(a.id)!!.data.remarks)
-        assertEquals("320261110001", orders.get(a.id)!!.orderNo)
+        assertEquals("26270001", orders.get(a.id)!!.orderNo)
         orders.delete(b.id)
         assertNull(orders.get(b.id))
-        // A deleted number is never reused.
-        assertEquals("320261110003", orders.create(order(), 3).orderNo)
+    }
+
+    @Test
+    fun standaloneBillsCarryTheirOwnPartiesAndLines() {
+        val lines = listOf(OrderItem("1", "Cotton shirting", "25", "120", "M"), OrderItem("2", "Suiting", "1", "900", "T"))
+        assertFailsWith<IllegalArgumentException> { orders.saveBill(null, "SB-1", BillDetails(amount = 3900.0), emptyList()) }
+        val bill = orders.saveBill(null, " sb-1 ", BillDetails(amount = 3900.0, items = lines, buyer = "Ram Traders\nSurat", supplier = "Shiv Mills"), emptyList())
+        assertEquals("sb-1", bill.billNo)
+        assertEquals(0, bill.orderCount)
+        assertEquals("Ram Traders\nSurat", bill.buyer)
+        assertEquals(lines.map { it.copy(key = 0L) }, bill.items.map { it.copy(key = 0L) })
+        assertFailsWith<IllegalArgumentException>("numbers stay unique") {
+            orders.saveBill(null, " SB-1", BillDetails(buyer = "x", supplier = "y"), emptyList())
+        }
+
+        // Paid through an advice even with no orders; listed with its own parties.
+        val pair = payments.pairBills("ram traders", "Shiv Mills")
+        assertEquals(listOf("sb-1"), pair.map { it.bill.billNo })
+        assertEquals("Ram Traders", payments.bills(com.ota.desktop.data.BillFilter(text = "shirting")).single().buyer)
+
+        // Edit: link an order; the stored parties stay.
+        val o = numbered()
+        val edited = orders.saveBill(bill.id, "ignored", BillDetails(amount = 4000.0, items = lines, buyer = "Ram Traders\nSurat", supplier = "Shiv Mills"), listOf(o.id))
+        assertEquals(4000.0, edited.amount)
+        assertEquals(1, edited.orderCount)
+        assertEquals("sb-1", edited.billNo)
+        // Detaching its only order doesn't retire a bill with parties.
+        orders.detachBill(o.id, bill.id)
+        assertNotNull(orders.bill(bill.id))
+
+        // Claim counts towards settled; a bill on an advice can't be deleted.
+        val adv = payments.save(
+            AdviceDraft(
+                payDate = day, buyer = "Ram Traders", supplier = "Shiv Mills", mode = PaymentMode.CASH, reference = "", balanceAmount = null,
+                balanceSide = null, remarks = "", lines = listOf(bill.id to LineAmounts(paid = 3800.0, claim = 200.0, claimNote = "shade variation"))
+            ),
+            3
+        )
+        assertEquals(4000.0, orders.bill(bill.id)!!.settled)
+        assertEquals(PaymentStatus.PAID, orders.bill(bill.id)!!.status)
+        assertEquals("shade variation", payments.advice(adv.id)!!.lines.single().amounts.claimNote)
+        assertFailsWith<IllegalArgumentException> { orders.deleteBill(bill.id) }
+        payments.delete(adv.id)
+        orders.deleteBill(bill.id)
+        assertNull(orders.billByNumber("SB-1"))
+        assertTrue(payments.bills().none { it.bill.id == bill.id })
+        // Its number is free again.
+        assertNotNull(orders.saveBill(null, "SB-1", BillDetails(buyer = "a", supplier = "b"), emptyList()))
     }
 
     @Test
     fun billsAttachToManyOrdersAndRetireWhenOrphaned() {
-        val a = orders.create(order(), 3)
-        val b = orders.create(order(), 3)
+        val a = numbered()
+        val b = numbered()
         val bill = orders.attachBill(listOf(a.id, b.id), " inv  77 ", BillDetails(amount = 1000.0, lrNo = "LR9"))
         assertEquals("inv 77", bill.billNo)
         assertEquals(2, bill.orderCount)
@@ -103,8 +163,8 @@ class StoresTest {
 
     @Test
     fun advicesSettleBillsAndAreSearchable() {
-        val a = orders.create(order(), 3)
-        val other = orders.create(order(buyer = "Other Buyer"), 3)
+        val a = numbered()
+        val other = numbered(order(buyer = "Other Buyer"))
         val bill = orders.attachBill(listOf(a.id), "B1", BillDetails(amount = 1000.0))
         orders.attachBill(listOf(other.id), "B2", BillDetails(amount = 500.0))
 
@@ -155,7 +215,7 @@ class StoresTest {
         assertTrue(t.toArchive(db, 10).isEmpty())
 
         // A newer local edit wins over an older cloud version and blocks archiving until pushed.
-        orders.updateBillDetails(id, BillDetails(amount = 20.0))
+        orders.saveBill(id, "X1", BillDetails(amount = 20.0, buyer = "B", supplier = "S"), emptyList())
         assertEquals(0, t.applyPulled(db, listOf(v1.copy(clientUpdatedAt = 999, serverUpdatedAt = "2026-11-10T11:00:00+00:00"))))
         assertEquals(20.0, orders.bill(id)!!.amount)
         assertTrue(t.toArchive(db, 10).isEmpty())

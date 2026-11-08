@@ -1,7 +1,9 @@
 package com.ota.desktop.dash
 
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.QtyUnit
 import com.example.otaapplication.Units
+import com.example.otaapplication.data.AdviceSummary
 import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentStatus
 import com.example.otaapplication.data.SearchText
@@ -45,9 +47,10 @@ data class StatusStat(val status: PaymentStatus, val count: Int, val billed: Dou
 data class PaymentLine(
     val adviceId: String, val adviceNo: String, val payDate: LocalDate?, val buyer: String, val supplier: String,
     val mode: String, val reference: String, val billNo: String, val billDate: LocalDate?, val billAmount: Double?,
-    val paid: Double, val cdPercent: Double?, val cd: Double, val goodsReturn: Double, val rateDiff: Double
+    val paid: Double, val cdPercent: Double?, val cd: Double, val goodsReturn: Double, val rateDiff: Double,
+    val claim: Double = 0.0, val claimNote: String = ""
 ) {
-    val settled: Double get() = PaymentMath.round2(paid + cd + goodsReturn + rateDiff)
+    val settled: Double get() = PaymentMath.round2(paid + cd + goodsReturn + rateDiff + claim)
 }
 
 data class Dashboard(
@@ -62,6 +65,7 @@ data class Dashboard(
     val cashDiscount: Double,
     val goodsReturn: Double,
     val rateDiff: Double,
+    val claim: Double,
     val pendingBills: Int,
     /** "Day", "Week" or "Month": the bucket size of the time series. */
     val period: String,
@@ -74,7 +78,7 @@ data class Dashboard(
     val status: List<StatusStat>,
     val staff: List<StaffStat>
 ) {
-    val adjustments: List<Point> get() = listOf(Point("Cash discount", cashDiscount), Point("Goods return", goodsReturn), Point("Rate difference", rateDiff))
+    val adjustments: List<Point> get() = listOf(Point("Cash discount", cashDiscount), Point("Goods return", goodsReturn), Point("Rate difference", rateDiff), Point("Claim / defect", claim))
 
     /** Every chart's numbers as sheets, for "Export dashboard". */
     fun tables(): List<SheetTable> = listOf(
@@ -85,7 +89,7 @@ data class Dashboard(
                 listOf("Orders", orderCount), listOf("Order items", itemCount), listOf("Orders without bill", pendingBills),
                 listOf("Bills", billCount), listOf("Billed amount", billed), listOf("Outstanding", outstanding),
                 listOf("Payment advices", adviceCount), listOf("Paid", paid),
-                listOf("Cash discount", cashDiscount), listOf("Goods return", goodsReturn), listOf("Rate difference", rateDiff)
+                listOf("Cash discount", cashDiscount), listOf("Goods return", goodsReturn), listOf("Rate difference", rateDiff), listOf("Claim / defect", claim)
             )
         ),
         SheetTable("Orders over time", listOf(period, "Orders"), ordersOverTime.map { listOf(it.label, it.value.toInt()) }),
@@ -110,13 +114,64 @@ data class Dashboard(
     }
 }
 
+/** The Home screen's at-a-glance numbers: today's work, bills to come, money due and recent activity. */
+data class Home(
+    val today: LocalDate,
+    val ordersToday: Int,
+    val ordersThisMonth: Int,
+    /** Orders with no bill attached yet (the supplier's paper bill is still to come). */
+    val awaitingBill: Int,
+    /** Orders saved offline that get their FY number on the next sync. */
+    val pendingNumbers: Int,
+    val outstanding: Double,
+    val billsDue: Int,
+    val billsWithoutAmount: Int,
+    val ageing: List<Bucket>,
+    val receivedThisMonth: Double,
+    val advicesThisMonth: Int,
+    val oldestDue: List<BillListItem>,
+    val recentOrders: List<OrderRow>,
+    val recentAdvices: List<AdviceSummary>
+)
+
 /** Dashboard numbers from the local database. Everything is computed locally; no cloud calls. */
 class Analytics(private val db: Db, private val orders: OrderStore, private val payments: PaymentStore) {
+
+    fun home(today: LocalDate = LocalDate.now(), listSize: Int = 6): Home {
+        val all = orders.list(limit = 1_000_000)
+        val monthStart = today.withDayOfMonth(1)
+        val bills = payments.bills()
+        val due = bills.filter { (it.bill.balance ?: 0.0) > 0.005 }
+        val ageing = AGES.map { (label, range) ->
+            val inBucket = due.filter { it.bill.billDate != null && ChronoUnit.DAYS.between(it.bill.billDate, today) in range }
+            Bucket(label, inBucket.size, PaymentMath.round2(inBucket.sumOf { it.bill.balance ?: 0.0 }))
+        } + due.filter { it.bill.billDate == null }.takeIf { it.isNotEmpty() }
+            ?.let { listOf(Bucket("No bill date", it.size, PaymentMath.round2(it.sumOf { b -> b.bill.balance ?: 0.0 }))) }.orEmpty()
+        val advices = payments.search()
+        val thisMonth = advices.filter { a -> a.payDate?.let { !it.isBefore(monthStart) && !it.isAfter(today) } == true }
+        return Home(
+            today = today,
+            ordersToday = all.count { it.day == today },
+            ordersThisMonth = all.count { d -> d.day?.let { !it.isBefore(monthStart) && !it.isAfter(today) } == true },
+            awaitingBill = all.count { it.billNos.isEmpty() },
+            pendingNumbers = all.count { OrderNumber.isPending(it.orderNo) },
+            outstanding = PaymentMath.round2(due.sumOf { it.bill.balance ?: 0.0 }),
+            billsDue = due.size,
+            billsWithoutAmount = bills.count { it.bill.amount == null },
+            ageing = ageing,
+            receivedThisMonth = PaymentMath.round2(thisMonth.sumOf { it.paid }),
+            advicesThisMonth = thisMonth.size,
+            oldestDue = due.sortedWith(compareBy<BillListItem> { it.bill.billDate == null }.thenBy { it.bill.billDate }).take(listSize),
+            recentOrders = all.take(listSize),
+            recentAdvices = advices.take(listSize)
+        )
+    }
 
     fun paymentLines(): List<PaymentLine> = db.read { c ->
         c.query(
             """select a.id as advice_id, a.advice_no, a.pay_date, a.buyer, a.supplier, a.mode, a.reference,
-                      b.bill_no, b.bill_date, b.amount, l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff
+                      b.bill_no, b.bill_date, b.amount, l.paid, l.cd_percent, l.cd_amount, l.goods_return, l.rate_diff,
+                      l.claim, l.claim_note
                from advice_lines l join payment_advices a on a.id = l.advice_id join bills b on b.id = l.bill_id
                where not l.deleted and not a.deleted and not b.deleted
                order by a.pay_date nulls last, a.advice_no, b.bill_no"""
@@ -124,7 +179,8 @@ class Analytics(private val db: Db, private val orders: OrderStore, private val 
             PaymentLine(
                 it.id("advice_id"), it.str("advice_no"), it.date("pay_date"), it.str("buyer"), it.str("supplier"), it.str("mode"),
                 it.str("reference"), it.str("bill_no"), it.date("bill_date"), it.dbl("amount"), it.dbl("paid") ?: 0.0,
-                it.dbl("cd_percent"), it.dbl("cd_amount") ?: 0.0, it.dbl("goods_return") ?: 0.0, it.dbl("rate_diff") ?: 0.0
+                it.dbl("cd_percent"), it.dbl("cd_amount") ?: 0.0, it.dbl("goods_return") ?: 0.0, it.dbl("rate_diff") ?: 0.0,
+                it.dbl("claim") ?: 0.0, it.str("claim_note").orEmpty()
             )
         }
     }
@@ -222,6 +278,7 @@ class Analytics(private val db: Db, private val orders: OrderStore, private val 
             cashDiscount = PaymentMath.round2(lines.sumOf { it.cd }),
             goodsReturn = PaymentMath.round2(lines.sumOf { it.goodsReturn }),
             rateDiff = PaymentMath.round2(lines.sumOf { it.rateDiff }),
+            claim = PaymentMath.round2(lines.sumOf { it.claim }),
             pendingBills = orderRows.count { it.billNos.isEmpty() },
             period = period,
             ordersOverTime = buckets.map { Point(it, (ordersOverTime[it] ?: 0).toDouble()) },

@@ -6,6 +6,7 @@ import com.example.otaapplication.cloud.CatalogCloudApi
 import com.example.otaapplication.cloud.CloudException
 import com.example.otaapplication.cloud.CloudUsage
 import com.example.otaapplication.cloud.OrderCloudApi
+import com.example.otaapplication.cloud.OrderLimitReached
 import com.example.otaapplication.cloud.PostgrestCatalogApi
 import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.PostgrestOrderApi
@@ -30,6 +31,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalDate
 
 /** The signed-in staff member as stored in the cloud's staff table. */
 data class StaffProfile(val code: Int, val name: String, val admin: Boolean)
@@ -185,11 +187,57 @@ class SyncEngine(
 
     private suspend fun syncOrders(notices: MutableList<String>) {
         pullAll()
+        numberPendingOrders(notices)
         pushNumbered(LocalSyncTable.ORDERS, notices) { row -> resolveDuplicate(row, row.value.offerNo, Numbers.Kind.ORDER, LocalSyncTable.ORDERS) }
         push(LocalSyncTable.BILLS)
         push(LocalSyncTable.LINKS)
         pushNumbered(LocalSyncTable.ADVICES, notices) { row -> resolveDuplicate(row, row.value.adviceNo, Numbers.Kind.ADVICE, LocalSyncTable.ADVICES) }
         push(LocalSyncTable.ADVICE_LINES)
+    }
+
+    /**
+     * The agency-wide number for a new order dated [orderDate], from the cloud; null when the laptop
+     * is offline or not signed in (the order is saved as "Pending number" and numbered by the next
+     * sync). Throws [OrderLimitReached] once the financial year's 9999 numbers are used.
+     */
+    suspend fun allocateOrderNo(orderDate: LocalDate): String? {
+        if (auth.session.value == null) return null
+        return try {
+            orderApi.allocateOrderNo(orderDate)
+        } catch (e: OrderLimitReached) {
+            throw e
+        } catch (e: CloudException) {
+            null
+        } catch (e: java.io.IOException) {
+            null
+        }
+    }
+
+    /**
+     * Same as the phone: orders saved offline get the next number from the cloud before anything is
+     * uploaded (an order never reaches the cloud without its number). Deleted before they were
+     * numbered, they never existed anywhere else, so they are simply dropped.
+     */
+    private suspend fun numberPendingOrders(notices: MutableList<String>) {
+        val refs = withContext(Dispatchers.IO) { orders.numberPending() }
+        for ((id, dateText, deleted) in refs) {
+            if (deleted) {
+                withContext(Dispatchers.IO) { orders.dropUnnumbered(id) }
+                continue
+            }
+            val date = OrderNumber.parseOrderDate(dateText) ?: LocalDate.now()
+            val number = try {
+                orderApi.allocateOrderNo(date)
+            } catch (e: OrderLimitReached) {
+                notices += e.message.orEmpty()
+                return
+            } catch (e: CloudException) {
+                if (e.authFailed || e.storageFull) throw e
+                notices += "Orders saved offline could not get a number yet: ${e.message}"
+                return
+            }
+            if (withContext(Dispatchers.IO) { orders.assignNumber(id, number) }) notices += "An order saved offline is now order $number."
+        }
     }
 
     private suspend fun pullAll() {

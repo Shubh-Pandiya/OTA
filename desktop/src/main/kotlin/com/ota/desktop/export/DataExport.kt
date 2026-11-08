@@ -64,9 +64,13 @@ class DataExport(
 
     fun bills(rows: List<BillListItem>) = SheetTable(
         "Bills",
-        listOf("Bill no", "Bill date", "Buyer", "Supplier", "Bill amount", "LR no", "C.D. %", "C.D. amount", "Settled", "Balance", "Status", "Orders", "Advices"),
+        listOf("Bill no", "Bill date", "Buyer", "Supplier", "Bill amount", "LR no", "C.D. %", "C.D. amount", "Settled", "Balance", "Status", "Orders", "Advices",
+            "Bill items", "Item lines"),
         rows.map { (b, buyer, supplier) ->
-            listOf(b.billNo, b.billDate, buyer, supplier, b.amount, b.lrNo, b.cdPercent, b.cdAmount, b.settled, b.balance, b.status.label, b.orderCount, b.adviceCount)
+            val items = b.items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
+            listOf(b.billNo, b.billDate, buyer, supplier, b.amount, b.lrNo, b.cdPercent, b.cdAmount, b.settled, b.balance, b.status.label, b.orderCount, b.adviceCount,
+                Units.totals(items).orEmpty(),
+                items.joinToString("; ") { listOf(it.particulars, Units.display(it), it.rate.takeIf(String::isNotBlank)?.let { r -> "@ $r" }).filter { s -> !s.isNullOrBlank() }.joinToString(" ") })
         },
         moneyColumns = setOf(4, 7, 8, 9)
     )
@@ -77,28 +81,28 @@ class DataExport(
         return SheetTable(
             "Payment advices",
             listOf("Advice no", "Pay date", "Staff", "Paid by (buyer)", "Paid to (supplier)", "Mode", "Reference", "Paid", "Cash discount",
-                "Goods return", "Rate difference", "Total adjusted", "Balance", "Dr/Cr", "Bills", "Remarks"),
+                "Goods return", "Rate difference", "Claim / defect", "Total adjusted", "Balance", "Dr/Cr", "Bills", "Remarks"),
             rows.map { a ->
                 val l = byAdvice[a.id].orEmpty()
                 val full = details[a.id]
                 listOf(
                     a.adviceNo, a.payDate, Analytics.staffOfAdvice(a.adviceNo), SearchText.firstLine(a.buyer), SearchText.firstLine(a.supplier),
-                    a.mode.label, a.reference, a.paid, l.sumOf { it.cd }, l.sumOf { it.goodsReturn }, l.sumOf { it.rateDiff }, l.sumOf { it.settled },
+                    a.mode.label, a.reference, a.paid, l.sumOf { it.cd }, l.sumOf { it.goodsReturn }, l.sumOf { it.rateDiff }, l.sumOf { it.claim }, l.sumOf { it.settled },
                     full?.balanceAmount, full?.balanceSide?.label, a.billNos.joinToString(", "), full?.remarks.orEmpty()
                 )
             },
-            moneyColumns = setOf(7, 8, 9, 10, 11, 12)
+            moneyColumns = setOf(7, 8, 9, 10, 11, 12, 13)
         )
     }
 
     fun lines(rows: List<PaymentLine>) = SheetTable(
         "Advice lines",
-        listOf("Advice no", "Pay date", "Paid by (buyer)", "Paid to (supplier)", "Bill no", "Bill date", "Bill amount", "Paid", "C.D. %", "C.D. amount", "Goods return", "Rate difference", "Total"),
+        listOf("Advice no", "Pay date", "Paid by (buyer)", "Paid to (supplier)", "Bill no", "Bill date", "Bill amount", "Paid", "C.D. %", "C.D. amount", "Goods return", "Rate difference", "Claim / defect", "Claim reason", "Total"),
         rows.map {
             listOf(it.adviceNo, it.payDate, SearchText.firstLine(it.buyer), SearchText.firstLine(it.supplier), it.billNo, it.billDate, it.billAmount,
-                it.paid, it.cdPercent, it.cd, it.goodsReturn, it.rateDiff, it.settled)
+                it.paid, it.cdPercent, it.cd, it.goodsReturn, it.rateDiff, it.claim, it.claimNote, it.settled)
         },
-        moneyColumns = setOf(6, 7, 9, 10, 11, 12)
+        moneyColumns = setOf(6, 7, 9, 10, 11, 12, 14)
     )
 
     fun parties(type: PartyType, rows: List<Party>) = SheetTable(

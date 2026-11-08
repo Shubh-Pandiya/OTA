@@ -216,7 +216,8 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
                     val adj = listOfNotNull(
                         l.amounts.cdAmount?.takeIf { it != 0.0 }?.let { "C.D. ${moneyFull(it)}" },
                         l.amounts.goodsReturn?.takeIf { it != 0.0 }?.let { "G.R. ${moneyFull(it)}" },
-                        l.amounts.rateDiff?.takeIf { it != 0.0 }?.let { "R.D. ${moneyFull(it)}" }
+                        l.amounts.rateDiff?.takeIf { it != 0.0 }?.let { "R.D. ${moneyFull(it)}" },
+                        l.amounts.claim?.takeIf { it != 0.0 }?.let { "Claim ${moneyFull(it)}" + l.amounts.claimNote.trim().let { n -> if (n.isEmpty()) "" else " ($n)" } }
                     ).joinToString(" · ")
                     Cell2(l.bill.billNo, adj, 1f, bold = true)
                     Cell(moneyFull(l.amounts.paid), 0f, TextAlign.End, width = AMOUNT_W)
@@ -238,7 +239,7 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
 @Composable
 private fun Totals(t: AdviceTotals) {
     Column(Modifier.fillMaxWidth()) {
-        listOf("Amount paid" to t.paid, "Cash discount" to t.cashDiscount, "Goods return" to t.goodsReturn, "Rate difference" to t.rateDiff).forEach { (label, v) ->
+        listOf("Amount paid" to t.paid, "Cash discount" to t.cashDiscount, "Goods return" to t.goodsReturn, "Rate difference" to t.rateDiff, "Claim / defect" to t.claim).forEach { (label, v) ->
             Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                 Text(label, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(moneyFull(v), style = MaterialTheme.typography.bodyMedium.merge(Numeric))
@@ -257,17 +258,24 @@ private fun Totals(t: AdviceTotals) {
 private fun amountValid(text: String) = text.isBlank() || (PaymentMath.parse(text)?.let { it >= 0 } ?: false)
 
 /** Mirrors the phone's advice editor line. */
-private class LineState(val pair: PairBill, paid: String, cdPercent: String, cdAmount: String, goodsReturn: String, rateDiff: String) {
+private class LineState(
+    val pair: PairBill, paid: String, cdPercent: String, cdAmount: String, goodsReturn: String, rateDiff: String,
+    claim: String = "", claimNote: String = ""
+) {
     var paid by mutableStateOf(paid)
     var cdPercent by mutableStateOf(cdPercent)
     var cdAmount by mutableStateOf(cdAmount)
     var goodsReturn by mutableStateOf(goodsReturn)
     var rateDiff by mutableStateOf(rateDiff)
+    /** Claim / defect deduction the buyer cut, with its reason. */
+    var claim by mutableStateOf(claim)
+    var claimNote by mutableStateOf(claimNote)
     val billId: String get() = pair.bill.id
-    val valid: Boolean get() = listOf(paid, cdPercent, cdAmount, goodsReturn, rateDiff).all(::amountValid)
+    val valid: Boolean get() = listOf(paid, cdPercent, cdAmount, goodsReturn, rateDiff, claim).all(::amountValid)
 
     fun amounts() = LineAmounts(
-        PaymentMath.parse(paid) ?: 0.0, PaymentMath.parse(cdPercent), PaymentMath.parse(cdAmount), PaymentMath.parse(goodsReturn), PaymentMath.parse(rateDiff)
+        PaymentMath.parse(paid) ?: 0.0, PaymentMath.parse(cdPercent), PaymentMath.parse(cdAmount), PaymentMath.parse(goodsReturn), PaymentMath.parse(rateDiff),
+        PaymentMath.parse(claim), claimNote.trim()
     )
 
     companion object {
@@ -280,7 +288,8 @@ private class LineState(val pair: PairBill, paid: String, cdPercent: String, cdA
         }
 
         fun of(pair: PairBill, a: LineAmounts) = LineState(
-            pair, PaymentMath.plain(a.paid), PaymentMath.plain(a.cdPercent), PaymentMath.plain(a.cdAmount), PaymentMath.plain(a.goodsReturn), PaymentMath.plain(a.rateDiff)
+            pair, PaymentMath.plain(a.paid), PaymentMath.plain(a.cdPercent), PaymentMath.plain(a.cdAmount), PaymentMath.plain(a.goodsReturn), PaymentMath.plain(a.rateDiff),
+            PaymentMath.plain(a.claim), a.claimNote
         )
     }
 }
@@ -518,6 +527,11 @@ private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit)
                 amount("C.D. ₹", line.cdAmount, 1f) { line.cdAmount = it }
                 amount("Goods return", line.goodsReturn, 1f) { line.goodsReturn = it }
                 amount("Rate diff.", line.rateDiff, 1f) { line.rateDiff = it }
+                amount("Claim / defect", line.claim, 1f) { line.claim = it }
+            }
+            if (line.claim.isNotBlank() || line.claimNote.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Field(line.claimNote, { line.claimNote = it }, "Claim reason (e.g. 2 than defective, shade variation)", Modifier.fillMaxWidth())
             }
         }
     }

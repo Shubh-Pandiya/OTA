@@ -42,10 +42,12 @@ class LocalSyncTable<T>(
     private val writeColumns: List<String>,
     private val bind: (T) -> List<Any?>,
     private val readColumns: String,
-    private val read: (ResultSet) -> T
+    private val read: (ResultSet) -> T,
+    /** SQL condition for pending rows that may be uploaded now (orders wait for their number). */
+    private val pushable: String = "true"
 ) {
     fun pending(db: Db, limit: Int): List<PendingRow<T>> = db.read { c ->
-        c.query("select id, $readColumns, deleted, client_updated_at from $local where sync_pending order by client_updated_at, id limit $limit") {
+        c.query("select id, $readColumns, deleted, client_updated_at from $local where sync_pending and ($pushable) order by client_updated_at, id limit $limit") {
             PendingRow(it.id(), read(it), it.getBoolean("deleted"), it.getLong("client_updated_at"))
         }
     }
@@ -112,7 +114,8 @@ class LocalSyncTable<T>(
             listOf("order_no", "order_date", "order_day", "buyer", "supplier", "items", "remarks", "delivery_ready", "transport_to", "cash_payment", "less_disc", "side"),
             { d -> listOf(d.offerNo, d.date, orderDay(d.date), d.buyer, d.supplier, Json(OrderTable.itemsToJson(d.items).toString()), d.remarks, d.deliveryReady, d.transportTo, d.cashPayment, d.lessDisc, d.side) },
             "order_no, order_date, buyer, supplier, items, remarks, delivery_ready, transport_to, cash_payment, less_disc, side",
-            ::readOrder
+            ::readOrder,
+            pushable = "order_no <> ''"
         )
 
         fun readOrder(rs: ResultSet) = OrderFormData(
@@ -124,11 +127,23 @@ class LocalSyncTable<T>(
 
         val BILLS = LocalSyncTable(
             OrderTable.BILLS, "bills",
-            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount"),
-            { b -> listOf(b.billNo, SearchText.billKey(b.billNo), date(b.billDate), b.amount, b.lrNo, b.cdPercent, b.cdAmount) },
-            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount",
-            { rs -> BillValue(rs.str("bill_no"), rs.date("bill_date")?.toString(), rs.dbl("amount"), rs.str("lr_no"), rs.dbl("cd_percent"), rs.dbl("cd_amount")) }
+            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount", "items", "buyer", "supplier"),
+            { b ->
+                listOf(
+                    b.billNo, SearchText.billKey(b.billNo), date(b.billDate), b.amount, b.lrNo, b.cdPercent, b.cdAmount,
+                    Json(OrderTable.itemsToJson(b.items).toString()), b.buyer, b.supplier
+                )
+            },
+            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount, items, buyer, supplier",
+            { rs ->
+                BillValue(
+                    rs.str("bill_no"), rs.date("bill_date")?.toString(), rs.dbl("amount"), rs.str("lr_no"), rs.dbl("cd_percent"), rs.dbl("cd_amount"),
+                    readItems(rs), rs.str("buyer"), rs.str("supplier")
+                )
+            }
         )
+
+        fun readItems(rs: ResultSet, column: String = "items") = OrderTable.itemsFromJson(org.json.JSONArray(rs.getString(column) ?: "[]"))
 
         val LINKS = LocalSyncTable(
             OrderTable.LINKS, "order_bills",
@@ -153,18 +168,21 @@ class LocalSyncTable<T>(
 
         val ADVICE_LINES = LocalSyncTable(
             OrderTable.ADVICE_LINES, "advice_lines",
-            listOf("advice_id", "bill_id", "paid", "cd_percent", "cd_amount", "goods_return", "rate_diff"),
+            listOf("advice_id", "bill_id", "paid", "cd_percent", "cd_amount", "goods_return", "rate_diff", "claim", "claim_note"),
             { l ->
                 val a = l.amounts
-                listOf(java.util.UUID.fromString(l.adviceId), java.util.UUID.fromString(l.billId), a.paid, a.cdPercent, a.cdAmount, a.goodsReturn, a.rateDiff)
-            },
-            "advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff",
-            { rs ->
-                AdviceLineValue(
-                    rs.id("advice_id"), rs.id("bill_id"),
-                    LineAmounts(rs.dbl("paid") ?: 0.0, rs.dbl("cd_percent"), rs.dbl("cd_amount"), rs.dbl("goods_return"), rs.dbl("rate_diff"))
+                listOf(
+                    java.util.UUID.fromString(l.adviceId), java.util.UUID.fromString(l.billId), a.paid, a.cdPercent, a.cdAmount, a.goodsReturn, a.rateDiff,
+                    a.claim, a.claimNote
                 )
-            }
+            },
+            "advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim, claim_note",
+            { rs -> AdviceLineValue(rs.id("advice_id"), rs.id("bill_id"), lineAmounts(rs)) }
+        )
+
+        /** Amounts of an advice line read from `paid, cd_percent, cd_amount, goods_return, rate_diff, claim, claim_note`. */
+        fun lineAmounts(rs: ResultSet, cdPercent: String = "cd_percent", cdAmount: String = "cd_amount") = LineAmounts(
+            rs.dbl("paid") ?: 0.0, rs.dbl(cdPercent), rs.dbl(cdAmount), rs.dbl("goods_return"), rs.dbl("rate_diff"), rs.dbl("claim"), rs.str("claim_note")
         )
 
         /** Push order: parents before the rows that point at them. */

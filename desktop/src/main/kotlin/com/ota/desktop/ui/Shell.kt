@@ -82,7 +82,8 @@ import java.time.Duration
 import java.time.Instant
 
 enum class Section(val title: String, val icon: ImageVector) {
-    DASHBOARD("Dashboard", Icons.Default.Home),
+    HOME("Home", Icons.Default.Home),
+    DASHBOARD("Dashboard", Icons.Default.DateRange),
     ORDERS("Orders", Icons.Default.ShoppingCart),
     BILLS("Bills", Icons.Default.List),
     ADVICES("Payment Advices", Icons.Default.Send),
@@ -98,10 +99,11 @@ sealed interface Target {
     data class Advice(val id: String) : Target
     data class NewAdvice(val billId: String?) : Target
     data object NewOrder : Target
+    data object NewBill : Target
 }
 
 class Navigator {
-    var section by mutableStateOf(Section.DASHBOARD)
+    var section by mutableStateOf(Section.HOME)
     var target by mutableStateOf<Target?>(null)
         private set
 
@@ -166,6 +168,7 @@ fun AppShell(app: AppContext, nav: Navigator = remember { Navigator() }) {
                 ) { section ->
                     Box(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 22.dp)) {
                         when (section) {
+                            Section.HOME -> HomeScreen()
                             Section.DASHBOARD -> DashboardScreen()
                             Section.ORDERS -> OrdersScreen()
                             Section.BILLS -> BillsScreen()

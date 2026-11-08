@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.QtyUnit
 import com.example.otaapplication.Units
 import com.example.otaapplication.data.Bill
@@ -138,7 +139,8 @@ private fun OrderList(selected: String?, onSelect: (String?) -> Unit, onNew: () 
                     items(rows, key = { it.id }) { r ->
                         TableRow(r.id == selected, { onSelect(r.id) }) {
                             Row(Modifier.width(ORDER_NO_W), verticalAlignment = Alignment.CenterVertically) {
-                                Text(r.orderNo.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium.merge(Numeric), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                Text(OrderNumber.display(r.orderNo), style = MaterialTheme.typography.bodyMedium.merge(Numeric), fontWeight = FontWeight.SemiBold, maxLines = 1,
+                                    color = if (OrderNumber.isPending(r.orderNo)) Brand.Amber else Color.Unspecified)
                                 if (r.pending) { Spacer(Modifier.width(6.dp)); Dot(Brand.Amber, 6.dp) }
                             }
                             Cell(r.data.date, 0f, width = DATE_W)
@@ -181,22 +183,30 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
         Column(Modifier.verticalScroll(rememberScrollState()).animateContentSize()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(row.orderNo.ifBlank { "Order" }, style = MaterialTheme.typography.titleLarge.merge(Numeric))
+                    Text(OrderNumber.display(row.orderNo), style = MaterialTheme.typography.titleLarge.merge(Numeric))
                     Text(d.date, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (row.pending) Pill("Not synced yet", Brand.Amber)
             }
+            val numberPending = OrderNumber.isPending(row.orderNo)
+            if (numberPending) {
+                Spacer(Modifier.height(10.dp))
+                Banner(
+                    "Saved offline: this order gets its number on the next sync. Its PDF and bills wait until then, so nothing is shared with a temporary number.",
+                    Brand.Amber
+                )
+            }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
               ChipRow(Modifier.weight(1f), spacing = 8.dp) {
-                Button(onClick = {
+                Button(enabled = !numberPending, onClick = {
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) { OrderPdf.write(d, OrderPdf.fileFor(d, AppPaths.documents)) } }
                             .onSuccess { openFile(it) }.onFailure { toast("PDF failed: ${it.message}") }
                     }
                 }) { IconText(Icons.Default.Share, "Open PDF") }
                 OutlinedButton(onClick = onEdit) { IconText(Icons.Default.Edit, "Edit") }
-                OutlinedButton(onClick = { attach = true }) { IconText(Icons.Default.Add, "Attach bill") }
+                OutlinedButton(enabled = !numberPending, onClick = { attach = true }) { IconText(Icons.Default.Add, "Attach bill") }
               }
                 IconButton(onClick = { confirmDelete = true }) { Icon(Icons.Default.Delete, "Delete", tint = Brand.Red) }
             }
@@ -245,11 +255,11 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
         }
     }
     if (confirmDelete) ConfirmDialog(
-        "Delete order ${row.orderNo}?", "The order is removed from this laptop and, after the next sync, from the phones. Its number is never reused.",
+        "Delete order ${OrderNumber.display(row.orderNo)}?", "The order is removed from this laptop and, after the next sync, from the phones. Its number is never reused.",
         "Delete", danger = true, onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
-        scope.launch { withContext(Dispatchers.IO) { app.orders.delete(row.id) }; toast("Order ${row.orderNo} deleted"); onDeleted() }
+        scope.launch { withContext(Dispatchers.IO) { app.orders.delete(row.id) }; toast("Order ${OrderNumber.display(row.orderNo)} deleted"); onDeleted() }
     }
     if (attach) BillDialog(
         title = "Attach bill to ${row.orderNo}", bill = null,
@@ -268,7 +278,6 @@ private fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
-    val staff by app.staff.collectAsState()
     var data by remember { mutableStateOf(row?.data?.let(Units::splitLegacy) ?: OrderFormData()) }
     var saving by remember { mutableStateOf(false) }
     var tried by remember { mutableStateOf(false) }
@@ -279,25 +288,28 @@ private fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
     fun save() {
         tried = true
         if (dateBad) { toast("Enter the order date as dd-mm-yyyy"); return }
-        val code = staff?.code
-        if (row == null && code == null) { toast("Your staff number isn't known yet. Sign in and sync once, then save."); return }
         saving = true
         scope.launch {
             runCatching {
+                // New orders take the next agency-wide number from the cloud; offline they wait for it.
+                val number = if (row == null) app.engine.allocateOrderNo(parseDay(data.date)!!) else null
                 withContext(Dispatchers.IO) {
-                    val saved = if (row == null) app.orders.create(data, code!!) else app.orders.update(row.id, data)
-                    OrderPdf.write(saved.data, OrderPdf.fileFor(saved.data, AppPaths.documents))
+                    val saved = if (row == null) app.orders.create(data, number.orEmpty()) else app.orders.update(row.id, data)
+                    if (!OrderNumber.isPending(saved.orderNo)) OrderPdf.write(saved.data, OrderPdf.fileFor(saved.data, AppPaths.documents))
                     saved
                 }
             }.onSuccess { saved ->
-                toast("Order ${saved.orderNo} saved · PDF in Documents/OTA Orders")
+                toast(
+                    if (OrderNumber.isPending(saved.orderNo)) "Order saved offline · it gets its number and PDF on the next sync"
+                    else "Order ${saved.orderNo} saved · PDF in Documents/OTA Orders"
+                )
                 onDone(saved.id)
             }.onFailure { toast("Couldn't save: ${it.message}"); saving = false }
         }
     }
 
     Column(Modifier.fillMaxSize()) {
-        PageHeader(if (row == null) "New order" else "Edit order ${row.orderNo}", if (row == null) "The order number is assigned when you save" else null) {
+        PageHeader(if (row == null) "New order" else "Edit order ${OrderNumber.display(row.orderNo)}", if (row == null) "The order number is assigned by the cloud when you save" else null) {
             TextButton(onClick = { onDone(null) }) { IconText(Icons.Default.ArrowBack, "Cancel") }
             Button(onClick = ::save, enabled = !saving) { IconText(Icons.Default.Check, if (saving) "Saving…" else "Save & make PDF") }
         }
@@ -305,7 +317,7 @@ private fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
             Panel(Modifier.fillMaxWidth(), title = "Order") {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     DateField(data.date, { data = data.copy(date = it) }, "Date", Modifier.width(180.dp))
-                    Field(row?.orderNo ?: "Assigned on save", {}, "Offer No", Modifier.width(220.dp), enabled = false)
+                    Field(row?.orderNo?.let(OrderNumber::display) ?: "Assigned on save", {}, "Offer No", Modifier.width(220.dp), enabled = false)
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

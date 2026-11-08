@@ -44,7 +44,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
 
     val numbers = Numbers(db, kv)
     val catalog = CatalogStore(db, ::changed)
-    val orders = OrderStore(db, numbers, ::changed)
+    val orders = OrderStore(db, ::changed)
     val payments = PaymentStore(db, numbers, ::changed)
     val analytics = Analytics(db, orders, payments)
     val export = DataExport(orders, payments, catalog, analytics)

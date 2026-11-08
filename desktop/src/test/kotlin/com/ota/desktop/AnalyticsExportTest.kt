@@ -30,7 +30,12 @@ class AnalyticsExportTest {
         assertEquals(d.paid, d.paymentsOverTime.sumOf { it.value }, 0.01)
         assertEquals(d.billCount, d.status.sumOf { it.count })
         assertEquals(d.outstanding, d.ageing.sumOf { it.amount }, 0.01)
-        assertEquals(d.orderCount, d.staff.sumOf { it.orders })
+        // FY numbers (from 1 Nov in the demo) are agency-wide, so only old numbers count per staff.
+        val fy = demo.orders.list().count { com.example.otaapplication.OrderNumber.isFy(it.orderNo) }
+        assertTrue(fy > 0)
+        assertEquals(d.orderCount - fy, d.staff.sumOf { it.orders })
+        assertTrue(d.claim > 0)
+        assertEquals(d.paid + d.cashDiscount + d.goodsReturn + d.rateDiff + d.claim, analytics.paymentLines().sumOf { it.settled }, 0.05)
         assertTrue(d.qtyByUnit.any { it.label == "Mtr" && it.value > 0 })
         assertTrue(d.topBuyers.isNotEmpty() && d.topBuyers.size <= 10)
         assertTrue(d.cashDiscount > 0)
@@ -43,6 +48,19 @@ class AnalyticsExportTest {
         val month = analytics.dashboard(DashFilter(from = demo.today.minusDays(30), to = demo.today), today = demo.today)
         assertEquals("Day", month.period)
         assertEquals(31, month.ordersOverTime.size)
+    }
+
+    @Test
+    fun homeSummarisesTodayAndDues() {
+        val h = analytics.home(demo.today)
+        assertEquals(demo.orders.list().count { it.day == demo.today }, h.ordersToday)
+        assertTrue(h.ordersThisMonth >= h.ordersToday)
+        assertTrue(h.awaitingBill > 0)
+        assertEquals(h.outstanding, h.ageing.sumOf { it.amount }, 0.01)
+        assertEquals(h.billsDue, h.ageing.sumOf { it.count })
+        assertTrue(h.oldestDue.zipWithNext().all { (a, b) -> b.bill.billDate == null || a.bill.billDate!! <= b.bill.billDate!! })
+        assertEquals(6, h.recentOrders.size)
+        assertTrue(h.recentAdvices.isNotEmpty())
     }
 
     @Test

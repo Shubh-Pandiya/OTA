@@ -19,15 +19,17 @@ object AdvicePdf {
 
     private data class Col(val title: String, val x0: Float, val x1: Float, val numeric: Boolean)
     private val cols = listOf(
-        Col("S.No", 40f, 66f, false),
-        Col("BILL NO", 66f, 146f, false),
-        Col("BILL DATE", 146f, 204f, false),
-        Col("BILL AMT", 204f, 272f, true),
-        Col("PAID", 272f, 340f, true),
-        Col("C.D.", 340f, 396f, true),
-        Col("G.R.", 396f, 446f, true),
-        Col("R.D.", 446f, 496f, true),
-        Col("TOTAL", 496f, 555f, true)
+        // Same columns as the phone's advice PDF.
+        Col("S.No", 40f, 62f, false),
+        Col("BILL NO", 62f, 130f, false),
+        Col("BILL DATE", 130f, 184f, false),
+        Col("BILL AMT", 184f, 246f, true),
+        Col("PAID", 246f, 308f, true),
+        Col("C.D.", 308f, 356f, true),
+        Col("G.R.", 356f, 400f, true),
+        Col("R.D.", 400f, 444f, true),
+        Col("CLAIM", 444f, 494f, true),
+        Col("TOTAL", 494f, 555f, true)
     )
 
     /** Documents\OTA Orders\{year}\{Month}\Payment Advices\{advice no}.pdf; replaced when regenerated. */
@@ -94,7 +96,7 @@ object AdvicePdf {
             fun num(col: Int, value: Double?) {
                 if (value != null) pdf.text(Money.format(value), cols[col].x1 - 4f, y + 14f, 9f, align = PdfKit.Align.RIGHT)
             }
-            num(3, bill.amount); num(4, a.paid); num(5, a.cdAmount); num(6, a.goodsReturn); num(7, a.rateDiff); num(8, a.settled)
+            num(3, bill.amount); num(4, a.paid); num(5, a.cdAmount); num(6, a.goodsReturn); num(7, a.rateDiff); num(8, a.claim); num(9, a.settled)
             if (cdNote != null) pdf.text(cdNote, cols[5].x1 - 4f, y + 23f, 7.5f, color = darkGray, align = PdfKit.Align.RIGHT)
             y += rowH
             pdf.line(LEFT, y, RIGHT, y, 1f)
@@ -103,17 +105,28 @@ object AdvicePdf {
         if (y + 22f > BOTTOM) newPage()
         pdf.fillRect(LEFT, y, RIGHT, y + 22f, Color(255, 111, 0, 28))
         pdf.text("TOTAL", cols[1].x0 + 4f, y + 15f, 9f, bold = true)
-        listOf(4 to t.paid, 5 to t.cashDiscount, 6 to t.goodsReturn, 7 to t.rateDiff, 8 to t.settled).forEach { (col, v) ->
+        listOf(4 to t.paid, 5 to t.cashDiscount, 6 to t.goodsReturn, 7 to t.rateDiff, 8 to t.claim, 9 to t.settled).forEach { (col, v) ->
             pdf.text(Money.format(v), cols[col].x1 - 4f, y + 15f, 9f, bold = true, align = PdfKit.Align.RIGHT)
         }
         y += 22f
         grid(y)
 
+        // Claim reasons, under the table.
+        val claimNotes = advice.lines.filter { it.amounts.claim != null && it.amounts.claimNote.isNotBlank() }
+            .joinToString("\n") { "Bill ${it.bill.billNo}: ${it.amounts.claimNote.trim()}" }
+        if (claimNotes.isNotEmpty()) {
+            val notes = pdf.block("Claim / defect\n$claimNotes", RIGHT - LEFT, 9f, color = darkGray)
+            if (y + notes.height + 12f > BOTTOM) { pdf.newPage(); y = 50f }
+            notes.draw(LEFT, y + 8f)
+            y += notes.height + 8f
+        }
+
         val remarks = advice.remarks.takeIf { it.isNotBlank() }?.let { pdf.block(it, RIGHT - LEFT, 10f) }
-        val summaryH = 30f + 5 * 16f + 20f + (remarks?.let { it.height + 30f } ?: 0f) + 130f
+        val rows = if (t.claim != 0.0) 6 else 5
+        val summaryH = 30f + rows * 16f + 20f + (remarks?.let { it.height + 30f } ?: 0f) + 130f
         if (y + summaryH > BOTTOM) { pdf.newPage(); y = 60f } else y += 24f
         val boxLeft = 330f
-        pdf.strokeRect(boxLeft, y, RIGHT, y + 5 * 16f + 30f, 1f)
+        pdf.strokeRect(boxLeft, y, RIGHT, y + rows * 16f + 30f, 1f)
         var sy = y + 16f
         fun summary(label: String, value: String, bold: Boolean = false) {
             pdf.text(label, boxLeft + 8f, sy, 10f, bold)
@@ -124,6 +137,7 @@ object AdvicePdf {
         summary("Cash discount", "₹ ${Money.format(t.cashDiscount)}")
         summary("Goods return", "₹ ${Money.format(t.goodsReturn)}")
         summary("Rate difference", "₹ ${Money.format(t.rateDiff)}")
+        if (t.claim != 0.0) summary("Claim / defect", "₹ ${Money.format(t.claim)}")
         pdf.line(boxLeft, sy - 11f, RIGHT, sy - 11f, 1f)
         sy += 2f
         summary("Total adjusted", "₹ ${Money.format(t.settled)}", bold = true)

@@ -41,6 +41,10 @@ fun main(args: Array<String>) {
     val bill = demo.payments.bills(BillFilter()).first { it.buyer != null }.bill
     val advice = demo.payments.search(AdviceFilter()).first()
     val order = demo.orders.list().first { it.billNos.isNotEmpty() }
+    val handBill = demo.orders.billByNumber("RL/8812")!!
+    val claimAdvice = demo.payments.search(AdviceFilter()).first { a -> demo.payments.advice(a.id)!!.lines.any { it.amounts.claim != null } }
+    // One order saved while offline, waiting for its number.
+    val pending = demo.orders.create(demo.orders.list().first().data.copy(remarks = "Saved offline"), "")
 
     fun shot(name: String, nav: Navigator? = null, height: Int = 1000, content: (@Composable () -> Unit)? = null) {
         val scene = ImageComposeScene(1600, height, Density(1.25f)) {
@@ -62,12 +66,18 @@ fun main(args: Array<String>) {
     fun at(section: Section, target: Target? = null) = Navigator().apply { go(section, target) }
 
     shot("01-sign-in") { SignInScreen(app) }
+    shot("00-home", at(Section.HOME))
+    shot("00b-home-full", at(Section.HOME), height = 1400)
     shot("02-dashboard", at(Section.DASHBOARD))
     shot("02b-dashboard-full", at(Section.DASHBOARD), height = 1840)
     shot("03-orders", at(Section.ORDERS, Target.Order(order.id)))
     shot("04-order-editor", at(Section.ORDERS, Target.NewOrder))
+    shot("04b-order-pending-number", at(Section.ORDERS, Target.Order(pending.id)))
     shot("05-bills", at(Section.BILLS, Target.Bill(bill.id)))
+    shot("05b-bill-entered-by-hand", at(Section.BILLS, Target.Bill(handBill.id)))
+    shot("05c-add-bill", at(Section.BILLS, Target.NewBill))
     shot("06-payment-advices", at(Section.ADVICES, Target.Advice(advice.id)))
+    shot("06b-advice-with-claim", at(Section.ADVICES, Target.Advice(claimAdvice.id)))
     shot("07-advice-editor", at(Section.ADVICES, Target.NewAdvice(bill.id)))
     shot("08-buyers-suppliers", at(Section.CATALOG))
     shot("09-sync-cloud", at(Section.SYNC))

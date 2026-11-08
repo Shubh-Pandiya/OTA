@@ -1,9 +1,12 @@
 # Desktop sync contract
 
-How the (future) Windows desktop app syncs with the Supabase cloud. The phones already follow
-these rules. Schema: `supabase/migrations/20261107000000_catalog.sql`,
-`supabase/migrations/20261108000000_orders.sql` and
-`supabase/migrations/20261109000000_payment_advice.sql`.
+How the Windows desktop app (`desktop/`) syncs with the Supabase cloud. The phones follow the
+same rules. Schema: every file in `supabase/migrations/`, run in name order (catalog, orders,
+payment advice, bill lines and claims, the advice-image cleanup, financial-year order numbers,
+bill parties).
+
+Only text data syncs. Advice images (cheque photos, transfer screenshots) and the Home to-dos /
+reminders stay on the phone that created them and are never uploaded.
 
 ## Roles
 
@@ -25,11 +28,12 @@ and `client_updated_at bigint` (the editing device's clock in epoch ms).
 |---|---|
 | `buyers`, `suppliers` | name, address, city, phone, gstin, bank fields (see the catalog migration) |
 | `orders` | order_no, order_date (`dd-MM-yyyy` text, as printed), buyer, supplier (text as printed), items (`[[s.no, particulars, qty, rate, unit?], …]`, see *Item units* below), remarks, delivery_ready, transport_to, cash_payment, less_disc, side, created_by, archived_at |
-| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), archived_at |
+| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), items (`jsonb`, same arrays as order items, null = no lines), buyer, supplier (text, null = take them from the bill's orders), archived_at |
 | `order_bills` | order_id, bill_id, archived_at. Many-to-many. **No foreign keys**, see below. |
 | `payment_advices` | advice_no, pay_date (`date`), buyer (paid by), supplier (paid to), mode (`CHEQUE`/`ONLINE`/`CASH`), reference (cheque no / txn id), balance (`numeric(14,2)`, Dr/Cr balance as entered), balance_side (`DR`/`CR`/null), remarks, created_by, archived_at |
-| `advice_lines` | advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, archived_at. Advice ↔ bill is many-to-many. **No foreign keys.** |
-| `staff` | user_id, code (1–9, first digit of the order number), name, is_admin |
+| `advice_lines` | advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim (`numeric(14,2)`, claim / defect deduction), claim_note (reason, `''` if none), archived_at. Advice ↔ bill is many-to-many. **No foreign keys.** |
+| `staff` | user_id, code (1–9, first digit of legacy order numbers and of advice numbers), name, is_admin |
+| `order_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_order_no`; clients never read or write it. |
 | `app_settings` | single row (`id = true`): retention_days (30), storage_limit_mb (500), warn_percent (80) |
 
 Bill and link ids are deterministic, so the same bill typed on two devices is one row:
@@ -42,17 +46,46 @@ Bill and link ids are deterministic, so the same bill typed on two devices is on
 These use Java's MD5-based UUIDs over UTF-8 bytes. `billKey` is the bill number trimmed, with whitespace runs collapsed to one space,
 upper-cased.
 
-Order numbers are `{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g. `120261107001`), unique in the cloud.
-A few early test numbers have an unpadded serial (e.g. `9202611071`); treat the digits after the
-date as the serial in both cases.
-Older numbers (`yyyyMMdd` + 2 digits) and manual numbers may repeat.
+### Order numbers
+
+New orders are numbered per financial year (1 April to 31 March):
+`{FY start YY}{FY end YY}{4-digit serial}`, e.g. `26270001` is the first order of FY 2026-27. The
+serial restarts at `0001` every 1 April and one shared counter serves every phone and the desktop.
+At most 9999 orders per year.
+
+- Get a number with `POST /rest/v1/rpc/ota_allocate_order_no` and `{"p_date": "yyyy-mm-dd"}`
+  (the order date). It returns the number as a JSON string. It is atomic and skips any number
+  already used. When the year is full it fails with `P0001` and a message starting
+  `ORDER_LIMIT_REACHED`; tell the user, keep the order pending, and don't retry blindly.
+- An order saved offline is stored with an **empty** `order_no` and shown as "Pending number".
+  It is not uploaded, has no PDF and can't take a bill until the next sync numbers it; then it is
+  uploaded with its number. A pending order deleted before it is numbered is simply dropped.
+- An 8-digit number whose second pair of digits is the year after the first is an FY number; a
+  partial unique index (`orders_fy_order_no_key`) backs that up in the cloud.
+- Older orders keep their numbers and are never renumbered:
+  `{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g. `120261107001`). A few early test numbers
+  have an unpadded serial (e.g. `9202611071`); treat the digits after the date as the serial.
+  Even older numbers (`yyyyMMdd` + 2 digits) and manual numbers may repeat.
+- Sort by order date, then number. Search matches the digits typed in either format.
 
 Payment advice numbers are `PA{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g.
 `PA120261108001`) with their own daily counter, unique in the cloud (`23505` on a duplicate).
 
-A bill's balance is `amount − Σ(paid + cd_amount + goods_return + rate_diff)` over its
+A bill's balance is `amount − Σ(paid + cd_amount + goods_return + rate_diff + claim)` over its
 non-deleted lines whose advice is not deleted. Status: no lines → Unpaid, balance ≤ 0 → Paid,
 otherwise Partly paid (a bill without an amount is Partly paid once it has a line).
+
+### Bills
+
+A bill records what the supplier actually billed, which can differ from the orders (24 m ordered,
+25 m sent; a different variety). `items` holds its own lines; `amount` defaults to their total but
+can be overridden. Old bills without lines have `items = null`.
+
+A bill can be added on its own from the Bills section, with zero or more orders. Its `buyer` and
+`supplier` are then stored on the bill and are required when no order is linked. When they are
+null, the parties come from the bill's orders (and a bill whose orders disagree is "mixed").
+Payment-advice eligibility uses the bill's own parties first. A bill with its own parties stays
+when its last order is detached; a bill without them is retired (soft-deleted) then.
 
 ## Pulling (delta sync)
 
@@ -153,7 +186,7 @@ roughly 400 000 orders; with 30-day retention it only ever holds one month's wor
 
 ## Item units
 
-Each item array may carry a fifth element: the quantity's unit as a one-letter code.
+Order and bill item arrays may carry a fifth element: the quantity's unit as a one-letter code.
 
 | Code | Unit |
 |------|------|
@@ -169,3 +202,9 @@ Each item array may carry a fifth element: the quantity's unit as a one-letter c
 - Print as `"{qty} {unit label}"`. Any quantity total is per unit (e.g. `250 Mtr + 10 Than`); units are never added together.
 - No SQL change: `items` is already `jsonb`.
 
+## Desktop database
+
+The desktop keeps every row in its own PostgreSQL (Flyway migrations in
+`desktop/src/main/resources/db`). `V2__bill_lines_claims_parties.sql` adds the bill items and
+parties and the claim columns, and resets the bill and advice-line pull cursors so the next sync
+pulls those columns for rows it already had.

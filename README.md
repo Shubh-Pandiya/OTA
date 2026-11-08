@@ -167,8 +167,9 @@ Uninstalling or upgrading never touches the data folder. The installer is not co
 Windows SmartScreen may ask for *More info → Run anyway* the first time.
 
 **What it does:**
-- Everything the phone does: orders with units and PDFs, bills, payment advices with PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. It uses the same order/advice number rules, with the signed-in staff digit.
-- Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D.), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
+- A Home screen: today's orders, bills still to receive, outstanding and this month's receipts, dues by age, the oldest dues, recent orders and advices, and quick actions.
+- Everything the phone does: orders with units and PDFs, bills (with their own item lines, added from an order or on their own), payment advices with claim / defect deductions and PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. Order numbers come from the shared financial-year counter (`26270001`, …); an order saved offline waits for its number until the next sync. Advice numbers use the signed-in staff digit. Advice images stay on the phone.
+- Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D./claims), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
 - Excel export (`.xlsx`): all data (one sheet per table), the dashboard numbers, the current filtered view of any list, and per-area workbooks.
 - Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges archived rows older than the retention period, on connect and every 6 hours. The admin can change the retention days and storage limit under *Sync & Cloud*. Nothing is purged until this laptop holds it.
 

@@ -24,6 +24,10 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     var settings = JSONObject().put("retention_days", 30).put("storage_limit_mb", 500).put("warn_percent", 80)
     /** When set, every write answers with this HTTP status / Postgres code (e.g. 402 = over quota). */
     var failWrites: Pair<Int, String?>? = null
+    /** Last FY order serial handed out by ota_allocate_order_no, per FY prefix ("2627"). */
+    val orderSerials = HashMap<String, Int>()
+    /** When true, ota_allocate_order_no answers like the database at 9999 orders. */
+    var orderLimitReached = false
     private var tick = 0L
     private val base = Instant.parse("2026-11-10T04:30:00Z")
     private val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSxxx").withZone(ZoneOffset.UTC)
@@ -72,6 +76,16 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
         return when {
             name == "staff" -> 200 to JSONArray().apply { staff?.let { put(it) } }.toString()
             name == "rpc/ota_cloud_status" -> 200 to usage.toString()
+            name == "rpc/ota_allocate_order_no" -> {
+                if (orderLimitReached) 400 to JSONObject().put("code", "P0001").put("message", "ORDER_LIMIT_REACHED").toString()
+                else {
+                    val date = java.time.LocalDate.parse(JSONObject(body).getString("p_date"))
+                    val prefix = com.example.otaapplication.OrderNumber.fyPrefix(date)
+                    val serial = (orderSerials[prefix] ?: 0) + 1
+                    orderSerials[prefix] = serial
+                    200 to JSONObject.quote(com.example.otaapplication.OrderNumber.formatFy(date, serial))
+                }
+            }
             name == "rpc/ota_mark_archived" -> markArchived(JSONObject(body))
             name == "rpc/ota_purge_archived_orders" -> purge()
             name == "app_settings" && method == "PATCH" -> {

@@ -2,6 +2,7 @@ package com.ota.desktop
 
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.BalanceSide
 import com.example.otaapplication.data.BankDetails
@@ -25,7 +26,15 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
     private var clock = today
     val kv = Kv(db)
     val numbers = Numbers(db, kv) { clock }
-    val orders = OrderStore(db, numbers)
+    val orders = OrderStore(db)
+    private val serials = HashMap<String, Int>()
+
+    /** Old staff/day numbers before 1 Nov 2026, the agency-wide FY numbers from then on (as after the switch). */
+    private fun orderNo(day: LocalDate, staff: Int): String =
+        if (day < LocalDate.of(2026, 11, 1)) {
+            val prefix = OrderNumber.prefix(staff, day)
+            OrderNumber.format(prefix, serials.merge(prefix, 1, Int::plus)!!)
+        } else OrderNumber.formatFy(day, serials.merge(OrderNumber.fyPrefix(day), 1, Int::plus)!!)
     val payments = PaymentStore(db, numbers)
     val catalog = CatalogStore(db)
 
@@ -71,7 +80,7 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                         date = day.format(fmt), buyer = "$b\n$bc", supplier = "$s\n$sc", items = items,
                         deliveryReady = "${7 + rnd.nextInt(20)} days", transportTo = bc, cashPayment = "30 days", lessDisc = "2%"
                     ),
-                    staff
+                    orderNo(day, staff)
                 )
                 // Most orders older than ~10 days have a bill.
                 if (daysAgo > 10 && rnd.nextInt(10) < 8) {
@@ -83,6 +92,15 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                 }
             }
         }
+        // A bill entered by hand from the supplier's paper bill, with no order behind it.
+        orders.saveBill(
+            null, "RL/8812",
+            BillDetails(
+                billDate = today.minusDays(4), amount = 30_250.0, lrNo = "LR 9120", buyer = "Kapoor Readymade\nBhopal", supplier = "Raymond Ltd\nThane",
+                items = listOf(OrderItem("1", "Poly-viscose suiting navy", "125", "180", "M"), OrderItem("2", "Safari suit set", "25", "310", "S"))
+            ),
+            emptyList()
+        )
         // Payments: per buyer/supplier pair, settle older bills fully or partly.
         for ((b, _) in buyers) for ((s, _) in suppliers) {
             val bills = payments.pairBills(b, s).filter { it.bill.billDate != null && it.bill.billDate!!.isBefore(today.minusDays(25)) }
@@ -101,8 +119,10 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                             val cd = amt * 0.02
                             val gr = if (rnd.nextInt(5) == 0) 1_000.0 else null
                             val rd = if (rnd.nextInt(6) == 0) 500.0 else null
-                            val paid = amt - cd - (gr ?: 0.0) - (rd ?: 0.0) - (if (partial) 15_000.0 else 0.0)
-                            pb.bill.id to LineAmounts(paid.coerceAtLeast(0.0), 2.0, cd, gr, rd)
+                            // Now and then the buyer cuts a claim for defective cloth.
+                            val claim = if (rnd.nextInt(7) == 0) 1_250.0 else null
+                            val paid = amt - cd - (gr ?: 0.0) - (rd ?: 0.0) - (claim ?: 0.0) - (if (partial) 15_000.0 else 0.0)
+                            pb.bill.id to LineAmounts(paid.coerceAtLeast(0.0), 2.0, cd, gr, rd, claim, if (claim != null) "1 than shade variation" else "")
                         }
                     ),
                     listOf(1, 2, 4)[rnd.nextInt(3)]

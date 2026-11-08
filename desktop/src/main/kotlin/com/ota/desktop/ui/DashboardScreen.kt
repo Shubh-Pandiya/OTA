@@ -146,7 +146,7 @@ fun DashboardScreen() {
             Kpi("Billed", moneyFull(d.billed), "${d.billCount} bills", Brand.Blue, Modifier.weight(1f))
             Kpi("Outstanding", moneyFull(d.outstanding), "${d.status.firstOrNull { it.status == PaymentStatus.UNPAID }?.count ?: 0} unpaid · ${d.status.firstOrNull { it.status == PaymentStatus.PARTLY_PAID }?.count ?: 0} part paid", Brand.Red, Modifier.weight(1f))
             Kpi("Paid", moneyFull(d.paid), "${d.adviceCount} payment advices", Brand.Green, Modifier.weight(1f))
-            Kpi("Adjustments", moneyFull(d.cashDiscount + d.goodsReturn + d.rateDiff), "CD + goods return + rate diff.", Brand.Amber, Modifier.weight(1f))
+            Kpi("Adjustments", moneyFull(d.cashDiscount + d.goodsReturn + d.rateDiff + d.claim), "CD + G.R. + R.D. + claims", Brand.Amber, Modifier.weight(1f))
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = gap) {
@@ -178,8 +178,9 @@ fun DashboardScreen() {
                     "${d.billCount}", "bills"
                 )
             }
-            Panel(Modifier.weight(1f).fillMaxHeight(), title = "CD, goods return, rate diff.") {
-                HBars(d.adjustments.mapIndexed { i, p -> HBar(p.label, p.value, null, listOf(Brand.Amber, Brand.Blue, androidx.compose.ui.graphics.Color(0xFF8E24AA))[i]) })
+            Panel(Modifier.weight(1f).fillMaxHeight(), title = "CD, goods return, rate diff., claims") {
+                val colors = listOf(Brand.Amber, Brand.Blue, androidx.compose.ui.graphics.Color(0xFF8E24AA), Brand.Red)
+                HBars(d.adjustments.mapIndexed { i, p -> HBar(p.label, p.value, null, colors[i % colors.size]) })
             }
         }
         Spacer(Modifier.height(14.dp))

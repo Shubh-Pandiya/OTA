@@ -53,6 +53,21 @@ import com.ota.desktop.data.BillFilter
 import com.ota.desktop.data.BillListItem
 import com.ota.desktop.data.OrderRow
 import com.ota.desktop.export.XlsxExport
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
+import com.example.otaapplication.OrderItem
+import com.example.otaapplication.OrderNumber
+import com.example.otaapplication.QtyUnit
+import com.example.otaapplication.Units
+import com.example.otaapplication.data.PartyType
+import com.ota.desktop.data.OrderFilter
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,7 +82,14 @@ fun BillsScreen() {
     var text by rememberSaveable { mutableStateOf("") }
     var status by rememberSaveable { mutableStateOf<PaymentStatus?>(null) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(nav.target) { (nav.take(Section.BILLS) as? Target.Bill)?.let { selected = it.id; text = ""; status = null } }
+    var adding by remember { mutableStateOf(false) }
+    LaunchedEffect(nav.target) {
+        when (val t = nav.take(Section.BILLS)) {
+            is Target.Bill -> { selected = t.id; text = ""; status = null }
+            Target.NewBill -> adding = true
+            else -> Unit
+        }
+    }
     val filter = BillFilter(text = text, status = status)
     val rows by rememberLoad(emptyList<BillListItem>(), filter) { app.payments.bills(filter) }
 
@@ -81,6 +103,7 @@ fun BillsScreen() {
                         .onSuccess { toast("Exported ${rows.size} bills"); openFile(it) }.onFailure { toast("Export failed: ${it.message}") }
                 }
             }) { IconText(Icons.Default.Share, "Export view") }
+            Button(onClick = { adding = true }) { IconText(Icons.Default.Add, "Add bill") }
         }
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Panel(Modifier.weight(1.5f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
@@ -93,7 +116,7 @@ fun BillsScreen() {
                     }
                 }
                 TableHeader(listOf(Col("Bill", 0f, width = BILL_NO_W), Col("Buyer", 1f), Col("Supplier", 1f), Col("Balance", 0f, TextAlign.End, AMOUNT_W), Col("Status", 0f, TextAlign.End, STATUS_W)))
-                if (rows.isEmpty()) Empty("No bills. Attach a bill to an order to start.")
+                if (rows.isEmpty()) Empty("No bills. Use Add bill when a supplier's bill arrives, or attach one to an order.")
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(rows, key = { it.bill.id }) { r ->
                         val b = r.bill
@@ -113,21 +136,28 @@ fun BillsScreen() {
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 val item = rows.firstOrNull { it.bill.id == selected }
                 if (item == null) Panel(Modifier.fillMaxSize()) { Empty("Select a bill to see its orders and payments") }
-                else BillDetail(item)
+                else BillDetail(item, onDeleted = { selected = null })
             }
         }
+    }
+    if (adding) BillEditorDialog(null, onDismiss = { adding = false }) { saved ->
+        adding = false
+        text = ""; status = null
+        selected = saved.id
     }
 }
 
 @Composable
-private fun BillDetail(item: BillListItem) {
+private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
     val app = LocalApp.current
+    val scope = rememberCoroutineScope()
     val nav = LocalNav.current
     val toast = LocalToast.current
     val b = item.bill
     val orders by rememberLoad(emptyList<OrderRow>(), b.id) { app.orders.ordersForBill(b.id) }
     val payments by rememberLoad(emptyList<BillPayment>(), b.id) { app.payments.advicesForBill(b.id) }
     var edit by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Panel(Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState()).animateContentSize()) {
@@ -141,7 +171,8 @@ private fun BillDetail(item: BillListItem) {
             Spacer(Modifier.height(12.dp))
             ChipRow(spacing = 8.dp) {
                 Button(onClick = { nav.go(Section.ADVICES, Target.NewAdvice(b.id)) }) { IconText(Icons.Default.Add, "New payment advice") }
-                OutlinedButton(onClick = { edit = true }) { IconText(Icons.Default.Edit, "Edit details") }
+                OutlinedButton(onClick = { edit = true }) { IconText(Icons.Default.Edit, "Edit bill") }
+                OutlinedButton(onClick = { confirmDelete = true }) { IconText(Icons.Default.Delete, "Delete") }
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -154,6 +185,29 @@ private fun BillDetail(item: BillListItem) {
                 LabelValue("LR (bilty) no", b.lrNo, Modifier.weight(1f))
                 LabelValue("Cash discount", listOfNotNull(b.cdPercent?.let { "${PaymentMath.plain(it)}%" }, b.cdAmount?.let(::moneyFull)).joinToString(" · "), Modifier.weight(1f))
             }
+            if (b.items.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("Items as billed", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                TableHeader(listOf(Col("#", 0.3f), Col("Particulars", 2f), Col("Qty", 1f, TextAlign.End), Col("Rate", 0.8f, TextAlign.End), Col("Amount", 1f, TextAlign.End)))
+                b.items.forEach { line ->
+                    val qty = PaymentMath.parse(line.quantity)
+                    val rate = PaymentMath.parse(line.rate)
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Cell(line.serialNo, 0.3f, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Cell(line.particulars, 2f, maxLines = 3)
+                        Cell(Units.display(line), 1f, TextAlign.End)
+                        Cell(line.rate, 0.8f, TextAlign.End)
+                        Cell(if (qty != null && rate != null) moneyFull(PaymentMath.round2(qty * rate)) else "", 1f, TextAlign.End)
+                    }
+                }
+                Units.totals(b.items)?.let {
+                    Text(
+                        "Total: $it" + (b.linesTotal?.let { t -> " · ${moneyFull(t)}" } ?: ""),
+                        Modifier.fillMaxWidth().padding(top = 4.dp, end = 12.dp), textAlign = TextAlign.End, fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
             Spacer(Modifier.height(12.dp))
             Text("Orders", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
@@ -163,12 +217,15 @@ private fun BillDetail(item: BillListItem) {
                     Cell(SearchText.firstLine(o.data.buyer), 1f)
                 }
             }
-            if (orders.isEmpty()) Text("Not linked to any order on this laptop.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (orders.isEmpty()) Text(
+                if (b.buyer.isNotBlank()) "Not linked to any order: added from the supplier's bill." else "Not linked to any order on this laptop.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(12.dp))
             Text("Payments", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(4.dp))
             if (payments.isEmpty()) Text("No payment advice yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            else TableHeader(listOf(Col("Advice", 0f, width = ADVICE_NO_W), Col("Paid", 1f, TextAlign.End), Col("CD + GR + RD", 1f, TextAlign.End)))
+            else TableHeader(listOf(Col("Advice", 0f, width = ADVICE_NO_W), Col("Paid", 1f, TextAlign.End), Col("CD + GR + RD + claim", 1f, TextAlign.End)))
             payments.forEach { p ->
                 TableRow(false, { nav.go(Section.ADVICES, Target.Advice(p.adviceId)) }) {
                     Cell2(p.adviceNo, p.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
@@ -178,14 +235,229 @@ private fun BillDetail(item: BillListItem) {
             }
         }
     }
-    if (edit) BillDialog("Bill ${b.billNo}", b, onDismiss = { edit = false }) { _, details ->
-        withContext(Dispatchers.IO) { app.orders.updateBillDetails(b.id, details) }
-        edit = false
-        toast("Bill ${b.billNo} updated")
+    if (edit) BillEditorDialog(b, onDismiss = { edit = false }) { edit = false }
+    if (confirmDelete) {
+        if (b.adviceCount > 0) {
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false }, containerColor = Color.White,
+                title = { Text("Bill ${b.billNo} is on a payment advice") },
+                text = { Text("It is on ${b.adviceCount} payment advice${if (b.adviceCount == 1) "" else "s"}. Remove it from the advice first.") },
+                confirmButton = { TextButton(onClick = { confirmDelete = false }) { Text("OK") } }
+            )
+        } else ConfirmDialog(
+            "Delete bill ${b.billNo}?",
+            if (orders.isNotEmpty()) "It will be removed from its ${orders.size} order${if (orders.size == 1) "" else "s"}, which go back to Pending if they have no other bill."
+            else "The bill will be removed from this laptop and, after the next sync, from the phones.",
+            "Delete", danger = true, onDismiss = { confirmDelete = false }
+        ) {
+            confirmDelete = false
+            scope.launch {
+                runCatching { withContext(Dispatchers.IO) { app.orders.deleteBill(b.id) } }
+                    .onSuccess { toast("Bill ${b.billNo} deleted"); onDeleted() }
+                    .onFailure { toast(it.message ?: "Could not delete the bill") }
+            }
+        }
     }
 }
 
-/** Bill number (new bills only), date, amount, LR number and cash discount. */
+/**
+ * Adds a bill from the supplier's paper bill ([bill] null) or edits one, same rules as the phone:
+ * number (new bills only), buyer and supplier, the orders it covers (optional, many), the item
+ * lines as billed (qty + unit + rate) and its details. The amount totals the lines until typed over.
+ * Linking an order fills blank parties from it; a bill without orders needs both parties.
+ */
+@Composable
+fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit) {
+    val app = LocalApp.current
+    val toast = LocalToast.current
+    val scope = rememberCoroutineScope()
+    var ready by remember { mutableStateOf(bill == null) }
+    var number by remember { mutableStateOf(bill?.billNo.orEmpty()) }
+    var buyer by remember { mutableStateOf(bill?.buyer.orEmpty()) }
+    var supplier by remember { mutableStateOf(bill?.supplier.orEmpty()) }
+    val linked = remember { mutableStateListOf<OrderRow>() }
+    var date by remember { mutableStateOf((bill?.billDate ?: if (bill == null) LocalDate.now() else null).dmy()) }
+    var lr by remember { mutableStateOf(bill?.lrNo.orEmpty()) }
+    var cdPct by remember { mutableStateOf(PaymentMath.plain(bill?.cdPercent)) }
+    var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
+    var items by remember { mutableStateOf(bill?.items?.map(Units::splitLegacy).orEmpty()) }
+    var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
+    // The amount follows the lines' total until typed over (an old bill keeps its typed amount).
+    var amountAuto by remember { mutableStateOf(bill?.amount == null || bill.amount == bill.linesTotal) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(bill?.id) {
+        if (bill == null) return@LaunchedEffect
+        val orders = withContext(Dispatchers.IO) { app.orders.ordersForBill(bill.id) }
+        linked.addAll(orders)
+        if (bill.buyer.isBlank() || bill.supplier.isBlank()) orders.firstOrNull()?.let { o ->
+            if (buyer.isBlank()) buyer = SearchText.firstLine(o.data.buyer)
+            if (supplier.isBlank()) supplier = SearchText.firstLine(o.data.supplier)
+        }
+        ready = true
+    }
+
+    fun setItems(next: List<OrderItem>) {
+        items = next.mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
+        if (amountAuto) amount = PaymentMath.plain(PaymentMath.linesTotal(items))
+    }
+    fun bad(text: String) = text.isNotBlank() && (PaymentMath.parse(text) ?: -1.0) < 0
+    val linesTotal = PaymentMath.linesTotal(items)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (bill == null) "Add bill" else "Edit bill ${bill.billNo}") },
+        containerColor = Color.White,
+        text = {
+            Column(Modifier.width(820.dp).heightIn(max = 640.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Field(
+                        number, { number = it }, "Bill / invoice number", Modifier.weight(1f), enabled = bill == null,
+                        error = if (bill == null && number.isBlank() && error != null) "Required" else null
+                    )
+                    DateField(date, { date = it }, "Bill date", Modifier.weight(0.7f), optional = true)
+                    Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(0.8f))
+                }
+                if (bill != null) Text("The number can't be changed; delete the bill and add it again.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val suffix = if (linked.isEmpty()) "" else " (from orders)"
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PartyField(PartyType.BUYER, buyer, { buyer = it }, "Buyer$suffix", Modifier.weight(1f))
+                    PartyField(PartyType.SUPPLIER, supplier, { supplier = it }, "Supplier$suffix", Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(4.dp))
+                LinkedOrders(linked) { order ->
+                    linked += order
+                    if (buyer.isBlank()) buyer = SearchText.firstLine(order.data.buyer)
+                    if (supplier.isBlank()) supplier = SearchText.firstLine(order.data.supplier)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Items as billed", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    Units.totals(items)?.let { Pill("Total $it", Brand.SaffronDark) }
+                }
+                Text("What the supplier actually sent; it may differ from the orders.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (items.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("#" to 0.25f, "Particulars" to 3f, "Qty" to 0.8f, "Unit" to 0.8f, "Rate" to 0.8f, "Amount" to 0.9f, "" to 0.3f).forEach { (t, w) ->
+                        Text(t, Modifier.weight(w), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                items.forEachIndexed { i, line ->
+                    key(line.key) {
+                        fun set(next: OrderItem) = setItems(items.toMutableList().also { it[i] = next })
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(line.serialNo, Modifier.weight(0.25f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            CellField(line.particulars, { set(line.copy(particulars = it)) }, Modifier.weight(3f), "Description")
+                            CellField(line.quantity, { set(line.copy(quantity = it)) }, Modifier.weight(0.8f), "0", TextAlign.End)
+                            Select("Unit", listOf<QtyUnit?>(null) + QtyUnit.entries, QtyUnit.ofCode(line.unit), { set(line.copy(unit = it?.code.orEmpty())) },
+                                Modifier.weight(0.8f), text = { it?.label ?: "—" }, dense = true)
+                            CellField(line.rate, { set(line.copy(rate = it)) }, Modifier.weight(0.8f), "0", TextAlign.End)
+                            val q = PaymentMath.parse(line.quantity)
+                            val r = PaymentMath.parse(line.rate)
+                            Text(if (q != null && r != null) moneyFull(PaymentMath.round2(q * r)) else "", Modifier.weight(0.9f), textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium.merge(Numeric))
+                            Box(Modifier.weight(0.3f), contentAlignment = Alignment.Center) {
+                                IconButton(onClick = { setItems(items.filterIndexed { j, _ -> j != i }) }, modifier = Modifier.size(30.dp)) {
+                                    Icon(Icons.Default.Delete, "Remove line", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+                ChipRow(spacing = 8.dp) {
+                    OutlinedButton(onClick = { setItems(items + OrderItem(unit = Units.forNewRow(items))) }) { IconText(Icons.Default.Add, "Add line") }
+                    if (linked.isNotEmpty()) OutlinedButton(onClick = {
+                        setItems(items + linked.flatMap { o -> o.data.items.map(Units::splitLegacy) }
+                            .filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() }.map { it.copy(key = OrderItem().key) })
+                    }) { IconText(Icons.Default.Refresh, "Copy lines from orders") }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Field(amount, { amount = it; amountAuto = it.isBlank() && linesTotal == null }, "Bill amount (₹)", Modifier.weight(1f), number = true,
+                        error = if (bad(amount)) "Invalid" else null)
+                    Field(cdPct, {
+                        cdPct = it
+                        PaymentMath.percentOf(PaymentMath.parse(amount), PaymentMath.parse(it))?.let { v -> cdAmt = PaymentMath.plain(v) }
+                    }, "CD %", Modifier.weight(0.7f), number = true, error = if (bad(cdPct)) "Invalid" else null)
+                    Field(cdAmt, { cdAmt = it }, "CD ₹", Modifier.weight(0.7f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
+                }
+                if (linesTotal != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (amountAuto) "Amount = lines total ${moneyFull(linesTotal)}" else "Lines total ${moneyFull(linesTotal)} · amount typed over",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
+                    )
+                    if (!amountAuto) TextButton(onClick = { amountAuto = true; amount = PaymentMath.plain(linesTotal) }) { Text("Use lines total") }
+                }
+                error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
+            }
+        },
+        confirmButton = {
+            Button(enabled = ready && !busy, onClick = {
+                val day = if (date.isBlank()) null else parseDay(date)
+                error = when {
+                    bill == null && number.isBlank() -> "Enter the bill number from the supplier's bill"
+                    linked.isEmpty() && (buyer.isBlank() || supplier.isBlank()) -> "Enter the buyer and supplier, or link an order"
+                    date.isNotBlank() && day == null -> "Bill date must be dd-mm-yyyy"
+                    bad(amount) || bad(cdPct) || bad(cdAmt) || items.any { bad(it.quantity) || bad(it.rate) } -> "Amounts must be numbers"
+                    else -> null
+                }
+                if (error != null) return@Button
+                // Parties that match a linked order are left to the order, which keeps the row small.
+                val fromOrders = linked.any {
+                    SearchText.partyKey(it.data.buyer) == SearchText.partyKey(buyer) && SearchText.partyKey(it.data.supplier) == SearchText.partyKey(supplier)
+                }
+                val lines = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
+                    .mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
+                val details = BillDetails(
+                    day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), lines,
+                    if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier)
+                )
+                busy = true
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { app.orders.saveBill(bill?.id, number, details, linked.map { it.id }) } }
+                        .onSuccess { toast("Bill ${it.billNo} saved"); onSaved(it) }
+                        .onFailure { error = it.message; busy = false }
+                }
+            }) { Text(if (busy) "Saving…" else "Save bill") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/** Orders the bill covers: × unlinks; search by order number or party to link more. */
+@Composable
+private fun LinkedOrders(linked: MutableList<OrderRow>, onLink: (OrderRow) -> Unit) {
+    val app = LocalApp.current
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf(emptyList<OrderRow>()) }
+    var searchedFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(query) {
+        if (query.isBlank()) { results = emptyList(); searchedFor = null; return@LaunchedEffect }
+        delay(150)
+        results = withContext(Dispatchers.IO) { app.orders.list(OrderFilter(text = query), limit = 8) }
+        searchedFor = query
+    }
+    Text("Orders on this bill (optional)", style = MaterialTheme.typography.titleSmall)
+    if (linked.isEmpty()) Text("None linked. A bill without orders keeps its own buyer and supplier.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    linked.forEach { o ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(o.orderNo, Modifier.width(ORDER_NO_W), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium.merge(Numeric))
+            Text("${o.data.date} · ${SearchText.firstLine(o.data.buyer)} → ${SearchText.firstLine(o.data.supplier)}", Modifier.weight(1f), maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick = { linked.remove(o) }, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Close, "Unlink", Modifier.size(18.dp)) }
+        }
+    }
+    Field(query, { query = it }, "Link an order: search number, buyer, supplier…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
+    val shown = results.filter { r -> !OrderNumber.isPending(r.orderNo) && linked.none { it.id == r.id } }
+    shown.forEach { o ->
+        TableRow(false, { onLink(o); query = "" }) {
+            Cell2(o.orderNo, o.data.date, 0f, bold = true, width = ORDER_NO_W)
+            Cell("${SearchText.firstLine(o.data.buyer)} → ${SearchText.firstLine(o.data.supplier)}", 1f)
+            Icon(Icons.Default.Add, "Link", tint = Brand.SaffronDark)
+        }
+    }
+    if (searchedFor != null && searchedFor == query && shown.isEmpty()) Text("No matching order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Quick "bill received" from an order: bill number, date, amount, LR number and cash discount. */
 @Composable
 fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspend (String, BillDetails) -> Unit) {
     val scope = rememberCoroutineScope()
@@ -217,8 +489,8 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                     Field(cdPct, {
                         cdPct = it
                         PaymentMath.percentOf(PaymentMath.parse(amount), PaymentMath.parse(it))?.let { v -> cdAmt = PaymentMath.plain(v) }
-                    }, "Cash discount %", Modifier.weight(1f), number = true, error = if (bad(cdPct)) "Invalid" else null)
-                    Field(cdAmt, { cdAmt = it }, "Cash discount ₹", Modifier.weight(1f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
+                    }, "CD %", Modifier.weight(1f), number = true, error = if (bad(cdPct)) "Invalid" else null)
+                    Field(cdAmt, { cdAmt = it }, "CD ₹", Modifier.weight(1f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
                 }
                 error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
             }
