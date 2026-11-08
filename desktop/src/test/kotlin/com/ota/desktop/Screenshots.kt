@@ -42,8 +42,8 @@ fun main(args: Array<String>) {
     val advice = demo.payments.search(AdviceFilter()).first()
     val order = demo.orders.list().first { it.billNos.isNotEmpty() }
 
-    fun shot(name: String, nav: Navigator? = null, content: (@Composable () -> Unit)? = null) {
-        val scene = ImageComposeScene(1600, 1000, Density(1.25f)) {
+    fun shot(name: String, nav: Navigator? = null, height: Int = 1000, content: (@Composable () -> Unit)? = null) {
+        val scene = ImageComposeScene(1600, height, Density(1.25f)) {
             OtaTheme {
                 CompositionLocalProvider(LocalApp provides app) {
                     if (content != null) content() else AppShell(app, nav!!)
@@ -63,6 +63,7 @@ fun main(args: Array<String>) {
 
     shot("01-sign-in") { SignInScreen(app) }
     shot("02-dashboard", at(Section.DASHBOARD))
+    shot("02b-dashboard-full", at(Section.DASHBOARD), height = 1840)
     shot("03-orders", at(Section.ORDERS, Target.Order(order.id)))
     shot("04-order-editor", at(Section.ORDERS, Target.NewOrder))
     shot("05-bills", at(Section.BILLS, Target.Bill(bill.id)))

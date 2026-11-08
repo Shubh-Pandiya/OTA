@@ -1,6 +1,6 @@
 # OTA Business
 
-Android app for **Onkar Textile Agency**: take shirting/suiting orders, share them as PDF,
+Android app (plus a [Windows desktop app](#windows-desktop-app-desktop)) for **Onkar Textile Agency**: take shirting/suiting orders, share them as PDF,
 track bills against orders, prepare **payment advices** (shared as PDF) against those bills, and keep a
 buyer/supplier catalog.
 
@@ -152,3 +152,38 @@ it is full, changes stay on the phone and upload automatically once there is spa
 
 See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md) for the tables, cursors and
 archive/purge RPCs the desktop app uses.
+
+## Windows desktop app (`desktop/`)
+
+The laptop is the agency's main store; the cloud only carries recent data between phones and the laptop.
+
+**Install:** download `OTA.Business-<version>.msi` (or the `.exe`) from the
+[latest desktop release](https://github.com/Shubh-Pandiya/OTA/releases?q=desktop-v) and run it. It installs
+for the current user (no admin prompt) and needs nothing else: the installer bundles its own Java
+runtime and PostgreSQL 17. On first launch the app creates a private database under
+`%LOCALAPPDATA%\OTA Business Data\pgdata` (it listens on localhost only, on a free port, and runs
+only while the app is open), applies the schema, and asks for a one-time staff sign-in. After that it opens offline.
+Uninstalling or upgrading never touches the data folder. The installer is not code-signed, so
+Windows SmartScreen may ask for *More info → Run anyway* the first time.
+
+**What it does:**
+- Everything the phone does: orders with units and PDFs, bills, payment advices with PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. It uses the same order/advice number rules, with the signed-in staff digit.
+- Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D.), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
+- Excel export (`.xlsx`): all data (one sheet per table), the dashboard numbers, the current filtered view of any list, and per-area workbooks.
+- Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges archived rows older than the retention period, on connect and every 6 hours. The admin can change the retention days and storage limit under *Sync & Cloud*. Nothing is purged until this laptop holds it.
+
+PDFs are saved to `Documents\OTA Orders`. Logs are in `%LOCALAPPDATA%\OTA Business Data\logs`.
+
+**Build / test** (JDK 21; on macOS this builds a `.app` for local testing only):
+
+```bash
+cd desktop
+./gradlew test                 # unit + embedded-PostgreSQL tests (no secrets needed)
+./gradlew run                  # run the app
+./gradlew screenshots          # render every screen to build/screenshots (headless)
+```
+
+Windows installers are built by [`.github/workflows/desktop.yml`](.github/workflows/desktop.yml) on
+`windows-latest`. It runs the tests, builds the MSI and EXE, installs the MSI silently, and runs
+`OTA Business.exe --self-test`, which boots the bundled PostgreSQL and migrates the schema. Pushing a
+tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers as a GitHub Release.

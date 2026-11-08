@@ -1,5 +1,9 @@
 package com.ota.desktop.ui
 
+import com.ota.desktop.Money
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -181,7 +185,19 @@ fun DashboardScreen() {
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = gap, modifier = Modifier.height(IntrinsicSize.Min)) {
             Panel(Modifier.weight(1f).fillMaxHeight(), title = "Quantity per unit") {
-                HBars(d.qtyByUnit.mapIndexed { i, p -> HBar(p.label, p.value, null, Brand.Series[i % Brand.Series.size]) }, format = ::shortNumber)
+                // Units can't share one scale (metres vs thans), so this is a table, not bars.
+                TableHeader(listOf(Col("Unit", 1f), Col("Quantity", 1.4f, TextAlign.End)))
+                if (d.qtyByUnit.isEmpty()) Empty("No quantities")
+                d.qtyByUnit.forEachIndexed { i, p ->
+                    TableRow(false, {}) {
+                        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(8.dp).background(Brand.Series[i % Brand.Series.size], CircleShape))
+                            Spacer(Modifier.width(8.dp))
+                            Text(p.label, fontWeight = FontWeight.SemiBold)
+                        }
+                        Cell(Money.format(p.value).removeSuffix(".00"), 1.4f, TextAlign.End)
+                    }
+                }
             }
             Panel(Modifier.weight(1.3f).fillMaxHeight(), title = "Staff activity") {
                 val cols = listOf(Col("Staff", 1f), Col("Orders", 1f, TextAlign.End), Col("Advices", 1f, TextAlign.End), Col("Paid", 1.6f, TextAlign.End))
