@@ -213,12 +213,12 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 
         val code = staff?.code
         if (code != null) {
-            StatusLine(Icons.Default.Tag, "Your order numbers: ${code}YYYYMMDD + serial, e.g. ${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}001")
+            StatusLine(Icons.Default.Tag, "Your advice numbers: PA${code}YYYYMMDD + serial, e.g. PA${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}001")
         } else {
             StatusLine(
                 Icons.Default.Tag,
-                if (status.lastSyncAt == null) "Getting your order number code…"
-                else "This login has no order number code yet. Ask the owner to add one, then tap Sync now.",
+                if (status.lastSyncAt == null) "Getting your advice number code…"
+                else "This login has no advice number code yet. Ask the owner to add one, then tap Sync now.",
                 isError = status.lastSyncAt != null,
                 busy = status.lastSyncAt == null
             )
