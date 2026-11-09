@@ -57,7 +57,9 @@ val copyShared by tasks.registering(Sync::class) {
         include(
             "OrderNumber.kt", "AdviceNumber.kt", "Units.kt", "OrderFromData.kt",
             "data/SearchText.kt", "data/PartyMatch.kt", "data/Models.kt", "data/PaymentModels.kt", "data/SyncModels.kt",
-            "cloud/SupabaseHttp.kt", "cloud/OrderCloudApi.kt", "cloud/CatalogCloudApi.kt"
+            "cloud/SupabaseHttp.kt", "cloud/OrderCloudApi.kt", "cloud/CatalogCloudApi.kt",
+            // Home: Open-Meteo client, the weather card and the roaming cat (Compose, common APIs only).
+            "weather/Weather.kt", "ui/WeatherCard.kt", "ui/RoamingCat.kt"
         )
     }
     into(sharedOut.map { it.dir("com/example/otaapplication") })

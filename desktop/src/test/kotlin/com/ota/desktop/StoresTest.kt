@@ -71,7 +71,8 @@ class StoresTest {
 
         // A pending order can't get a bill until it has its number.
         assertFailsWith<IllegalArgumentException> { orders.attachBill(listOf(p1.id), "X1") }
-        assertEquals(listOf(p1.id, p2.id), orders.numberPending().map { it.first })
+        // Both were saved in the same millisecond, so their order is not defined.
+        assertEquals(setOf(p1.id, p2.id), orders.numberPending().map { it.first }.toSet())
         assertTrue(orders.assignNumber(p1.id, "26270003"))
         assertFalse(orders.assignNumber(p1.id, "26270004"), "a number is given once")
         assertEquals("26270003", orders.get(p1.id)!!.orderNo)

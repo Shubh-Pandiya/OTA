@@ -217,3 +217,11 @@ The desktop keeps every row in its own PostgreSQL (Flyway migrations in
 `desktop/src/main/resources/db`). `V2__bill_lines_claims_parties.sql` adds the bill items and
 parties and the claim columns, and resets the bill and advice-line pull cursors so the next sync
 pulls those columns for rows it already had.
+
+## Local-only Home features
+
+Weather, the roaming cat, and to-dos/reminders never sync, and they have no cloud tables or columns.
+
+- Weather comes from Open-Meteo (`api.open-meteo.com` forecast and `geocoding-api.open-meteo.com` city search), needs no key, and refreshes at most every 30 minutes.
+- The phone uses its coarse location, or falls back to a fixed city. Its settings and cache are kept in SharedPreferences.
+- The desktop uses a fixed city, or an approximate IP location from `get.geojs.io`, then `ipwho.is` (cached for 12 hours). Its settings and cache are kept in the local `kv` table.

@@ -83,7 +83,7 @@ import java.time.Instant
 
 enum class Section(val title: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
-    DASHBOARD("Dashboard", Icons.Default.DateRange),
+    DASHBOARD("Insights", Icons.Default.DateRange),
     ORDERS("Orders", Icons.Default.ShoppingCart),
     BILLS("Bills", Icons.Default.List),
     ADVICES("Payment Advices", Icons.Default.Send),

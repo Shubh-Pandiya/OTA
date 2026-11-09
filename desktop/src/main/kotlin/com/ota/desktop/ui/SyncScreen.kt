@@ -101,6 +101,11 @@ fun SyncScreen() {
                     OutlinedButton(onClick = { revealFile(AppPaths.logs) }) { Text("Open logs") }
                 }
             }
+            Panel(Modifier.weight(1f), title = "Weather on Home") {
+                Text("Kept on this laptop only, never synced.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                WeatherPlaceChooser()
+            }
         }
         Spacer(Modifier.height(14.dp))
         if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent)
@@ -181,7 +186,7 @@ fun ExportScreen() {
         PageHeader("Export", "Excel (.xlsx) files that open in Excel, Google Sheets or LibreOffice")
         val cards = listOf(
             Triple("all", "Everything", "Orders, order items, bills, payment advices, advice lines, buyers and suppliers, one sheet each."),
-            Triple("dash", "Dashboard (12 months)", "Every dashboard chart's numbers for the last 12 months: summary, trends, top parties, ageing, staff."),
+            Triple("dash", "Insights (12 months)", "Every Insights chart's numbers for the last 12 months: summary, trends, top parties, ageing, staff."),
             Triple("orders", "Orders and items", "All orders with one row per item, with units."),
             Triple("bills", "Bills and payments", "Bills with balances and status, payment advices and their lines."),
             Triple("parties", "Buyers and suppliers", "The full catalog with addresses, GSTIN and bank details.")
@@ -195,7 +200,7 @@ fun ExportScreen() {
                         Button(enabled = busy == null, onClick = {
                             when (key) {
                                 "all" -> export(key, "OTA all data $today.xlsx") { app.export.everything() }
-                                "dash" -> export(key, "OTA dashboard $today.xlsx") {
+                                "dash" -> export(key, "OTA insights $today.xlsx") {
                                     app.analytics.dashboard(DashFilter(today.minusMonths(12).plusDays(1), today)).tables()
                                 }
                                 "orders" -> export(key, "OTA orders $today.xlsx") { app.orders.list(limit = 1_000_000).let { listOf(app.export.orders(it), app.export.items(it)) } }

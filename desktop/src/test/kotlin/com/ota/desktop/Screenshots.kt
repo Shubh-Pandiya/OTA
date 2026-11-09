@@ -5,6 +5,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.unit.Density
 import com.example.otaapplication.cloud.CloudUsage
+import com.example.otaapplication.weather.Place
+import com.example.otaapplication.weather.WeatherNow
 import com.ota.desktop.data.BillFilter
 import com.ota.desktop.data.AdviceFilter
 import com.ota.desktop.db.Kv
@@ -35,6 +37,10 @@ fun main(args: Array<String>) {
         this["maintenance.last"] = System.currentTimeMillis().minus(3 * 3_600_000).toString()
         this["maintenance.summary"] = "Archived 38 rows, purged 21 orders and 9 advices older than 30 days"
         this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 30, 12.2).toJson()
+        // A fixed city with a fresh forecast, so Home renders the weather without the network.
+        val surat = Place("Surat, Gujarat", 21.17, 72.83)
+        this["weather.city"] = surat.toJson().toString()
+        this["weather.now"] = WeatherNow(surat.name, 31.4, 1, true, 34.0, 22.0, surat.latitude, surat.longitude, System.currentTimeMillis() - 12 * 60_000).toJson().toString()
     }
     val app = AppContext(TestDb.server, db)
 
@@ -69,9 +75,8 @@ fun main(args: Array<String>) {
 
     shot("01-sign-in") { SignInScreen(app) }
     shot("00-home", at(Section.HOME))
-    shot("00b-home-full", at(Section.HOME), height = 1400)
-    shot("02-dashboard", at(Section.DASHBOARD))
-    shot("02b-dashboard-full", at(Section.DASHBOARD), height = 1840)
+    shot("02-insights", at(Section.DASHBOARD))
+    shot("02b-insights-full", at(Section.DASHBOARD), height = 3000)
     shot("03-orders", at(Section.ORDERS, Target.Order(order.id)))
     shot("04-order-editor", at(Section.ORDERS, Target.NewOrder))
     shot("04b-order-pending-number", at(Section.ORDERS, Target.Order(pending.id)))

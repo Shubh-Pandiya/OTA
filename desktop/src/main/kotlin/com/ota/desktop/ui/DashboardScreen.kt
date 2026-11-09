@@ -48,6 +48,10 @@ import com.example.otaapplication.data.PaymentStatus
 import com.ota.desktop.dash.Analytics
 import com.ota.desktop.dash.DashFilter
 import com.ota.desktop.dash.Dashboard
+import com.ota.desktop.dash.Home
+import com.example.otaapplication.OrderNumber
+import com.example.otaapplication.Units
+import com.example.otaapplication.data.SearchText
 import com.ota.desktop.export.XlsxExport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -69,6 +73,7 @@ enum class Range(val label: String) {
     }
 }
 
+/** Insights: every number and chart (moved off Home), with filters, plus the oldest dues and latest records. */
 @Composable
 fun DashboardScreen() {
     val app = LocalApp.current
@@ -93,20 +98,21 @@ fun DashboardScreen() {
         app.analytics.staffCodes()
     }
     val status by app.engine.status.collectAsState()
+    val home by rememberLoad<Home?>(null) { app.analytics.home() }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageHeader("Dashboard", dash?.let { Dashboard.filterLabel(it.filter) } ?: "Loading…") {
+        PageHeader("Insights", dash?.let { Dashboard.filterLabel(it.filter) } ?: "Loading…") {
             OutlinedButton(onClick = { nav.go(Section.ORDERS, Target.NewOrder) }) { IconText(Icons.Default.Add, "New order") }
             Spacer(Modifier.width(8.dp))
             Button(onClick = {
                 val d = dash ?: return@Button
-                val file = chooseSaveFile("Export dashboard", "OTA dashboard ${LocalDate.now()}.xlsx") ?: return@Button
+                val file = chooseSaveFile("Export insights", "OTA insights ${LocalDate.now()}.xlsx") ?: return@Button
                 scope.launch {
                     runCatching { withContext(Dispatchers.IO) { XlsxExport.write(file, d.tables()) } }
-                        .onSuccess { toast("Dashboard exported to ${it.name}"); openFile(it) }
+                        .onSuccess { toast("Insights exported to ${it.name}"); openFile(it) }
                         .onFailure { toast("Export failed: ${it.message}") }
                 }
-            }) { IconText(Icons.Default.Share, "Export dashboard") }
+            }) { IconText(Icons.Default.Share, "Export insights") }
         }
 
         // Filters
@@ -227,7 +233,57 @@ fun DashboardScreen() {
                 }
             }
         }
+        home?.let { h ->
+            Spacer(Modifier.height(14.dp))
+            Latest(h)
+        }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Not filtered: the oldest dues and the newest orders and advices, each a click away. */
+@Composable
+private fun Latest(h: Home) {
+    val nav = LocalNav.current
+    val gap = Arrangement.spacedBy(14.dp)
+    Panel(Modifier.fillMaxWidth(), title = "Oldest dues", actions = { TextButton(onClick = { nav.go(Section.BILLS) }) { Text("All bills") } }) {
+        TableHeader(listOf(Col("Bill", 1f), Col("Date", 0.8f), Col("Parties", 2f), Col("Balance", 1f, TextAlign.End)))
+        if (h.oldestDue.isEmpty()) Empty("No bills due")
+        h.oldestDue.forEach { (b, buyer, supplier) ->
+            TableRow(false, { nav.go(Section.BILLS, Target.Bill(b.id)) }) {
+                Cell(b.billNo, 1f, bold = true)
+                Cell(b.billDate.dmy().ifEmpty { "—" }, 0.8f)
+                Cell2(SearchText.firstLine(buyer), SearchText.firstLine(supplier), 2f)
+                Cell(rupees(b.balance), 1f, TextAlign.End, color = Brand.Red)
+            }
+        }
+    }
+    Spacer(Modifier.height(14.dp))
+    Row(horizontalArrangement = gap, modifier = Modifier.height(IntrinsicSize.Min)) {
+        Panel(Modifier.weight(1f).fillMaxHeight(), title = "Recent orders", actions = { TextButton(onClick = { nav.go(Section.ORDERS) }) { Text("All orders") } }) {
+            TableHeader(listOf(Col("Order no", 1f), Col("Date", 0.8f), Col("Buyer / supplier", 2f), Col("Quantity", 1.1f, TextAlign.End)))
+            if (h.recentOrders.isEmpty()) Empty("No orders yet")
+            h.recentOrders.forEach { o ->
+                TableRow(false, { nav.go(Section.ORDERS, Target.Order(o.id)) }) {
+                    Cell(OrderNumber.display(o.orderNo), 1f, bold = true, color = if (OrderNumber.isPending(o.orderNo)) Brand.Amber else androidx.compose.ui.graphics.Color.Unspecified)
+                    Cell(o.day.dmy().ifEmpty { o.data.date }, 0.8f)
+                    Cell2(SearchText.firstLine(o.data.buyer), SearchText.firstLine(o.data.supplier), 2f)
+                    Cell(Units.totals(o.data.items.map(Units::splitLegacy)).orEmpty(), 1.1f, TextAlign.End)
+                }
+            }
+        }
+        Panel(Modifier.weight(1f).fillMaxHeight(), title = "Recent payment advices", actions = { TextButton(onClick = { nav.go(Section.ADVICES) }) { Text("All advices") } }) {
+            TableHeader(listOf(Col("Advice", 1f), Col("Date", 0.8f), Col("Buyer / supplier", 2f), Col("Paid", 1f, TextAlign.End)))
+            if (h.recentAdvices.isEmpty()) Empty("No payment advices yet")
+            h.recentAdvices.forEach { a ->
+                TableRow(false, { nav.go(Section.ADVICES, Target.Advice(a.id)) }) {
+                    Cell(a.adviceNo, 1f, bold = true)
+                    Cell(a.payDate.dmy(), 0.8f)
+                    Cell2(SearchText.firstLine(a.buyer), SearchText.firstLine(a.supplier), 2f)
+                    Cell(moneyFull(a.paid), 1f, TextAlign.End, color = Brand.Green)
+                }
+            }
+        }
     }
 }
 

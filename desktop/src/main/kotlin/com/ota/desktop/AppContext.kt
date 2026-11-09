@@ -18,6 +18,7 @@ import com.ota.desktop.sync.CloudSettings
 import com.ota.desktop.sync.StaffProfile
 import com.ota.desktop.sync.SyncEngine
 import com.ota.desktop.sync.SyncScheduler
+import com.ota.desktop.weather.DesktopWeather
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,6 +52,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val engine = SyncEngine(db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers)
     val scheduler = SyncScheduler(engine)
     val cloudSettings = CloudSettings(config, auth)
+    val weather = DesktopWeather(kv)
 
     private val _staff = MutableStateFlow(engine.cachedStaff())
     val staff: StateFlow<StaffProfile?> = _staff.asStateFlow()

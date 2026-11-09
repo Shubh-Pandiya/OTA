@@ -89,11 +89,11 @@ object Weather {
     fun degrees(value: Double): String = "${value.roundToInt()}°"
 
     /** Current conditions and today's high/low at [place]. Blocking; call off the main thread. */
-    fun fetch(place: Place, now: Long = System.currentTimeMillis()): WeatherNow {
-        val url = "$FORECAST?latitude=${coord(place.latitude)}&longitude=${coord(place.longitude)}" +
+    fun fetch(place: Place, now: Long = System.currentTimeMillis()): WeatherNow = parseForecast(get(forecastUrl(place)), place, now)
+
+    fun forecastUrl(place: Place): String =
+        "$FORECAST?latitude=${coord(place.latitude)}&longitude=${coord(place.longitude)}" +
             "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1"
-        return parseForecast(get(url), place, now)
-    }
 
     fun parseForecast(body: String, place: Place, now: Long): WeatherNow {
         val o = JSONObject(body)
