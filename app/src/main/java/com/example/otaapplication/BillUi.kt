@@ -315,13 +315,19 @@ private fun TransportField(value: String, onValueChange: (String) -> Unit, label
     val focusManager = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
     var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+    val suggestionsView = remember { BringIntoViewRequester() }
     LaunchedEffect(value, focused) {
         if (!focused || transports == null) { suggestions = emptyList(); return@LaunchedEffect }
         delay(150)
         val found = withContext(Dispatchers.IO) { transports(value) }
         suggestions = found.filterNot { it.equals(value.trim(), ignoreCase = true) }
+        if (suggestions.isNotEmpty()) {
+            // Keep the list above the keyboard once it has expanded.
+            delay(220)
+            suggestionsView.bringIntoView()
+        }
     }
-    Column {
+    Column(Modifier.bringIntoViewRequester(suggestionsView)) {
         OutlinedTextField(
             value = value,
             onValueChange = onValueChange,
