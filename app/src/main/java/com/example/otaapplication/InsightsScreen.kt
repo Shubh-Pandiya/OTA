@@ -111,7 +111,7 @@ fun InsightsScreen(stats: HomeStats?, actions: HomeActions) {
                         stats.recentAdvices.forEach { advice ->
                             HomeRow(
                                 icon = Icons.Default.Payments,
-                                title = advice.adviceNo,
+                                title = AdviceNumber.display(advice.adviceNo),
                                 subtitle = listOfNotNull(
                                     advice.payDate?.format(billDateFormat),
                                     listOf(advice.buyer, advice.supplier).map(SearchText::firstLine).filter { it.isNotBlank() }.joinToString(" → ")

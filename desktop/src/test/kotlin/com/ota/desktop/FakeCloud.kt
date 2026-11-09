@@ -26,6 +26,8 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     var failWrites: Pair<Int, String?>? = null
     /** Last FY order serial handed out by ota_allocate_order_no, per FY prefix ("2627"). */
     val orderSerials = HashMap<String, Int>()
+    /** Last FY advice serial handed out by ota_allocate_advice_no (its own counter), per FY prefix. */
+    val adviceSerials = HashMap<String, Int>()
     /** When true, ota_allocate_order_no answers like the database at 9999 orders. */
     var orderLimitReached = false
     private var tick = 0L
@@ -85,6 +87,13 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
                     orderSerials[prefix] = serial
                     200 to JSONObject.quote(com.example.otaapplication.OrderNumber.formatFy(date, serial))
                 }
+            }
+            name == "rpc/ota_allocate_advice_no" -> {
+                val date = java.time.LocalDate.parse(JSONObject(body).getString("p_date"))
+                val prefix = com.example.otaapplication.OrderNumber.fyPrefix(date)
+                val serial = (adviceSerials[prefix] ?: 0) + 1
+                adviceSerials[prefix] = serial
+                200 to JSONObject.quote(com.example.otaapplication.OrderNumber.formatFy(date, serial))
             }
             name == "rpc/ota_mark_archived" -> markArchived(JSONObject(body))
             name == "rpc/ota_purge_archived_orders" -> purge()

@@ -3,4 +3,6 @@
     <external-path name="ota" path="Documents/OTA Orders/" />
     <!-- Camera photos of cheques / payment screenshots, before they are compressed. -->
     <cache-path name="camera" path="camera/" />
+    <!-- Order PDFs made only for sharing (the order has no PDF on this phone). -->
+    <cache-path name="shared" path="shared/" />
 </paths>

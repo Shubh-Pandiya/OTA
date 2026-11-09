@@ -47,8 +47,11 @@ class PdfTest {
         val (text, pages) = render(file)
         assertEquals(1, pages)
         assertTrue(file.length() < 200_000, "order PDF is ${file.length()} bytes")
-        listOf("ORDER FORM", "Offer No: 420261108001", "250 Mtr", "10 Than", "100 kg", "Shree Ganesh Garments", "Agent's Signature", "₹ 145", "SINCE 1991")
+        // Plain rates print as rupees with two decimals under a "RATES (₹)" header.
+        listOf("ORDER FORM", "Offer No: 420261108001", "250 Mtr", "10 Than", "100 kg", "Shree Ganesh Garments", "Agent's Signature", "RATES (₹)",
+            "145.00", "3,200.00", "90.00", "SINCE 1991")
             .forEach { assertTrue(it in text, "missing '$it'") }
+        assertEquals("Order_420261108001.pdf", OrderPdf.fileFor(data).name)
     }
 
     @Test
@@ -61,7 +64,7 @@ class PdfTest {
     @Test
     fun advicePdf() {
         val advice = PaymentAdvice(
-            id = "a", adviceNo = "PA420261108001", payDate = LocalDate.of(2026, 11, 8),
+            id = "a", adviceNo = "26270001", payDate = LocalDate.of(2026, 11, 8),
             buyer = "Shree Ganesh Garments", supplier = "Raymond Ltd", mode = PaymentMode.CHEQUE, reference = "004512",
             balanceAmount = 12500.0, balanceSide = BalanceSide.DR, remarks = "Balance next month.",
             lines = listOf(
@@ -73,7 +76,9 @@ class PdfTest {
         val (text, pages) = render(file)
         assertEquals(1, pages)
         assertTrue(file.length() < 200_000, "advice PDF is ${file.length()} bytes")
-        listOf("PAYMENT ADVICE", "PA420261108001", "INV-2041", "LR: LR 7781", "(2%)", "1,00,000.00", "₹ 12,500.00 Dr", "Cheque number: 004512")
+        listOf("PAYMENT ADVICE", "Advice No: PA-26270001", "(₹)", "INV-2041", "LR: LR 7781", "(2%)", "1,00,000.00", "₹ 12,500.00 Dr", "Cheque number: 004512")
             .forEach { assertTrue(it in text, "missing '$it'") }
+        assertEquals("PA-26270001.pdf", AdvicePdf.fileFor(advice).name)
+        assertEquals("PA420261108001.pdf", AdvicePdf.fileFor(advice.copy(adviceNo = "PA420261108001")).name)
     }
 }

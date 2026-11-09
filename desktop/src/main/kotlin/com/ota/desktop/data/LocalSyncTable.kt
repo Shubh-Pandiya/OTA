@@ -163,7 +163,8 @@ class LocalSyncTable<T>(
                     rs.str("advice_no"), rs.date("pay_date")?.toString(), rs.str("buyer"), rs.str("supplier"), rs.str("mode"),
                     rs.str("reference"), rs.dbl("balance"), rs.strOrNull("balance_side"), rs.str("remarks")
                 )
-            }
+            },
+            pushable = "advice_no <> ''"
         )
 
         val ADVICE_LINES = LocalSyncTable(
@@ -177,7 +178,9 @@ class LocalSyncTable<T>(
                 )
             },
             "advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim, claim_note",
-            { rs -> AdviceLineValue(rs.id("advice_id"), rs.id("bill_id"), lineAmounts(rs)) }
+            { rs -> AdviceLineValue(rs.id("advice_id"), rs.id("bill_id"), lineAmounts(rs)) },
+            // Lines wait until their advice has its number (and so can upload first).
+            pushable = "advice_id in (select id from payment_advices where advice_no <> '')"
         )
 
         /** Amounts of an advice line read from `paid, cd_percent, cd_amount, goods_return, rate_diff, claim, claim_note`. */

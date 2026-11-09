@@ -21,13 +21,4 @@ object PublicFiles {
         }
         return file
     }
-
-    /** First free, writable `Order_{n}_…` name from [firstIndex] on. */
-    fun orderPdf(dir: File, firstIndex: Int, name: (Int) -> String): File {
-        for (i in firstIndex until firstIndex + 100) {
-            val file = File(dir, name(i))
-            if (!file.exists() && claim(file)) return file
-        }
-        return File(dir, name(firstIndex))
-    }
 }

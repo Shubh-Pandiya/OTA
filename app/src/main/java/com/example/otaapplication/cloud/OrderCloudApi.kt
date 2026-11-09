@@ -2,6 +2,7 @@ package com.example.otaapplication.cloud
 
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceLineValue
 import com.example.otaapplication.data.AdviceValue
@@ -271,7 +272,16 @@ interface OrderCloudApi {
      * Each call uses up a number. Throws [OrderLimitReached] once the year's 9999 are used.
      */
     suspend fun allocateOrderNo(orderDate: LocalDate): String = throw UnsupportedOperationException("allocateOrderNo")
+
+    /**
+     * The next agency-wide payment advice number for the financial year of [payDate], e.g. "26270001",
+     * from the advices' own counter. Throws [AdviceLimitReached] once the year's 9999 are used.
+     */
+    suspend fun allocateAdviceNo(payDate: LocalDate): String = throw UnsupportedOperationException("allocateAdviceNo")
 }
+
+/** All 9999 payment advice numbers of a financial year are used. */
+class AdviceLimitReached(message: String) : Exception(message)
 
 /** All 9999 order numbers of a financial year are used; new orders can't get a number. */
 class OrderLimitReached(message: String) : Exception(message)
@@ -327,7 +337,25 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
         return number
     }
 
+    override suspend fun allocateAdviceNo(payDate: LocalDate): String {
+        val body = try {
+            client.call("POST", "rpc/ota_allocate_advice_no", body = JSONObject().put("p_date", payDate.toString()).toString())
+        } catch (e: CloudException) {
+            if (e.message.orEmpty().contains(ADVICE_LIMIT_CODE)) {
+                throw AdviceLimitReached(
+                    "All ${OrderNumber.FY_MAX_SERIAL} payment advice numbers for FY ${OrderNumber.fyLabel(payDate)} are used. " +
+                        "No more advices can be numbered this financial year; contact the owner."
+                )
+            }
+            throw e
+        }
+        val number = JSONTokener(body.trim()).nextValue() as? String
+        if (number == null || !AdviceNumber.isFy(number)) throw CloudException("Unexpected advice number from the cloud: $body", 200)
+        return number
+    }
+
     private companion object {
         const val ORDER_LIMIT_CODE = "ORDER_LIMIT_REACHED"
+        const val ADVICE_LIMIT_CODE = "ADVICE_LIMIT_REACHED"
     }
 }

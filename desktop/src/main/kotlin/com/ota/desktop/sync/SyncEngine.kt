@@ -2,6 +2,7 @@ package com.ota.desktop.sync
 
 import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.OrderNumber
+import com.example.otaapplication.cloud.AdviceLimitReached
 import com.example.otaapplication.cloud.CatalogCloudApi
 import com.example.otaapplication.cloud.CloudException
 import com.example.otaapplication.cloud.CloudUsage
@@ -12,6 +13,7 @@ import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.PostgrestOrderApi
 import com.example.otaapplication.cloud.SupabaseAuth
 import com.example.otaapplication.data.PartyType
+import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.SyncTime
 import com.ota.desktop.data.CatalogStore
@@ -68,7 +70,9 @@ class SyncEngine(
     private val catalogApi: CatalogCloudApi = PostgrestCatalogApi(client),
     private val pageSize: Int = 500,
     private val pushBatch: Int = 200,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** Called once an offline advice gets its number (the app writes its PDF then). */
+    private val onAdviceNumbered: (PaymentAdvice) -> Unit = {}
 ) {
     private val mutex = Mutex()
     private val _status = MutableStateFlow(
@@ -191,6 +195,7 @@ class SyncEngine(
         pushNumbered(LocalSyncTable.ORDERS, notices) { row -> resolveDuplicate(row, row.value.offerNo, Numbers.Kind.ORDER, LocalSyncTable.ORDERS) }
         push(LocalSyncTable.BILLS)
         push(LocalSyncTable.LINKS)
+        numberPendingAdvices(notices)
         pushNumbered(LocalSyncTable.ADVICES, notices) { row -> resolveDuplicate(row, row.value.adviceNo, Numbers.Kind.ADVICE, LocalSyncTable.ADVICES) }
         push(LocalSyncTable.ADVICE_LINES)
     }
@@ -237,6 +242,48 @@ class SyncEngine(
                 return
             }
             if (withContext(Dispatchers.IO) { orders.assignNumber(id, number) }) notices += "An order saved offline is now order $number."
+        }
+    }
+
+    /**
+     * A new payment advice's FY number (PA-26270001), from the cloud's own advice counter; null when
+     * offline or signed out (saved as "Pending number"). Throws [AdviceLimitReached] after 9999 a year.
+     */
+    suspend fun allocateAdviceNo(payDate: LocalDate): String? {
+        if (auth.session.value == null) return null
+        return try {
+            orderApi.allocateAdviceNo(payDate)
+        } catch (e: AdviceLimitReached) {
+            throw e
+        } catch (e: CloudException) {
+            null
+        } catch (e: java.io.IOException) {
+            null
+        }
+    }
+
+    /** Advices saved offline get their number before anything about them uploads; same as orders. */
+    private suspend fun numberPendingAdvices(notices: MutableList<String>) {
+        val refs = withContext(Dispatchers.IO) { payments.numberPending() }
+        for ((id, payDate, deleted) in refs) {
+            if (deleted) {
+                withContext(Dispatchers.IO) { payments.dropUnnumbered(id) }
+                continue
+            }
+            val number = try {
+                orderApi.allocateAdviceNo(payDate ?: LocalDate.now())
+            } catch (e: AdviceLimitReached) {
+                notices += e.message.orEmpty()
+                return
+            } catch (e: CloudException) {
+                if (e.authFailed || e.storageFull) throw e
+                notices += "Payment advices saved offline could not get a number yet: ${e.message}"
+                return
+            }
+            if (withContext(Dispatchers.IO) { payments.assignNumber(id, number) }) {
+                withContext(Dispatchers.IO) { payments.advice(id)?.let { a -> runCatching { onAdviceNumbered(a) } } }
+                notices += "A payment advice saved offline is now ${AdviceNumber.display(number)}."
+            }
         }
     }
 

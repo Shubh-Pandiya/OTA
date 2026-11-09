@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import androidx.core.content.edit
 import com.example.otaapplication.AdviceNumberAllocator
+import com.example.otaapplication.AdvicePdf
 import com.example.otaapplication.OrderFiles
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
@@ -77,7 +78,13 @@ class CloudSync private constructor(private val context: Context) {
         renumberAdvice = AdviceNumberAllocator(numberPrefs, payments)::replacementFor,
         numberOrder = { uuid, offerNo ->
             // Saved again under its number, which also makes the order PDF it had to wait for.
-            orders.get(uuid)?.let { OrderFiles(context, orders).save(it.copy(offerNo = offerNo), uuid).first } ?: false
+            orders.get(uuid)?.let { OrderFiles(context, orders).save(it.copy(offerNo = offerNo), uuid).ok } ?: false
+        },
+        numberAdvice = { adviceId, adviceNo ->
+            // The advice PDF waited for the number too.
+            payments.assignNumber(adviceId, adviceNo).also { numbered ->
+                if (numbered) payments.advice(adviceId)?.let { runCatching { AdvicePdf.write(context, it) } }
+            }
         }
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -203,6 +210,12 @@ class CloudSync private constructor(private val context: Context) {
     suspend fun allocateOrderNo(orderDate: LocalDate): String {
         if (!config.isConfigured || auth.session.value == null) throw CloudException("Not signed in")
         return withTimeoutOrNull(ALLOCATE_TIMEOUT_MS) { orderApi.allocateOrderNo(orderDate) } ?: throw SocketTimeoutException("No answer from the cloud")
+    }
+
+    /** The next payment advice number from the cloud; throws when offline (the advice is then saved pending). */
+    suspend fun allocateAdviceNo(payDate: LocalDate): String {
+        if (!config.isConfigured || auth.session.value == null) throw CloudException("Not signed in")
+        return withTimeoutOrNull(ALLOCATE_TIMEOUT_MS) { orderApi.allocateAdviceNo(payDate) } ?: throw SocketTimeoutException("No answer from the cloud")
     }
 
     suspend fun syncNow(): SyncOutcome {

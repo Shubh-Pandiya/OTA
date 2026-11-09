@@ -1,5 +1,6 @@
 package com.ota.desktop.export
 
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.QtyUnit
 import com.example.otaapplication.Units
 import com.example.otaapplication.data.AdviceSummary
@@ -86,7 +87,7 @@ class DataExport(
                 val l = byAdvice[a.id].orEmpty()
                 val full = details[a.id]
                 listOf(
-                    a.adviceNo, a.payDate, Analytics.staffOfAdvice(a.adviceNo), SearchText.firstLine(a.buyer), SearchText.firstLine(a.supplier),
+                    AdviceNumber.display(a.adviceNo), a.payDate, Analytics.staffOfAdvice(a.adviceNo), SearchText.firstLine(a.buyer), SearchText.firstLine(a.supplier),
                     a.mode.label, a.reference, a.paid, l.sumOf { it.cd }, l.sumOf { it.goodsReturn }, l.sumOf { it.rateDiff }, l.sumOf { it.claim }, l.sumOf { it.settled },
                     full?.balanceAmount, full?.balanceSide?.label, a.billNos.joinToString(", "), full?.remarks.orEmpty()
                 )
@@ -99,7 +100,7 @@ class DataExport(
         "Advice lines",
         listOf("Advice no", "Pay date", "Paid by (buyer)", "Paid to (supplier)", "Bill no", "Bill date", "Bill amount", "Paid", "C.D. %", "C.D. amount", "Goods return", "Rate difference", "Claim / defect", "Claim reason", "Total"),
         rows.map {
-            listOf(it.adviceNo, it.payDate, SearchText.firstLine(it.buyer), SearchText.firstLine(it.supplier), it.billNo, it.billDate, it.billAmount,
+            listOf(AdviceNumber.display(it.adviceNo), it.payDate, SearchText.firstLine(it.buyer), SearchText.firstLine(it.supplier), it.billNo, it.billDate, it.billAmount,
                 it.paid, it.cdPercent, it.cd, it.goodsReturn, it.rateDiff, it.claim, it.claimNote, it.settled)
         },
         moneyColumns = setOf(6, 7, 9, 10, 11, 12, 14)

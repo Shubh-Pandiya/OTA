@@ -32,8 +32,9 @@ and `client_updated_at bigint` (the editing device's clock in epoch ms).
 | `order_bills` | order_id, bill_id, archived_at. Many-to-many. **No foreign keys**, see below. |
 | `payment_advices` | advice_no, pay_date (`date`), buyer (paid by), supplier (paid to), mode (`CHEQUE`/`ONLINE`/`CASH`), reference (cheque no / txn id), balance (`numeric(14,2)`, Dr/Cr balance as entered), balance_side (`DR`/`CR`/null), remarks, created_by, archived_at |
 | `advice_lines` | advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim (`numeric(14,2)`, claim / defect deduction), claim_note (reason, `''` if none), archived_at. Advice ↔ bill is many-to-many. **No foreign keys.** |
-| `staff` | user_id, code (1–9, first digit of legacy order numbers and of advice numbers), name, is_admin |
+| `staff` | user_id, code (1–9, first digit of legacy order numbers and of legacy advice numbers), name, is_admin |
 | `order_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_order_no`; clients never read or write it. |
+| `advice_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_advice_no` (migration `20261116000000_fy_advice_numbers.sql`); separate from the order counter. |
 | `app_settings` | single row (`id = true`): retention_days (30), storage_limit_mb (500), warn_percent (80) |
 
 Bill and link ids are deterministic, so the same bill typed on two devices is one row:
@@ -68,8 +69,32 @@ At most 9999 orders per year.
   Even older numbers (`yyyyMMdd` + 2 digits) and manual numbers may repeat.
 - Sort by order date, then number. Search matches the digits typed in either format.
 
-Payment advice numbers are `PA{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g.
-`PA120261108001`) with their own daily counter, unique in the cloud (`23505` on a duplicate).
+### Payment advice numbers
+
+New advices follow the order rules with **their own** FY counter: `advice_no` is stored as the bare
+8 digits (e.g. `26270001`, the first advice of FY 2026-27), and is shown, printed and used in file
+names as `PA-26270001`.
+
+- Get a number with `POST /rest/v1/rpc/ota_allocate_advice_no` and `{"p_date": "yyyy-mm-dd"}` (the
+  payment date). Atomic, seeded from existing FY advice numbers, skips used ones; when the year's
+  9999 are used it fails with `P0001` / `ADVICE_LIMIT_REACHED`. A partial unique index
+  (`payment_advices_fy_advice_no_key`) backs it up.
+- An advice saved offline has an **empty** `advice_no` ("Pending number"). It and its lines are not
+  uploaded, and it has no PDF and can't be shared, until the next sync numbers it (then its PDF is
+  written). A pending advice deleted before it is numbered is dropped with its lines.
+- Older advices keep `PA{staff code}{yyyyMMdd}{daily serial, 3 digits}` (e.g. `PA120261108001`),
+  shown and named as stored, never renumbered. Search matches `26270001` and `PA-26270001`; sort
+  by payment date, then number.
+
+### PDFs
+
+- File names: orders `Order_{order no}.pdf` (e.g. `Order_26270001.pdf`, legacy numbers as stored),
+  advices `PA-{advice no}.pdf` for FY numbers (legacy: `PA120261108001.pdf`). Never a device name.
+  When a file of that name already exists from another install, the phone writes `… (2).pdf`.
+- Every rupee amount prints with 2 decimals and Indian grouping (`1,25,000.00`). Rupee column
+  headers carry `(₹)`: the order table's `RATES (₹)` and each advice amount column. An order item
+  rate that is a plain number (optionally with ₹/Rs, commas or `/-`) prints as `60.00`; any other
+  text (`60 + GST`) prints as typed.
 
 A bill's balance is `amount − Σ(paid + cd_amount + goods_return + rate_diff + claim)` over its
 non-deleted lines whose advice is not deleted. Status: no lines → Unpaid, balance ≤ 0 → Paid,

@@ -1,8 +1,6 @@
 package com.example.otaapplication
 
-import android.content.ActivityNotFoundException
 import android.content.Context
-import android.content.Intent
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
@@ -12,8 +10,6 @@ import android.os.Environment
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
-import android.widget.Toast
-import androidx.core.content.FileProvider
 import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.PaymentAdvice
 import java.io.ByteArrayOutputStream
@@ -25,7 +21,8 @@ import java.util.Locale
 
 /**
  * Payment advice PDF, in the same style as the order form. Written to
- * Documents/OTA Orders/{year}/{Month}/Payment Advices/{advice no}.pdf (replaced when regenerated).
+ * Documents/OTA Orders/{year}/{Month}/Payment Advices/PA-{advice no}.pdf (replaced when regenerated).
+ * Amounts are in rupees with two decimals; the amount column headers say so with "(₹)".
  */
 object AdvicePdf {
     private const val PAGE_W = 595
@@ -57,7 +54,7 @@ object AdvicePdf {
     fun fileFor(advice: PaymentAdvice): File {
         val month = advice.payDate.month.name.lowercase().replaceFirstChar { it.uppercase() }
         val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "OTA Orders/${advice.payDate.year}/$month/Payment Advices")
-        return File(dir, "${advice.adviceNo}.pdf")
+        return File(dir, AdviceNumber.fileName(advice.adviceNo))
     }
 
     /**
@@ -83,7 +80,7 @@ object AdvicePdf {
     }
 
     private fun caption(advice: PaymentAdvice, index: Int, count: Int) =
-        "Payment Advice ${advice.adviceNo} - Attachment ${index + 1} of $count (${advice.mode.label}" +
+        "Payment Advice ${AdviceNumber.display(advice.adviceNo)} - Attachment ${index + 1} of $count (${advice.mode.label}" +
             (if (advice.reference.isNotBlank()) " ${advice.reference}" else "") + ")"
 
     /** The advice pages, plus [drawnImages] drawn as pages (null = none, appended later). */
@@ -109,7 +106,7 @@ object AdvicePdf {
         canvas.drawText("PAYMENT ADVICE", centerX, 112f, paint)
 
         paint.textAlign = Paint.Align.LEFT; paint.textSize = 11f
-        canvas.drawText("Advice No: ${advice.adviceNo}", LEFT, 135f, paint)
+        canvas.drawText("Advice No: ${AdviceNumber.display(advice.adviceNo)}", LEFT, 135f, paint)
         paint.textAlign = Paint.Align.RIGHT
         canvas.drawText("Date: ${advice.payDate.format(dateFormat)}", RIGHT, 135f, paint)
 
@@ -140,7 +137,12 @@ object AdvicePdf {
             canvas.drawRect(LEFT, y, RIGHT, y + 22f, paint)
             paint.color = Color.WHITE; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 8.5f
             cols.forEach { c ->
-                if (c.numeric) { paint.textAlign = Paint.Align.RIGHT; canvas.drawText(c.title, c.x1 - 4f, y + 15f, paint) }
+                if (c.numeric) {
+                    // Rupee columns: the title, with "(₹)" under it.
+                    paint.textAlign = Paint.Align.RIGHT
+                    canvas.drawText(c.title, c.x1 - 4f, y + 10f, paint)
+                    canvas.drawText("(₹)", c.x1 - 4f, y + 19.5f, paint)
+                }
                 else { paint.textAlign = Paint.Align.LEFT; canvas.drawText(c.title, c.x0 + 4f, y + 15f, paint) }
             }
             paint.textAlign = Paint.Align.LEFT; paint.color = Color.BLACK
@@ -302,19 +304,8 @@ object AdvicePdf {
     }
 
     /** Opens the share sheet for a written PDF (WhatsApp, email, …). */
-    fun share(context: Context, file: File, adviceNo: String) {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
-        val send = Intent(Intent.ACTION_SEND)
-            .setType("application/pdf")
-            .putExtra(Intent.EXTRA_STREAM, uri)
-            .putExtra(Intent.EXTRA_SUBJECT, "Payment Advice $adviceNo")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        try {
-            context.startActivity(Intent.createChooser(send, "Share payment advice"))
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(context, "No app to share the PDF with", Toast.LENGTH_SHORT).show()
-        }
-    }
+    fun share(context: Context, file: File, adviceNo: String) =
+        PdfShare.share(context, file, "Payment Advice ${AdviceNumber.display(adviceNo)}", "Share payment advice")
 
     private fun trimPercent(value: Double): String =
         java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()

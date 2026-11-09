@@ -231,7 +231,14 @@ fun OrderHistoryScreen(
                         }
                     }
                 },
-                onFocus = { data -> onOrderFocused(data, selected.uuid); detail = null }
+                onFocus = { data -> onOrderFocused(data, selected.uuid); detail = null },
+                onShare = { data ->
+                    scope.launch {
+                        val file = activity.orderPdfForSharing(data)
+                        if (file == null) Toast.makeText(activity, "Could not create the PDF", Toast.LENGTH_SHORT).show()
+                        else activity.shareOrderPdf(file, data.offerNo)
+                    }
+                }
             )
         }
     }
@@ -725,7 +732,8 @@ private fun OrderDetailScreen(
     onRemoveBill: (Bill) -> Unit,
     onDismiss: () -> Unit,
     onDelete: () -> Unit,
-    onFocus: (OrderFormData) -> Unit
+    onFocus: (OrderFormData) -> Unit,
+    onShare: (OrderFormData) -> Unit
 ) {
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var billToRemove by remember { mutableStateOf<Bill?>(null) }
@@ -744,6 +752,10 @@ private fun OrderDetailScreen(
                 }
             }
             if (bills != null) BillStatusBadge(received = bills.isNotEmpty())
+            // An order waiting for its number has no PDF to share yet.
+            if (order != null && !OrderNumber.isPending(order.offerNo)) {
+                IconButton(onClick = { onShare(order) }) { Icon(Icons.Default.Share, contentDescription = "Share PDF") }
+            }
         }
 
         when {

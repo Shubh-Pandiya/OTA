@@ -2,7 +2,9 @@ package com.example.otaapplication
 
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AdviceNumberTest {
@@ -34,5 +36,30 @@ class AdviceNumberTest {
         assertEquals(9, AdviceNumber.nextSerial(varun, varun, 8, listOf("PA120261108002")))
         // Yesterday's counter does not carry over.
         assertEquals(1, AdviceNumber.nextSerial(varun, "PA120261107", 40, emptyList()))
+    }
+
+    @Test
+    fun financialYearNumbersShowWithPaPrefix() {
+        assertTrue(AdviceNumber.isFy("26270001"))
+        assertEquals("PA-26270001", AdviceNumber.display("26270001"))
+        assertEquals("PA-26270001.pdf", AdviceNumber.fileName("26270001"))
+        // Older numbers are shown and named as stored.
+        assertFalse(AdviceNumber.isFy("PA120261108001"))
+        assertEquals("PA120261108001", AdviceNumber.display("PA120261108001"))
+        assertEquals("PA120261108001.pdf", AdviceNumber.fileName("PA120261108001"))
+        assertNull(AdviceNumber.prefixOf("26270001"))
+    }
+
+    @Test
+    fun pendingAdviceHasNoNumber() {
+        assertTrue(AdviceNumber.isPending(AdviceNumber.PENDING))
+        assertEquals("Pending number", AdviceNumber.display(""))
+        assertFalse(AdviceNumber.isPending("26270001"))
+    }
+
+    @Test
+    fun searchFindsBothForms() {
+        assertEquals("26270001 PA-26270001", AdviceNumber.searchTerms("26270001"))
+        assertEquals("PA120261108001", AdviceNumber.searchTerms("PA120261108001"))
     }
 }

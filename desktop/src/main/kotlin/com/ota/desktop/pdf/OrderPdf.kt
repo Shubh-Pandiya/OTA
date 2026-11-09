@@ -1,8 +1,10 @@
 package com.ota.desktop.pdf
 
 import com.example.otaapplication.OrderFormData
+import com.example.otaapplication.Rates
 import com.example.otaapplication.Units
 import com.ota.desktop.AppPaths
+import com.ota.desktop.Money
 import com.ota.desktop.pdf.PdfKit.Companion.letterhead
 import java.awt.Color
 import java.io.File
@@ -12,7 +14,7 @@ import java.time.format.DateTimeFormatter
 /** The order form PDF: a line-for-line port of the phone's MainActivity.writeOrderPdf layout. */
 object OrderPdf {
     private const val BOTTOM = 780f
-    private val headers = listOf("S.No" to 45f, "PARTICULARS" to 150f, "QTY" to 330f, "RATES" to 400f, "REMARKS / TERMS" to 450f)
+    private val headers = listOf("S.No" to 45f, "PARTICULARS" to 150f, "QTY" to 330f, "RATES (₹)" to 385f, "REMARKS / TERMS" to 450f)
     private const val WARNING = "Self Bilty not accepted, compulsorily attach duplicate with R.R. or M.R."
     private const val RULES = "1. Indent once given shall under no circumstances be cancelled by the Indenters.\n" +
         "2. The Rates and time stated in Indore are subject to fluctuation and confirmation of suppliers who have right to alter the indent also.\n" +
@@ -66,7 +68,7 @@ object OrderPdf {
         for (item in data.items) {
             val part = pdf.block(item.particulars, 210f, 10f)
             val qty = pdf.block(Units.display(item), 75f, 10f)
-            val rate = pdf.block(item.rate, 60f, 10f)
+            val rate = pdf.block(Rates.print(item.rate) { Money.format(it) }, 60f, 10f)
             val rowH = maxOf(20f, part.height, qty.height, rate.height) + 10f
             if (y + rowH > BOTTOM) {
                 grid(tableTop, BOTTOM)

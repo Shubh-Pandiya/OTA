@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentStatus
 import com.ota.desktop.dash.Analytics
@@ -277,7 +278,7 @@ private fun Latest(h: Home) {
             if (h.recentAdvices.isEmpty()) Empty("No payment advices yet")
             h.recentAdvices.forEach { a ->
                 TableRow(false, { nav.go(Section.ADVICES, Target.Advice(a.id)) }) {
-                    Cell(a.adviceNo, 1f, bold = true)
+                    Cell(AdviceNumber.display(a.adviceNo), 1f, bold = true)
                     Cell(a.payDate.dmy(), 0.8f)
                     Cell2(SearchText.firstLine(a.buyer), SearchText.firstLine(a.supplier), 2f)
                     Cell(moneyFull(a.paid), 1f, TextAlign.End, color = Brand.Green)

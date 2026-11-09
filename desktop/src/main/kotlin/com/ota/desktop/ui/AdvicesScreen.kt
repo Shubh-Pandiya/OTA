@@ -65,6 +65,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.otaapplication.AdviceNumber
+import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.AdviceSummary
 import com.example.otaapplication.data.AdviceTotals
@@ -80,7 +82,6 @@ import com.example.otaapplication.data.SearchText
 import com.ota.desktop.AppPaths
 import com.ota.desktop.data.AdviceFilter
 import com.ota.desktop.data.BillFilter
-import com.ota.desktop.data.Numbers
 import com.ota.desktop.export.XlsxExport
 import com.ota.desktop.pdf.AdvicePdf
 import kotlinx.coroutines.Dispatchers
@@ -150,7 +151,7 @@ private fun AdviceList(selected: String?, onSelect: (String?) -> Unit, onNew: ()
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(rows, key = { it.id }) { a ->
                         TableRow(a.id == selected, { onSelect(a.id) }) {
-                            Cell2(a.adviceNo, a.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
+                            Cell2(AdviceNumber.display(a.adviceNo), a.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
                             Cell(SearchText.firstLine(a.buyer), 1f)
                             Cell(SearchText.firstLine(a.supplier), 1f)
                             Cell2(moneyFull(a.paid), a.billNos.joinToString(", "), 0f, TextAlign.End, width = AMOUNT_W)
@@ -184,12 +185,20 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
 
     Panel(Modifier.fillMaxSize()) {
         Column(Modifier.verticalScroll(rememberScrollState()).animateContentSize()) {
-            Text(a.adviceNo, style = MaterialTheme.typography.titleLarge.merge(Numeric))
+            Text(AdviceNumber.display(a.adviceNo), style = MaterialTheme.typography.titleLarge.merge(Numeric))
             Text(a.payDate.nice(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val numberPending = AdviceNumber.isPending(a.adviceNo)
+            if (numberPending) {
+                Spacer(Modifier.height(10.dp))
+                Banner(
+                    "Saved offline: this advice gets its number on the next sync. Its PDF waits until then, so nothing is shared with a temporary number.",
+                    Brand.Amber
+                )
+            }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
               ChipRow(Modifier.weight(1f), spacing = 8.dp) {
-                Button(onClick = {
+                Button(enabled = !numberPending, onClick = {
                     scope.launch {
                         runCatching { withContext(Dispatchers.IO) { AdvicePdf.write(a, AdvicePdf.fileFor(a, AppPaths.documents)) } }
                             .onSuccess { openFile(it) }.onFailure { toast("PDF failed: ${it.message}") }
@@ -230,11 +239,11 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
         }
     }
     if (confirmDelete) ConfirmDialog(
-        "Delete advice ${a.adviceNo}?", "Its payments come off the bills' balances. The number is never reused.", "Delete", danger = true,
+        "Delete advice ${AdviceNumber.display(a.adviceNo)}?", "Its payments come off the bills' balances. The number is never reused.", "Delete", danger = true,
         onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
-        scope.launch { withContext(Dispatchers.IO) { app.payments.delete(a.id) }; toast("Advice ${a.adviceNo} deleted"); onDeleted() }
+        scope.launch { withContext(Dispatchers.IO) { app.payments.delete(a.id) }; toast("Advice ${AdviceNumber.display(a.adviceNo)} deleted"); onDeleted() }
     }
 }
 
@@ -301,7 +310,6 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
-    val staff by app.staff.collectAsState()
     var ready by remember { mutableStateOf(editingId == null) }
     var adviceNo by remember { mutableStateOf("") }
     var payDate by remember { mutableStateOf(LocalDate.now().dmy()) }
@@ -319,7 +327,6 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
 
     LaunchedEffect(editingId) {
         if (editingId == null) {
-            adviceNo = staff?.code?.let { code -> withContext(Dispatchers.IO) { app.numbers.peek(Numbers.Kind.ADVICE, code) } }.orEmpty()
             presetBillId?.let { billId ->
                 withContext(Dispatchers.IO) { app.payments.bills(BillFilter()).firstOrNull { it.bill.id == billId } }?.let {
                     buyer = SearchText.firstLine(it.buyer); supplier = SearchText.firstLine(it.supplier)
@@ -383,7 +390,6 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
     val suggestion = outstanding?.let { PaymentMath.suggestedBalance(it) }
     val day = parseDay(payDate)
     val problems = buildList {
-        if (editingId == null && staff == null) add("Your staff number isn't known yet. Sign in and sync once to number new advices.")
         if (day == null) add("Enter the payment date as dd-mm-yyyy.")
         if (buyer.isBlank() || supplier.isBlank()) add("Pick who paid (buyer) and who was paid (supplier).")
         if (lines.isEmpty()) add("Add at least one bill.")
@@ -402,10 +408,20 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
         busy = true
         scope.launch {
             runCatching {
+                // New advices take the next FY number from the cloud's advice counter; offline they wait for it.
+                val number = if (editingId == null) app.engine.allocateAdviceNo(draft.payDate) else null
                 withContext(Dispatchers.IO) {
-                    app.payments.save(draft, staff?.code).also { runCatching { AdvicePdf.write(it, AdvicePdf.fileFor(it, AppPaths.documents)) } }
+                    app.payments.save(draft, number.orEmpty()).also {
+                        if (!AdviceNumber.isPending(it.adviceNo)) runCatching { AdvicePdf.write(it, AdvicePdf.fileFor(it, AppPaths.documents)) }
+                    }
                 }
-            }.onSuccess { toast("Advice ${it.adviceNo} saved · PDF in Documents/OTA Orders"); onDone(it.id) }
+            }.onSuccess {
+                toast(
+                    if (AdviceNumber.isPending(it.adviceNo)) "Advice saved offline · it gets its number and PDF on the next sync"
+                    else "Advice ${AdviceNumber.display(it.adviceNo)} saved · PDF in Documents/OTA Orders"
+                )
+                onDone(it.id)
+            }
                 .onFailure { toast(it.message ?: "Could not save the advice"); busy = false }
         }
     }
@@ -435,7 +451,10 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
     }
 
     Column(Modifier.fillMaxSize()) {
-        PageHeader(if (editingId == null) "New payment advice" else "Edit $adviceNo", if (editingId == null && adviceNo.isNotEmpty()) "Will be numbered about $adviceNo" else null) {
+        PageHeader(
+            if (editingId == null) "New payment advice" else "Edit ${AdviceNumber.display(adviceNo)}",
+            if (editingId == null) "Numbered by the cloud when saved (PA-${OrderNumber.fyPrefix(parseDay(payDate) ?: LocalDate.now())}…)" else null
+        ) {
             TextButton(onClick = { onDone(null) }) { IconText(Icons.Default.ArrowBack, "Cancel") }
             Button(onClick = ::save, enabled = canSave) { IconText(Icons.Default.Check, if (busy) "Saving…" else "Save & make PDF") }
         }

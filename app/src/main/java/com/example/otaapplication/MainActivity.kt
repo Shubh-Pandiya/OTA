@@ -57,6 +57,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -149,9 +151,6 @@ class MainActivity : ComponentActivity() {
     internal val orderRepository: OrderRepository get() = localOrders.index
     private val orderFiles by lazy { OrderFiles(this, localOrders) }
     private val payments by lazy { PaymentRepository.get(this) }
-    private val adviceNumbers by lazy {
-        AdviceNumberAllocator(getSharedPreferences(OrderNumberAllocator.PREFS, MODE_PRIVATE), payments)
-    }
 
     // Bumped on every resume so the previewed order number follows a change of day.
     private var resumeTick by mutableIntStateOf(0)
@@ -245,10 +244,19 @@ class MainActivity : ComponentActivity() {
         val remoteCatalogChanges by cloud.catalogChanges.collectAsState()
         val remoteOrderChanges by cloud.orderChanges.collectAsState()
         val staff by cloud.staff.collectAsState()
-        val staffCode = staff?.code
-        val paymentDeps = remember(staffCode, cloudStatus.signedIn) {
-            PaymentDeps(orderRepository, payments, catalogRepository, adviceNumbers, staffCode, staffCodeMessage(cloudStatus.signedIn).replace("order number", "advice number"))
+        val paymentDeps = remember {
+            PaymentDeps(orderRepository, payments, catalogRepository, cloud::allocateAdviceNo)
         }
+
+        // Typing stops whenever the user navigates: menu, drawer swipe, tabs, Home shortcuts.
+        val focusManager = LocalFocusManager.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        fun dismissKeyboard() {
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+        }
+        LaunchedEffect(drawerState.targetValue) { if (drawerState.targetValue == DrawerValue.Open) dismissKeyboard() }
+        LaunchedEffect(currentScreen) { dismissKeyboard() }
 
         fun navigate(screen: Screen) {
             currentScreen = screen
@@ -310,7 +318,7 @@ class MainActivity : ComponentActivity() {
                             ) { title -> Text(text = title, style = MaterialTheme.typography.titleLarge) }
                         },
                         navigationIcon = {
-                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            IconButton(onClick = { dismissKeyboard(); scope.launch { drawerState.open() } }) {
                                 Icon(Icons.Default.Menu, contentDescription = "Menu")
                             }
                         },
@@ -329,7 +337,7 @@ class MainActivity : ComponentActivity() {
                             bottomTabs.forEach { tab ->
                                 NavigationBarItem(
                                     selected = currentScreen == tab,
-                                    onClick = { currentScreen = tab },
+                                    onClick = { dismissKeyboard(); currentScreen = tab },
                                     icon = { Icon(screenIcons.getValue(tab), contentDescription = null) },
                                     label = { Text(tab.tabLabel, maxLines = 1, softWrap = false) },
                                     colors = NavigationBarItemDefaults.colors(
@@ -380,8 +388,11 @@ class MainActivity : ComponentActivity() {
                                     isGenerating = true
                                     val existingUuid = focusedUuid
                                     scope.launch {
-                                        val (ok, message) = if (isNewOrder) saveNewOrder(data) else saveEditedOrder(data, existingUuid)
-                                        Toast.makeText(this@MainActivity, message, if (ok) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                                        val saved = if (isNewOrder) saveNewOrder(data) else saveEditedOrder(data, existingUuid)
+                                        val ok = saved.ok
+                                        Toast.makeText(this@MainActivity, saved.message, if (ok && saved.pdf == null) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+                                        // Generated: straight to the share sheet. A pending order has no PDF yet.
+                                        saved.pdf?.let { shareOrderPdf(it, saved.offerNo) }
                                         if (ok) {
                                             focusedOrderState = null
                                             focusedUuid = null
@@ -486,41 +497,56 @@ class MainActivity : ComponentActivity() {
     internal fun deleteOrderPermanently(uuid: String?, syncFilePath: String, pdfName: String?): Boolean =
         localOrders.delete(uuid, syncFilePath, pdfName)
 
-    private fun staffCodeMessage(signedIn: Boolean): String =
-        if (signedIn) "Your login has no order number code yet. Ask the owner to add it, then tap Sync now in Sync Settings."
-        else "Sign in once in Sync Settings to get your order numbers."
-
     /**
      * Saves a new order under the next agency-wide number from the cloud. Offline (or when the
      * cloud can't be reached) it is saved with a pending number instead: no PDF is made until the
      * next sync gives it a number, so an order is never shared under a temporary number.
      * Returns (success, user message).
      */
-    private suspend fun saveNewOrder(data: OrderFormData): Pair<Boolean, String> {
+    /** Result of the order form's Generate: [pdf] is set when a PDF was made (then it is shared). */
+    private data class GeneratedOrder(val ok: Boolean, val message: String, val pdf: File? = null, val offerNo: String = "")
+
+    private suspend fun saveNewOrder(data: OrderFormData): GeneratedOrder {
         val date = OrderNumber.parseOrderDate(data.date) ?: LocalDate.now()
         val number = try {
             cloud.allocateOrderNo(date)
         } catch (e: OrderLimitReached) {
-            return false to e.message.orEmpty()
+            return GeneratedOrder(false, e.message.orEmpty())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             null
         }
-        val (ok, message) = withContext(Dispatchers.IO) { orderFiles.save(data.copy(offerNo = number ?: OrderNumber.PENDING), existingUuid = null) }
+        val saved = withContext(Dispatchers.IO) { orderFiles.save(data.copy(offerNo = number ?: OrderNumber.PENDING), existingUuid = null) }
         return when {
-            !ok -> false to message
-            number != null -> true to "Order $number saved. $message"
-            else -> true to "Saved offline with a pending number. The order number and PDF are made on the next sync."
+            !saved.ok -> GeneratedOrder(false, saved.message)
+            number != null -> GeneratedOrder(true, "Order $number saved", saved.pdf, number)
+            else -> GeneratedOrder(true, "Saved offline with a pending number. The order number and PDF are made on the next sync.")
         }
     }
 
     /** Saves an order reopened from history in place; a pending one still waits for its number. */
-    private suspend fun saveEditedOrder(data: OrderFormData, uuid: String?): Pair<Boolean, String> {
-        val (ok, message) = withContext(Dispatchers.IO) { orderFiles.save(data, uuid) }
-        val pending = ok && uuid != null && withContext(Dispatchers.IO) { localOrders.get(uuid)?.offerNo?.let(OrderNumber::isPending) == true }
-        return ok to if (pending) "Order saved. Its number and PDF are made on the next sync." else message
+    private suspend fun saveEditedOrder(data: OrderFormData, uuid: String?): GeneratedOrder {
+        val saved = withContext(Dispatchers.IO) { orderFiles.save(data, uuid) }
+        if (!saved.ok) return GeneratedOrder(false, saved.message)
+        val offerNo = withContext(Dispatchers.IO) { uuid?.let { localOrders.get(it)?.offerNo } } ?: data.offerNo
+        return if (saved.pdf == null) GeneratedOrder(true, "Order saved. Its number and PDF are made on the next sync.")
+        else GeneratedOrder(true, "Order $offerNo saved", saved.pdf, offerNo)
     }
+
+    /**
+     * A fresh render of the order as it is now, in the app cache. The PDF saved earlier is never
+     * reused because a pulled edit or a duplicate renumber updates the order without redrawing it.
+     */
+    internal suspend fun orderPdfForSharing(data: OrderFormData): File? = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = File(cacheDir, "shared").apply { mkdirs() }
+            File(dir, OrderFiles.pdfName(data.offerNo)).also { orderFiles.writePdf(data, it) }
+        }.getOrNull()
+    }
+
+    internal fun shareOrderPdf(file: File, offerNo: String) =
+        PdfShare.share(this, file, "Order $offerNo - Onkar Textile Agency", "Share order")
 
     /**
      * One-time pass: order PDFs saved before the letterhead marks became vectors embed ~9 MB of

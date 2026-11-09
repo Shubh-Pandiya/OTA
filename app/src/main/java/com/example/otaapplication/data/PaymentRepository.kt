@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.BillSql.doubleOrNull
 import com.example.otaapplication.data.BillSql.stringOrNull
 import com.example.otaapplication.data.BillSql.toBill
@@ -27,8 +28,9 @@ class PaymentRepository(
     var onLocalChange: (() -> Unit)? = null
 
     /**
-     * Saves a new advice (with [newNumber]) or replaces an existing one. Lines removed in the
-     * editor become tombstones so the removal reaches other phones.
+     * Saves a new advice (with [newNumber], or [AdviceNumber.PENDING] when the cloud couldn't number
+     * it yet) or replaces an existing one. Lines removed in the editor become tombstones so the
+     * removal reaches other phones.
      */
     fun save(draft: AdviceDraft, newNumber: String? = null): PaymentAdvice {
         require(draft.lines.isNotEmpty()) { "Add at least one bill" }
@@ -364,7 +366,7 @@ class PaymentRepository(
             "SELECT buyer, supplier, mode, reference, remarks FROM payment_advices WHERE id = ?", arrayOf(adviceId)
         ).use { c ->
             if (!c.moveToFirst()) return false
-            listOf(adviceNo, c.getString(0), c.getString(1), PaymentMode.parse(c.getString(2)).label, c.getString(3), c.getString(4))
+            listOf(AdviceNumber.searchTerms(adviceNo), c.getString(0), c.getString(1), PaymentMode.parse(c.getString(2)).label, c.getString(3), c.getString(4))
         }
         return db.update("payment_advices", ContentValues().apply {
             put("advice_no", adviceNo)
@@ -375,6 +377,48 @@ class PaymentRepository(
 
     // ---- Sync ----
 
+    /** Advices saved offline that still wait for their number from the cloud, oldest first: id, pay date, deleted, updated at. */
+    fun unnumberedAdvices(): List<UnnumberedAdvice> =
+        helper.readableDatabase.rawQuery(
+            "SELECT id, pay_date, is_deleted, updated_at FROM payment_advices WHERE advice_no = '' AND sync_pending = 1 ORDER BY created_at, id",
+            null
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(UnnumberedAdvice(c.getString(0), c.stringOrNull(1)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }, c.getInt(2) != 0, c.getLong(3)))
+            }
+        }
+
+    /**
+     * Gives an advice saved offline the number the cloud handed out. It stays pending and is
+     * uploaded with that number; false when it already has one.
+     */
+    fun assignNumber(adviceId: String, adviceNo: String): Boolean {
+        val db = helper.writableDatabase
+        val text = db.rawQuery(
+            "SELECT buyer, supplier, mode, reference, remarks FROM payment_advices WHERE id = ? AND advice_no = ''", arrayOf(adviceId)
+        ).use { c ->
+            if (!c.moveToFirst()) return false
+            listOf(AdviceNumber.searchTerms(adviceNo), c.getString(0), c.getString(1), PaymentMode.parse(c.getString(2)).label, c.getString(3), c.getString(4))
+        }
+        return db.update(ADVICES, ContentValues().apply {
+            put("advice_no", adviceNo)
+            put("search_text", SearchText.normalize(text.joinToString(" ")))
+        }, "id = ? AND advice_no = ''", arrayOf(adviceId)) > 0
+    }
+
+    /** An advice deleted before it was numbered never reached the cloud: nothing of it needs uploading. */
+    fun dropUnnumbered(adviceId: String) {
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE advice_lines SET sync_pending = 0 WHERE advice_id = ? AND is_deleted = 1", arrayOf(adviceId))
+            db.execSQL("UPDATE payment_advices SET sync_pending = 0 WHERE id = ? AND advice_no = '' AND is_deleted = 1", arrayOf(adviceId))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun pendingCount(): Int = helper.readableDatabase.rawQuery(
         "SELECT (SELECT COUNT(*) FROM payment_advices WHERE sync_pending = 1) + (SELECT COUNT(*) FROM advice_lines WHERE sync_pending = 1)",
         null
@@ -384,7 +428,7 @@ class PaymentRepository(
         helper.readableDatabase.rawQuery(
             """
             SELECT id, advice_no, pay_date, buyer, supplier, mode, reference, balance_amount, balance_side, remarks, is_deleted, updated_at
-            FROM payment_advices WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit
+            FROM payment_advices WHERE sync_pending = 1 AND advice_no <> '' ORDER BY updated_at, id LIMIT $limit
             """.trimIndent(),
             null
         ).use { c ->
@@ -452,7 +496,7 @@ class PaymentRepository(
                         put("buyer", v.buyer); put("supplier", v.supplier); put("mode", PaymentMode.parse(v.mode).name)
                         put("reference", v.reference); put("balance_amount", v.balanceAmount)
                         put("balance_side", BalanceSide.parse(v.balanceSide)?.name); put("remarks", v.remarks)
-                        put("search_text", SearchText.normalize(listOf(v.adviceNo, v.buyer, v.supplier, PaymentMode.parse(v.mode).label, v.reference, v.remarks).joinToString(" ")))
+                        put("search_text", SearchText.normalize(listOf(AdviceNumber.searchTerms(v.adviceNo), v.buyer, v.supplier, PaymentMode.parse(v.mode).label, v.reference, v.remarks).joinToString(" ")))
                     }
                 }
                 if (db.update(ADVICES, values, "id = ?", arrayOf(row.id)) == 0) {
@@ -505,7 +549,7 @@ class PaymentRepository(
     }
 
     private fun searchText(adviceNo: String, d: AdviceDraft) = SearchText.normalize(
-        listOf(adviceNo, SearchText.firstLine(d.buyer), SearchText.firstLine(d.supplier), d.mode.label, d.reference, d.remarks).joinToString(" ")
+        listOf(AdviceNumber.searchTerms(adviceNo), SearchText.firstLine(d.buyer), SearchText.firstLine(d.supplier), d.mode.label, d.reference, d.remarks).joinToString(" ")
     )
 
     // ---- Advice images (kept on this phone only, for the advice PDF) ----
@@ -546,3 +590,6 @@ class PaymentRepository(
             }
     }
 }
+
+/** An advice saved offline that waits for its number from the cloud. */
+data class UnnumberedAdvice(val id: String, val payDate: LocalDate?, val deleted: Boolean, val updatedAt: Long)

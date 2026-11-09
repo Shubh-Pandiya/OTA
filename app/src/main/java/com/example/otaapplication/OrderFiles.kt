@@ -15,7 +15,8 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.text.NumberFormat
+import java.util.Locale
 
 /**
  * Writes an order's files on this phone: the sync JSON, the history entry and the order PDF in
@@ -23,36 +24,37 @@ import java.time.format.DateTimeFormatter
  */
 class OrderFiles(private val context: Context, private val localOrders: LocalOrders) {
 
+    /** [pdf] is the order PDF just written; null when the order still waits for its number. */
+    data class Saved(val ok: Boolean, val message: String, val pdf: File? = null)
+
     /**
-     * Runs on a background thread; returns (success, user message). With [existingUuid] the saved
-     * order is updated in place (same uuid, bills kept) and its old files are replaced.
+     * Runs on a background thread. With [existingUuid] the saved order is updated in place (same
+     * uuid, bills kept) and its old files are replaced. The PDF is Order_{order number}.pdf in
+     * Documents/OTA Orders/{year}/{Month}; the sync JSON beside it is SyncData/Order_{uuid}.json.
      */
-    fun save(data: OrderFormData, existingUuid: String?): Pair<Boolean, String> = localOrders.history.locked {
+    fun save(data: OrderFormData, existingUuid: String?): Saved = localOrders.history.locked {
         // An order reopened while still pending may have got its number from a sync meanwhile; keep it.
         val data = if (OrderNumber.isPending(data.offerNo) && existingUuid != null) {
             localOrders.history.find(existingUuid)?.optString("offerNo")?.takeUnless(OrderNumber::isPending)
                 ?.let { data.copy(offerNo = it) } ?: data
         } else data
         val now = LocalDateTime.now(); val year = now.year.toString(); val monthName = now.month.name.lowercase().replaceFirstChar { it.uppercase() }
-        val dateStamp = now.format(DateTimeFormatter.ofPattern("yyyyMMdd"))
         val sharedPrefs = context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE)
-        val deviceId = sharedPrefs.getString("device_id", "")?.takeIf { it.isNotBlank() } ?: "UnknownDevice"
+        val deviceId = sharedPrefs.getString("device_id", "").orEmpty().trim()
         val uniqueId = existingUuid ?: java.util.UUID.randomUUID().toString()
         val baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
         val otaDir = File(baseDir, "OTA Orders/$year/$monthName")
         if (!otaDir.exists()) otaDir.mkdirs()
         // An order still waiting for its number gets no PDF, so nothing is shared without one.
         val numbered = !OrderNumber.isPending(data.offerNo)
-        val pdfFile = if (numbered) {
-            val ordersToday = otaDir.listFiles { file -> file.name.contains("Order") && file.name.contains(dateStamp) }?.size ?: 0
-            PublicFiles.orderPdf(otaDir, ordersToday + 1) { "Order_${it}_${dateStamp}_${deviceId}.pdf" }
-        } else null
+        // Saving the same order again replaces its PDF; a name left by an earlier install gets " (2)".
+        val pdfFile = if (numbered) PublicFiles.writable(File(otaDir, pdfName(data.offerNo))) else null
         val fileName = pdfFile?.name
         try {
             if (pdfFile != null) writePdf(data, pdfFile)
             try {
                 val syncDir = File(otaDir, "SyncData"); if (!syncDir.exists()) syncDir.mkdirs()
-                val jsonFileName = "Order_${deviceId}_${uniqueId}.json"; val jsonFile = File(syncDir, jsonFileName)
+                val jsonFile = PublicFiles.writable(File(syncDir, "Order_${uniqueId}.json"))
                 val jsonRoot = OrderJson.putFields(JSONObject(), data)
                 jsonRoot.put("deviceId", deviceId); jsonRoot.put("uuid", uniqueId); jsonRoot.put("pdfFileName", fileName); jsonRoot.put("filePath", jsonFile.absolutePath)
                 jsonRoot.put("items", OrderJson.itemsArray(data.items)); jsonFile.writeText(jsonRoot.toString())
@@ -61,12 +63,13 @@ class OrderFiles(private val context: Context, private val localOrders: LocalOrd
                 localOrders.reindex()
                 if (previous != null) removeReplacedFiles(previous, jsonFile, pdfFile)
             } catch (e: Exception) { e.printStackTrace() }
-            return@locked true to (pdfFile?.let { "PDF Generated: ${it.absolutePath}" } ?: "Order saved")
-        } catch (e: Exception) { e.printStackTrace(); if (pdfFile != null && pdfFile.length() == 0L) pdfFile.delete(); return@locked false to "Error: ${e.message}" }
+            return@locked Saved(true, pdfFile?.let { "PDF saved: ${it.name}" } ?: "Order saved", pdfFile)
+        } catch (e: Exception) { e.printStackTrace(); if (pdfFile != null && pdfFile.length() == 0L) pdfFile.delete(); return@locked Saved(false, "Error: ${e.message}") }
     }
 
     /** Draws the order form PDF into [pdfFile]. Throws if it can't be written. */
     fun writePdf(data: OrderFormData, pdfFile: File) {
+        val money = NumberFormat.getNumberInstance(Locale.forLanguageTag("en-IN")).apply { minimumFractionDigits = 2; maximumFractionDigits = 2 }
         val bhagvaOrange = android.graphics.Color.parseColor("#FF6F00")
         val pdfDocument = PdfDocument(); val paint = Paint(); val textPaint = TextPaint()
         var currentPageNumber = 1; var pageInfo = PdfDocument.PageInfo.Builder(595, 842, currentPageNumber).create()
@@ -81,7 +84,7 @@ class OrderFiles(private val context: Context, private val localOrders: LocalOrd
             pageTableTop = 50f; currentY = pageTableTop; paint.style = Paint.Style.FILL; paint.color = bhagvaOrange
             canvas.drawRect(40f, currentY, 555f, currentY + 22f, paint); paint.color = android.graphics.Color.WHITE
             paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; paint.textAlign = Paint.Align.LEFT
-            canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES", 400f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint); currentY += 22f
+            canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES (₹)", 385f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint); currentY += 22f
         }
         PdfMarks.drawLogo(context, canvas, RectF(40f, 40f, 100f, 100f))
         val centerX = 595f / 2f
@@ -94,7 +97,7 @@ class OrderFiles(private val context: Context, private val localOrders: LocalOrd
         textPaint.textSize = 10f; textPaint.typeface = Typeface.DEFAULT
         val buyerLayout = createStaticLayout(data.buyer, 240, textPaint); val supplierLayout = createStaticLayout(data.supplier, 255, textPaint)
         canvas.save(); canvas.translate(45f, 165f); buyerLayout.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(295f, 165f); supplierLayout.draw(canvas); canvas.restore()
-        pageTableTop = 230f; currentY = pageTableTop; paint.style = Paint.Style.FILL; paint.color = bhagvaOrange; canvas.drawRect(40f, currentY, 555f, currentY + 22f, paint); paint.color = android.graphics.Color.WHITE; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES", 400f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint)
+        pageTableTop = 230f; currentY = pageTableTop; paint.style = Paint.Style.FILL; paint.color = bhagvaOrange; canvas.drawRect(40f, currentY, 555f, currentY + 22f, paint); paint.color = android.graphics.Color.WHITE; paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f; canvas.drawText("S.No", 45f, currentY + 15f, paint); canvas.drawText("PARTICULARS", 150f, currentY + 15f, paint); canvas.drawText("QTY", 330f, currentY + 15f, paint); canvas.drawText("RATES (₹)", 385f, currentY + 15f, paint); canvas.drawText("REMARKS / TERMS", 450f, currentY + 15f, paint)
         val sidebarStartY = currentY + 22f; val sidebarTotalHeight = 200f; val sidebarCellHeight = sidebarTotalHeight / 5; val sidebarHeaders = listOf("DELIVERY READY", "TRANSPORT TO", "CASH PAYMENT", "LESS / DISC", "SIDE"); val sidebarValues = listOf(data.deliveryReady, data.transportTo, data.cashPayment, data.lessDisc, data.side)
         paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK
         for (i in 1..4) { val y = sidebarStartY + (i * sidebarCellHeight); canvas.drawLine(445f, y, 555f, y, paint) }
@@ -106,7 +109,7 @@ class OrderFiles(private val context: Context, private val localOrders: LocalOrd
         currentY += 22f; val sidebarEndPage1 = sidebarStartY + sidebarTotalHeight
         for (item in data.items) {
             textPaint.textSize = 10f; textPaint.typeface = Typeface.DEFAULT; textPaint.color = android.graphics.Color.BLACK
-            val partL = createStaticLayout(item.particulars, 210, textPaint); val qtyL = createStaticLayout(Units.display(item), 75, textPaint); val rateL = createStaticLayout(item.rate, 60, textPaint); val rowH = maxOf(20f, partL.height.toFloat(), qtyL.height.toFloat(), rateL.height.toFloat()) + 10f
+            val partL = createStaticLayout(item.particulars, 210, textPaint); val qtyL = createStaticLayout(Units.display(item), 75, textPaint); val rateL = createStaticLayout(Rates.print(item.rate, money::format), 60, textPaint); val rowH = maxOf(20f, partL.height.toFloat(), qtyL.height.toFloat(), rateL.height.toFloat()) + 10f
             if (currentY + rowH > 780f) startNewPage()
             paint.style = Paint.Style.FILL; paint.color = android.graphics.Color.BLACK; paint.typeface = Typeface.DEFAULT; paint.textSize = 10f; canvas.drawText(item.serialNo, 45f, currentY + 15f, paint)
             canvas.save(); canvas.translate(90f, currentY + 5f); partL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(305f, currentY + 5f); qtyL.draw(canvas); canvas.restore(); canvas.save(); canvas.translate(385f, currentY + 5f); rateL.draw(canvas); canvas.restore(); currentY += rowH; paint.style = Paint.Style.STROKE; paint.color = android.graphics.Color.BLACK; canvas.drawLine(40f, currentY, 445f, currentY, paint)
@@ -138,5 +141,10 @@ class OrderFiles(private val context: Context, private val localOrders: LocalOrd
     }
     private fun createStaticLayout(text: String, width: Int, textPaint: TextPaint): StaticLayout {
         return StaticLayout.Builder.obtain(text, 0, text.length, textPaint, width).setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(0f, 1f).setIncludePad(false).build()
+    }
+
+    companion object {
+        /** "Order_26270001.pdf"; older orders keep their number, e.g. "Order_120261107001.pdf". */
+        fun pdfName(offerNo: String): String = "Order_" + offerNo.trim().replace(Regex("[^A-Za-z0-9._-]"), "_") + ".pdf"
     }
 }

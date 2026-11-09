@@ -1,5 +1,6 @@
 package com.ota.desktop.data
 
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.AdviceLine
 import com.example.otaapplication.data.AdviceSummary
@@ -52,10 +53,13 @@ data class AdviceFilter(
 )
 
 /** Payment advices and their lines; also the Bills list. Same rules as the phone's PaymentRepository. */
-class PaymentStore(private val db: Db, private val numbers: Numbers, private val onChange: () -> Unit = {}) {
+class PaymentStore(private val db: Db, private val onChange: () -> Unit = {}) {
 
-    /** Saves a new advice (numbered for [staffCode]) or replaces an existing one. */
-    fun save(draft: AdviceDraft, staffCode: Int?): PaymentAdvice {
+    /**
+     * Saves a new advice under [adviceNo] (the FY number the cloud allocated, or blank when offline:
+     * "Pending number", numbered by the next sync before it uploads) or replaces an existing one.
+     */
+    fun save(draft: AdviceDraft, adviceNo: String = AdviceNumber.PENDING): PaymentAdvice {
         require(draft.lines.isNotEmpty()) { "Add at least one bill" }
         require(draft.lines.map { it.first }.toSet().size == draft.lines.size) { "A bill can appear only once on an advice" }
         val existing = draft.id?.let { id -> db.read { c -> c.one("select advice_no from payment_advices where id = ?::uuid", id) { it.getString(1) } } }
@@ -63,8 +67,10 @@ class PaymentStore(private val db: Db, private val numbers: Numbers, private val
         if (existing != null) {
             write(id, null, draft)
         } else {
-            requireNotNull(staffCode) { "This account has no staff code yet, so it can't number new advices." }
-            numbers.assign(Numbers.Kind.ADVICE, staffCode) { no -> write(id, no, draft) }
+            require(adviceNo.isBlank() || db.read { c -> c.one("select 1 from payment_advices where advice_no = ?", adviceNo) { 1 } } == null) {
+                "Advice ${AdviceNumber.display(adviceNo)} already exists"
+            }
+            write(id, adviceNo, draft)
         }
         onChange()
         return advice(id)!!
@@ -157,7 +163,7 @@ class PaymentStore(private val db: Db, private val numbers: Numbers, private val
         val args = ArrayList<Any?>()
         for (token in SearchText.tokens(filter.text)) {
             where.append(
-                """ and (lower(a.advice_no || ' ' || a.buyer || ' ' || a.supplier || ' ' || a.mode || ' ' || a.reference || ' ' || a.remarks) like ? escape '\'
+                """ and (lower(a.advice_no || ' ' || (case when a.advice_no ~ '^[0-9]{8}$' then 'pa-' || a.advice_no else '' end) || ' ' || a.buyer || ' ' || a.supplier || ' ' || a.mode || ' ' || a.reference || ' ' || a.remarks) like ? escape '\'
                      or exists (select 1 from advice_lines sl join bills sb on sb.id = sl.bill_id where sl.advice_id = a.id and not sl.deleted and lower(sb.bill_no) like ? escape '\'))"""
             )
             val p = SearchText.containsPattern(token); args += p; args += p
@@ -309,6 +315,25 @@ class PaymentStore(private val db: Db, private val numbers: Numbers, private val
             (filter.status == null || item.bill.status == filter.status) &&
                 (bk.isEmpty() || SearchText.partyKey(item.buyer) == bk) &&
                 (sk.isEmpty() || SearchText.partyKey(item.supplier) == sk)
+        }
+    }
+
+    /** Advices saved offline, still waiting for their number, oldest first: (id, pay date, deleted). */
+    fun numberPending(): List<Triple<String, LocalDate?, Boolean>> = db.read { c ->
+        c.query("select id, pay_date, deleted from payment_advices where advice_no = '' order by client_updated_at, id") {
+            Triple(it.id(), it.date("pay_date"), it.getBoolean(3))
+        }
+    }
+
+    /** Gives a pending advice the number the cloud allocated (not an edit: the advice uploads as it is). */
+    fun assignNumber(id: String, adviceNo: String): Boolean = db.tx { c ->
+        c.update("update payment_advices set advice_no = ? where id = ?::uuid and advice_no = ''", adviceNo, id) > 0
+    }.also { if (it) onChange() }
+
+    /** A pending advice deleted before it got a number never reaches the cloud, nor do its lines. */
+    fun dropUnnumbered(id: String) = db.tx { c ->
+        if (c.update("update payment_advices set sync_pending = false where id = ?::uuid and advice_no = '' and deleted", id) > 0) {
+            c.update("update advice_lines set sync_pending = false where advice_id = ?::uuid", id)
         }
     }
 

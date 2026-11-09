@@ -487,14 +487,15 @@ internal fun orderItemsFor(context: android.content.Context, orderIds: Collectio
         .filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() }
         .mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString()) }
 
-/** Repositories and staff state the payment pages need. */
+/**
+ * Repositories the payment pages need. [allocateAdviceNo] asks the cloud for the next advice number
+ * for a payment date; it throws when offline, or [com.example.otaapplication.cloud.AdviceLimitReached].
+ */
 class PaymentDeps(
     val orders: OrderRepository,
     val payments: PaymentRepository,
     val catalog: CatalogRepository?,
-    val numbers: AdviceNumberAllocator,
-    val staffCode: Int?,
-    val staffMessage: String
+    val allocateAdviceNo: suspend (LocalDate) -> String
 )
 
 /** Pages stacked over a screen: bill and advice details and editors link to one another. */
@@ -680,7 +681,7 @@ private fun BillDetailPage(
                         )
                         LinkRow(
                             icon = Icons.Default.Payments,
-                            title = payment.adviceNo,
+                            title = AdviceNumber.display(payment.adviceNo),
                             subtitle = listOfNotNull(payment.payDate?.format(billDateFormat), parts.joinToString(" · ")).joinToString(" · "),
                             onClick = { onOpen(PaymentPage.AdviceView(payment.adviceId)) }
                         )

@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.Bill
 import com.example.otaapplication.data.BillDetails
 import com.example.otaapplication.data.BillPayment
@@ -229,7 +230,7 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
             else TableHeader(listOf(Col("Advice", 0f, width = ADVICE_NO_W), Col("Paid", 1f, TextAlign.End), Col("CD + GR + RD + claim", 1f, TextAlign.End)))
             payments.forEach { p ->
                 TableRow(false, { nav.go(Section.ADVICES, Target.Advice(p.adviceId)) }) {
-                    Cell2(p.adviceNo, p.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
+                    Cell2(AdviceNumber.display(p.adviceNo), p.payDate.dmy(), 0f, bold = true, width = ADVICE_NO_W)
                     Cell(moneyFull(p.amounts.paid), 1f, TextAlign.End)
                     Cell(moneyFull(PaymentMath.round2(p.amounts.settled - p.amounts.paid)), 1f, TextAlign.End)
                 }

@@ -30,6 +30,15 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
     val numbers = Numbers(db, kv) { clock }
     val orders = OrderStore(db)
     private val serials = HashMap<String, Int>()
+    private val adviceSerials = HashMap<String, Int>()
+
+    /** The next FY advice number for [date], as the cloud's advice counter would give it. */
+    private fun adviceNo(date: LocalDate): String {
+        val prefix = OrderNumber.fyPrefix(date)
+        val serial = (adviceSerials[prefix] ?: 0) + 1
+        adviceSerials[prefix] = serial
+        return OrderNumber.formatFy(date, serial)
+    }
 
     /** Old staff/day numbers before 1 Nov 2026, the agency-wide FY numbers from then on (as after the switch). */
     private fun orderNo(day: LocalDate, staff: Int): String =
@@ -37,7 +46,7 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
             val prefix = OrderNumber.prefix(staff, day)
             OrderNumber.format(prefix, serials.merge(prefix, 1, Int::plus)!!)
         } else OrderNumber.formatFy(day, serials.merge(OrderNumber.fyPrefix(day), 1, Int::plus)!!)
-    val payments = PaymentStore(db, numbers)
+    val payments = PaymentStore(db)
     val catalog = CatalogStore(db)
 
     val buyers = listOf(
@@ -128,7 +137,7 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                             pb.bill.id to LineAmounts(paid.coerceAtLeast(0.0), 2.0, cd, gr, rd, claim, if (claim != null) "1 than shade variation" else "")
                         }
                     ),
-                    listOf(1, 2, 4)[rnd.nextInt(3)]
+                    adviceNo(payDay).also { rnd.nextInt(3) } // the draw keeps the rest of the demo data unchanged
                 )
             }
         }
@@ -149,7 +158,7 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                     balanceAmount = null, balanceSide = null, remarks = "",
                     lines = listOf(split.id to if (daysAgo == 6L) LineAmounts(paid, 2.0, 960.0) else LineAmounts(paid))
                 ),
-                1
+                adviceNo(clock)
             )
         }
         clock = today

@@ -46,10 +46,13 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val numbers = Numbers(db, kv)
     val catalog = CatalogStore(db, ::changed)
     val orders = OrderStore(db, ::changed)
-    val payments = PaymentStore(db, numbers, ::changed)
+    val payments = PaymentStore(db, ::changed)
     val analytics = Analytics(db, orders, payments)
     val export = DataExport(orders, payments, catalog, analytics)
-    val engine = SyncEngine(db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers)
+    val engine = SyncEngine(
+        db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers,
+        onAdviceNumbered = { com.ota.desktop.pdf.AdvicePdf.write(it) }
+    )
     val scheduler = SyncScheduler(engine)
     val cloudSettings = CloudSettings(config, auth)
     val weather = DesktopWeather(kv)

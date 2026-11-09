@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.otaapplication.cloud.AdviceLimitReached
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.AdviceSummary
@@ -58,6 +59,7 @@ import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentMode
 import com.example.otaapplication.data.PaymentStatus
 import com.example.otaapplication.data.SearchText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -292,7 +294,7 @@ private fun PartiesLine(buyer: String, supplier: String) {
 private fun AdviceCard(advice: AdviceSummary, onClick: () -> Unit, modifier: Modifier) {
     ListCard(onClick, modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(advice.adviceNo, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(AdviceNumber.display(advice.adviceNo), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(rupees(advice.paid), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         }
         PartiesLine(advice.buyer, advice.supplier)
@@ -367,7 +369,7 @@ internal fun AdviceDetailPage(
     var sharing by remember { mutableStateOf(false) }
 
     FormDialog(
-        title = advice?.adviceNo ?: "Payment advice",
+        title = advice?.let { AdviceNumber.display(it.adviceNo) } ?: "Payment advice",
         icon = Icons.Default.Payments,
         onDismiss = onBack,
         onConfirm = null,
@@ -380,7 +382,15 @@ internal fun AdviceDetailPage(
         },
         bottomBar = advice?.let { a ->
             {
+                val pending = AdviceNumber.isPending(a.adviceNo)
                 Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, shadowElevation = 12.dp) {
+                  Column {
+                    if (pending) Text(
+                        "This advice gets its number on the next sync; it can be shared after that.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp)
+                    )
                     Button(
                         onClick = {
                             sharing = true
@@ -391,15 +401,16 @@ internal fun AdviceDetailPage(
                                 else AdvicePdf.share(context, file, a.adviceNo)
                             }
                         },
-                        enabled = !sharing,
+                        enabled = !sharing && !pending,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).height(50.dp),
                         shape = MaterialTheme.shapes.medium
                     ) {
                         if (sharing) CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                         else Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Share PDF")
+                        Text(if (pending) "Share PDF (pending number)" else "Share PDF")
                     }
+                  }
                 }
             }
         }
@@ -471,7 +482,7 @@ internal fun AdviceDetailPage(
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Delete ${advice?.adviceNo}?") },
+            title = { Text("Delete ${advice?.let { AdviceNumber.display(it.adviceNo) }}?") },
             text = { Text("The payments on this advice are removed from its bills' balances. The advice number is not reused.") },
             confirmButton = {
                 TextButton(
@@ -583,10 +594,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
 
     // Existing advice: load it once.
     LaunchedEffect(editingId) {
-        if (editingId == null) {
-            adviceNo = deps.staffCode?.let { code -> withContext(Dispatchers.IO) { deps.numbers.peek(code) } }.orEmpty()
-            return@LaunchedEffect
-        }
+        if (editingId == null) return@LaunchedEffect
         val (a, pairs) = withContext(Dispatchers.IO) {
             val a = deps.payments.advice(editingId)
             a to a?.let { deps.payments.pairBills(it.buyer, it.supplier, editingId) }.orEmpty()
@@ -648,7 +656,6 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
     val suggestion = outstanding?.let { PaymentMath.suggestedBalance(it) }
     val referenceNeeded = mode != PaymentMode.CASH && reference.isBlank()
     val problems = buildList {
-        if (editingId == null && deps.staffCode == null) add(deps.staffMessage)
         if (buyer.isBlank() || supplier.isBlank()) add("Pick who paid (buyer) and who was paid (supplier).")
         if (lines.isEmpty()) add("Add at least one bill.")
         if (lines.any { !it.valid } || !amountValid(balanceText)) add("Fix the amounts marked in red.")
@@ -683,7 +690,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
     }
 
     FormDialog(
-        title = if (editingId == null) "New payment advice" else "Edit $adviceNo",
+        title = if (editingId == null) "New payment advice" else "Edit ${AdviceNumber.display(adviceNo)}",
         icon = Icons.Default.Payments,
         onDismiss = onCancel,
         confirmEnabled = canSave,
@@ -704,19 +711,35 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
             scope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching {
-                        val saved = if (editingId == null) deps.numbers.assign(deps.staffCode!!) { no -> deps.payments.save(draft, no) }
-                        else deps.payments.save(draft)
-                        // Keep the PDF on the phone in step with the saved advice, like orders.
-                        saved?.also { runCatching { AdvicePdf.write(context, it) } }
+                        val saved = if (editingId == null) {
+                            // Numbered by the cloud; offline it is saved pending and numbered on the next sync.
+                            val number = try {
+                                deps.allocateAdviceNo(draft.payDate)
+                            } catch (e: AdviceLimitReached) {
+                                throw e
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                AdviceNumber.PENDING
+                            }
+                            deps.payments.save(draft, number)
+                        } else deps.payments.save(draft)
+                        // Keep the PDF on the phone in step with the saved advice, like orders. A pending
+                        // advice gets its PDF with its number, so nothing is shared under a temporary one.
+                        val pdf = if (AdviceNumber.isPending(saved.adviceNo)) null else runCatching { AdvicePdf.write(context, saved) }.getOrNull()
+                        saved to pdf
                     }
                 }
                 busy = false
-                result.onSuccess { saved ->
-                    if (saved == null) Toast.makeText(context, "Could not save the advice", Toast.LENGTH_SHORT).show()
-                    else {
-                        Toast.makeText(context, "Advice ${saved.adviceNo} saved", Toast.LENGTH_SHORT).show()
-                        onSaved(saved.id)
+                result.onSuccess { (saved, pdf) ->
+                    if (AdviceNumber.isPending(saved.adviceNo)) {
+                        Toast.makeText(context, "Saved offline with a pending number. The advice number and PDF are made on the next sync.", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(context, "Advice ${AdviceNumber.display(saved.adviceNo)} saved", Toast.LENGTH_SHORT).show()
+                        // Generated: straight to the share sheet, like orders.
+                        pdf?.let { AdvicePdf.share(context, it, saved.adviceNo) }
                     }
+                    onSaved(saved.id)
                 }.onFailure { Toast.makeText(context, it.message ?: "Could not save the advice", Toast.LENGTH_LONG).show() }
             }
         }
@@ -725,18 +748,17 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
 
         FormSection(title = "Payment", icon = Icons.Default.Payments) {
             FormTextField(
-                value = adviceNo.ifEmpty { if (deps.staffCode == null) "—" else "" },
+                value = if (editingId == null) "" else AdviceNumber.display(adviceNo),
                 onValueChange = {},
                 label = "Advice number",
                 icon = Icons.Default.Tag,
                 readOnly = true,
                 singleLine = true,
                 supportingText = when {
-                    editingId != null -> null
-                    deps.staffCode == null -> deps.staffMessage
-                    else -> "Assigned when saved"
-                },
-                isError = editingId == null && deps.staffCode == null
+                    editingId == null -> "Given by the cloud when saved (PA-${payDay?.let { OrderNumber.fyPrefix(LocalDate.ofEpochDay(it)) } ?: ""}…). Offline it stays pending until the next sync."
+                    AdviceNumber.isPending(adviceNo) -> "Numbered on the next sync."
+                    else -> null
+                }
             )
             DateField(label = "Payment date", day = payDay, onChange = { payDay = it }, clearable = false)
             PartyField(PartyType.BUYER, buyer, { buyer = it }, "Paid by (buyer)", "Buyer name", deps.catalog, nameOnly = true, imeAction = ImeAction.Next)

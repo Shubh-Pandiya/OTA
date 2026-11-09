@@ -1,5 +1,6 @@
 package com.ota.desktop.pdf
 
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.PaymentAdvice
 import com.ota.desktop.AppPaths
 import com.ota.desktop.Money
@@ -32,16 +33,16 @@ object AdvicePdf {
         Col("TOTAL", 494f, 555f, true)
     )
 
-    /** Documents\OTA Orders\{year}\{Month}\Payment Advices\{advice no}.pdf; replaced when regenerated. */
+    /** Documents\OTA Orders\{year}\{Month}\Payment Advices\PA-{advice no}.pdf; replaced when regenerated. */
     fun fileFor(advice: PaymentAdvice, root: File = AppPaths.documents): File {
         val month = advice.payDate.month.name.lowercase().replaceFirstChar { it.uppercase() }
-        return File(root, "${advice.payDate.year}/$month/Payment Advices/${advice.adviceNo}.pdf")
+        return File(root, "${advice.payDate.year}/$month/Payment Advices/${AdviceNumber.fileName(advice.adviceNo)}")
     }
 
     fun write(advice: PaymentAdvice, file: File = fileFor(advice)): File = PdfKit.create { pdf ->
         pdf.newPage()
         pdf.letterhead("PAYMENT ADVICE")
-        pdf.text("Advice No: ${advice.adviceNo}", LEFT, 135f, 11f, bold = true)
+        pdf.text("Advice No: ${AdviceNumber.display(advice.adviceNo)}", LEFT, 135f, 11f, bold = true)
         pdf.text("Date: ${advice.payDate.format(dateFormat)}", RIGHT, 135f, 11f, bold = true, align = PdfKit.Align.RIGHT)
 
         pdf.strokeRect(LEFT, 145f, 297.5f, 195f, 1f); pdf.strokeRect(297.5f, 145f, RIGHT, 195f, 1f)
@@ -62,7 +63,11 @@ object AdvicePdf {
         fun header() {
             pdf.fillRect(LEFT, y, RIGHT, y + 22f, PdfKit.ORANGE)
             cols.forEach { c ->
-                if (c.numeric) pdf.text(c.title, c.x1 - 4f, y + 15f, 8.5f, bold = true, color = Color.WHITE, align = PdfKit.Align.RIGHT)
+                if (c.numeric) {
+                    // Rupee columns: the title, with "(₹)" under it.
+                    pdf.text(c.title, c.x1 - 4f, y + 10f, 8.5f, bold = true, color = Color.WHITE, align = PdfKit.Align.RIGHT)
+                    pdf.text("(₹)", c.x1 - 4f, y + 19.5f, 8.5f, bold = true, color = Color.WHITE, align = PdfKit.Align.RIGHT)
+                }
                 else pdf.text(c.title, c.x0 + 4f, y + 15f, 8.5f, bold = true, color = Color.WHITE)
             }
             y += 22f

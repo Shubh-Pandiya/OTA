@@ -1,5 +1,6 @@
 package com.ota.desktop
 
+import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.OrderFormData
 import com.example.otaapplication.OrderItem
 import com.example.otaapplication.OrderNumber
@@ -41,7 +42,7 @@ class StoresTest {
         db = TestDb.fresh()
         numbers = Numbers(db, Kv(db)) { day }
         orders = OrderStore(db)
-        payments = PaymentStore(db, numbers)
+        payments = PaymentStore(db)
     }
 
     private fun order(buyer: String = "Ram Traders\nSurat", supplier: String = "Shiv Mills", qty: String = "100") = OrderFormData(
@@ -119,7 +120,7 @@ class StoresTest {
                 payDate = day, buyer = "Ram Traders", supplier = "Shiv Mills", mode = PaymentMode.CASH, reference = "", balanceAmount = null,
                 balanceSide = null, remarks = "", lines = listOf(bill.id to LineAmounts(paid = 3800.0, claim = 200.0, claimNote = "shade variation"))
             ),
-            3
+            "26270001"
         )
         assertEquals(4000.0, orders.bill(bill.id)!!.settled)
         assertEquals(PaymentStatus.PAID, orders.bill(bill.id)!!.status)
@@ -183,10 +184,10 @@ class StoresTest {
             balanceAmount = null, balanceSide = null, remarks = "",
             lines = listOf(b1.id to LineAmounts(paid = 600.0), b2.id to LineAmounts(paid = 400.0))
         )
-        val first = payments.save(draft, 3)
+        val first = payments.save(draft, "26270001")
         assertEquals(400.0, payments.pairBills("Shyam Garments", "Arvind").single { it.bill.billNo == "AR-1" }.balanceBefore)
         assertFalse(payments.pairBills("Shyam Garments", "Arvind").single { it.bill.billNo == "AR-2" }.due)
-        val second = payments.save(draft.copy(lines = listOf(b1.id to LineAmounts(paid = 400.0))), 3)
+        val second = payments.save(draft.copy(lines = listOf(b1.id to LineAmounts(paid = 400.0))), "26270002")
         assertEquals(listOf(first.id, second.id), payments.advicesForBill(b1.id).map { it.adviceId })
         assertEquals(PaymentStatus.PAID, orders.bill(b1.id)!!.status)
 
@@ -229,8 +230,9 @@ class StoresTest {
             balanceAmount = 200.0, balanceSide = BalanceSide.DR, remarks = "",
             lines = listOf(bill.id to LineAmounts(paid = 700.0, cdPercent = 2.0, cdAmount = 20.0, goodsReturn = 30.0))
         )
-        val adv = payments.save(draft, 3)
-        assertEquals("PA320261110001", adv.adviceNo)
+        val adv = payments.save(draft, "26270001")
+        assertEquals("26270001", adv.adviceNo)
+        assertEquals("PA-26270001", AdviceNumber.display(adv.adviceNo))
         assertEquals("Ram Traders", adv.buyer)
         assertEquals("004512", adv.reference)
         val settled = orders.bill(bill.id)!!
@@ -241,12 +243,14 @@ class StoresTest {
         assertEquals(1, payments.search(AdviceFilter(text = "b1")).size)
         assertEquals(1, payments.search(AdviceFilter(text = "004512")).size)
         assertEquals(0, payments.search(AdviceFilter(text = "zzz")).size)
-        assertEquals(1, payments.search(AdviceFilter(staff = 3)).size)
+        assertEquals(1, payments.search(AdviceFilter(text = "pa-26270001")).size)
+        assertEquals(1, payments.search(AdviceFilter(text = "26270001")).size)
 
         // Editing the advice: settledElsewhere excludes it, a second advice settles the rest.
         assertEquals(0.0, payments.pairBills("Ram Traders", "Shiv Mills", adv.id).single().settledElsewhere)
-        val second = payments.save(draft.copy(lines = listOf(bill.id to LineAmounts(paid = 250.0))), 3)
-        assertEquals("PA320261110002", second.adviceNo)
+        val second = payments.save(draft.copy(lines = listOf(bill.id to LineAmounts(paid = 250.0))), "26270002")
+        assertEquals("26270002", second.adviceNo)
+        assertFailsWith<IllegalArgumentException> { payments.save(draft.copy(id = null), "26270002") }
         assertEquals(PaymentStatus.PAID, orders.bill(bill.id)!!.status)
         assertEquals(1, payments.bills().count { it.bill.status == PaymentStatus.PAID })
 

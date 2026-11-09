@@ -56,7 +56,7 @@ class SyncEngineTest {
         val numbers = Numbers(db, kv) { day }
         catalog = CatalogStore(db)
         orders = OrderStore(db)
-        payments = PaymentStore(db, numbers)
+        payments = PaymentStore(db)
         engine = SyncEngine(db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers)
     }
 
@@ -136,7 +136,7 @@ class SyncEngineTest {
                 balanceAmount = null, balanceSide = null, remarks = "",
                 lines = listOf(bill.id to com.example.otaapplication.data.LineAmounts(paid = 900.0, claim = 100.0, claimNote = "2 than defective"))
             ),
-            3
+            "26270001"
         )
         assertNull(engine.sync().error)
         val row = cloud.table("bills").values.single { it.getString("bill_no") == "SB-1" }
@@ -149,6 +149,35 @@ class SyncEngineTest {
         assertEquals(100.0, line.getDouble("claim"))
         assertEquals("2 than defective", line.getString("claim_note"))
         assertEquals(com.example.otaapplication.data.PaymentStatus.PAID, orders.bill(bill.id)!!.status)
+    }
+
+    @Test
+    fun offlineAdvicesGetTheirFyNumberBeforeUploading() = runBlocking {
+        val bill = orders.saveBill(null, "PB-1", BillDetails(amount = 1000.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())
+        fun draft(paid: Double) = com.example.otaapplication.data.AdviceDraft(
+            payDate = day, buyer = "Ram Traders", supplier = "Shiv Mills", mode = com.example.otaapplication.data.PaymentMode.CASH, reference = "",
+            balanceAmount = null, balanceSide = null, remarks = "", lines = listOf(bill.id to com.example.otaapplication.data.LineAmounts(paid = paid))
+        )
+        val online = payments.save(draft(100.0), engine.allocateAdviceNo(day)!!)
+        assertEquals("26270001", online.adviceNo)
+        val offline = payments.save(draft(200.0))
+        val gone = payments.save(draft(50.0))
+        payments.delete(gone.id)
+        assertTrue(com.example.otaapplication.AdviceNumber.isPending(offline.adviceNo))
+        // Neither the pending advice nor its line is pushable until it has a number.
+        assertEquals(listOf(online.id), LocalSyncTable.ADVICES.pending(db, 10).map { it.id })
+        assertTrue(LocalSyncTable.ADVICE_LINES.pending(db, 10).none { it.value.adviceId == offline.id })
+
+        val status = engine.sync()
+        assertNull(status.error)
+        assertEquals(0, status.pending)
+        assertEquals("26270002", payments.advice(offline.id)!!.adviceNo)
+        assertTrue(status.notices.any { it.contains("now PA-26270002") })
+        assertEquals(listOf("26270001", "26270002"), cloud.table("payment_advices").values.map { it.getString("advice_no") }.sorted())
+        assertTrue(cloud.table("payment_advices").values.none { it.getString("id") == gone.id })
+        assertEquals(2, cloud.table("advice_lines").size)
+        // Orders keep their own counter.
+        assertTrue(cloud.orderSerials.isEmpty())
     }
 
     @Test

@@ -39,7 +39,8 @@ data class OrderSyncResult(val pulledChanges: Int, val pushed: Int, val notices:
  * [renumber] gives a free number for an order whose number the cloud already has (the same
  * staff member made orders offline on two phones); null when the number can't be replaced.
  * [payments] adds payment advices and their lines; [renumberAdvice] does the same for advices.
- * [numberOrder] stores the number the cloud gave an order saved offline (and makes its PDF).
+ * [numberOrder] stores the number the cloud gave an order saved offline (and makes its PDF);
+ * [numberAdvice] does the same for advices.
  */
 class OrderSync(
     private val orders: LocalOrders,
@@ -49,6 +50,7 @@ class OrderSync(
     private val payments: PaymentRepository? = null,
     private val renumberAdvice: (String) -> String? = { null },
     private val numberOrder: (uuid: String, offerNo: String) -> Boolean = orders::renumber,
+    private val numberAdvice: (adviceId: String, adviceNo: String) -> Boolean = { id, no -> payments?.assignNumber(id, no) == true },
     private val pageSize: Int = 500,
     private val pushBatch: Int = 200
 ) {
@@ -70,6 +72,7 @@ class OrderSync(
         pushed += push(OrderTable.BILLS) { repo.pendingBills(pushBatch) }
         pushed += push(OrderTable.LINKS) { repo.pendingLinks(pushBatch) }
         if (payments != null) {
+            numberPendingAdvices(payments, notices)
             pushed += pushNumbered(OrderTable.ADVICES, notices, { payments.pendingAdvices(pushBatch) }) { row -> resolveAdviceDuplicate(payments, row) }
             pushed += push(OrderTable.ADVICE_LINES) { payments.pendingLines(pushBatch) }
         }
@@ -138,6 +141,30 @@ class OrderSync(
                 return
             }
             if (withContext(Dispatchers.IO) { numberOrder(ref.id, number) }) notices += "An order saved offline is now order $number."
+        }
+    }
+
+    /** Same as [numberPendingOrders] for payment advices saved offline. */
+    private suspend fun numberPendingAdvices(payments: PaymentRepository, notices: MutableList<String>) {
+        val refs = withContext(Dispatchers.IO) { payments.unnumberedAdvices() }
+        for (ref in refs) {
+            if (ref.deleted) {
+                withContext(Dispatchers.IO) { payments.dropUnnumbered(ref.id) }
+                continue
+            }
+            val number = try {
+                api.allocateAdviceNo(ref.payDate ?: LocalDate.now())
+            } catch (e: AdviceLimitReached) {
+                notices += e.message.orEmpty()
+                return
+            } catch (e: CloudException) {
+                if (e.authFailed || e.storageFull) throw e
+                notices += "Payment advices saved offline could not get a number yet: ${e.message}"
+                return
+            }
+            if (withContext(Dispatchers.IO) { numberAdvice(ref.id, number) }) {
+                notices += "A payment advice saved offline is now ${AdviceNumber.display(number)}."
+            }
         }
     }
 
