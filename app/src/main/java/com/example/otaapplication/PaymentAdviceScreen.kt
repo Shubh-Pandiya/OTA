@@ -51,6 +51,7 @@ import com.example.otaapplication.data.BillListItem
 import com.example.otaapplication.data.BillQuery
 import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.PairBill
+import com.example.otaapplication.data.PartyMatch
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PaymentMath
@@ -594,7 +595,8 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         images.addAll(a.images)
         val byId = pairs.associateBy { it.bill.id }
         a.lines.forEach { line ->
-            val pair = byId[line.bill.id] ?: PairBill(line.bill, PaymentMath.round2(line.bill.settled - line.amounts.settled), mixedParties = false)
+            val pair = byId[line.bill.id] ?: deps.payments.let { p -> withContext(Dispatchers.IO) { p.pairBill(line.bill.id, editingId) } }
+                ?: PairBill(line.bill, PaymentMath.round2(line.bill.settled - line.amounts.settled), mixedParties = false)
             lines += LineState.of(pair, line.amounts)
         }
         ready = true
@@ -607,13 +609,31 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         available = if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) null
         else withContext(Dispatchers.IO) { deps.payments.pairBills(buyer, supplier, editingId) }
         presetPending?.let { billId ->
-            available?.firstOrNull { it.bill.id == billId }?.let { pair -> if (lines.none { it.billId == billId }) lines += LineState.fresh(pair) }
+            val pair = available?.firstOrNull { it.bill.id == billId } ?: withContext(Dispatchers.IO) { deps.payments.pairBill(billId, editingId) }
+            if (pair != null && lines.none { it.billId == billId }) lines += LineState.fresh(pair)
             presetPending = null
         }
     }
 
-    val eligibleIds = available?.map { it.bill.id }?.toSet()
-    val ineligible = if (eligibleIds == null) emptyList() else lines.filter { it.billId !in eligibleIds }
+    // "Search all unpaid bills": every bill with something due, whoever it is for.
+    var searchingAll by remember { mutableStateOf(false) }
+    var allQuery by remember { mutableStateOf("") }
+    var allUnpaid by remember { mutableStateOf<List<PairBill>?>(null) }
+    LaunchedEffect(searchingAll) {
+        if (searchingAll && allUnpaid == null) allUnpaid = withContext(Dispatchers.IO) { deps.payments.unpaidBills(editingId) }
+    }
+    // A picked bill whose names don't match this advice's buyer and supplier waits here for the user's choice.
+    var confirmPick by remember { mutableStateOf<PairBill?>(null) }
+    fun addLine(pair: PairBill) { if (lines.none { it.billId == pair.bill.id }) lines += LineState.fresh(pair) }
+    fun pick(pair: PairBill) {
+        when {
+            pair.buyer.isBlank() || pair.supplier.isBlank() -> addLine(pair)
+            buyer.isBlank() && supplier.isBlank() -> { buyer = pair.buyer; supplier = pair.supplier; addLine(pair) }
+            PartyMatch.pairLevel(buyer, supplier, pair.buyer, pair.supplier) != PartyMatch.Level.NONE -> addLine(pair)
+            else -> confirmPick = pair
+        }
+    }
+
     val lineAmounts = lines.map { it.amounts() }
     val totals = AdviceTotals.of(lineAmounts)
     // Outstanding for the pair after this advice: every known bill balance, less what this advice settles.
@@ -628,12 +648,36 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         if (editingId == null && deps.staffCode == null) add(deps.staffMessage)
         if (buyer.isBlank() || supplier.isBlank()) add("Pick who paid (buyer) and who was paid (supplier).")
         if (lines.isEmpty()) add("Add at least one bill.")
-        if (ineligible.isNotEmpty()) add("Remove bill ${ineligible.joinToString { it.pair.bill.billNo }}: not a bill between this buyer and supplier.")
         if (lines.any { !it.valid } || !amountValid(balanceText)) add("Fix the amounts marked in red.")
         if (lines.any { it.valid && it.amounts().settled <= 0.0 }) add("Each bill needs a paid amount or an adjustment.")
         if (referenceNeeded) add("Enter the ${mode.referenceLabel.lowercase()}.")
     }
     val canSave = ready && problems.isEmpty() && payDay != null
+
+    confirmPick?.let { pair ->
+        AlertDialog(
+            onDismissRequest = { confirmPick = null },
+            icon = { Icon(Icons.Default.ReportProblem, contentDescription = null) },
+            title = { Text("Bill ${pair.bill.billNo} is for other parties") },
+            text = {
+                Text(
+                    "This bill is from ${pair.buyer} to ${pair.supplier}, but this advice is from ${SearchText.firstLine(buyer)} " +
+                        "to ${SearchText.firstLine(supplier)}. One advice pays one buyer to one supplier." +
+                        if (lines.isEmpty()) " Switch the advice to the bill's parties, or add it anyway if it is the same party spelled differently."
+                        else " Add it anyway only if it is the same party spelled differently."
+                )
+            },
+            confirmButton = {
+                Row {
+                    if (lines.isEmpty()) TextButton(onClick = {
+                        buyer = pair.buyer; supplier = pair.supplier; addLine(pair); confirmPick = null
+                    }) { Text("Use bill's parties") }
+                    TextButton(onClick = { addLine(pair); confirmPick = null }) { Text("Add anyway") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmPick = null }) { Text("Cancel") } }
+        )
+    }
 
     FormDialog(
         title = if (editingId == null) "New payment advice" else "Edit $adviceNo",
@@ -724,27 +768,51 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         ) {
             lines.forEach { line ->
                 key(line.billId) {
-                    LineEditor(line, eligible = eligibleIds == null || line.billId in eligibleIds, onRemove = { lines.remove(line) })
+                    LineEditor(line, partyNote(line.pair, buyer, supplier), onRemove = { lines.remove(line) })
                 }
             }
             val addable = available?.filter { p -> lines.none { it.billId == p.bill.id } }
             when {
                 available == null -> Text(
-                    "Pick the buyer and supplier to see their bills.",
+                    "Pick the buyer and supplier to see their bills, or search all unpaid bills below.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 available!!.isEmpty() -> Text(
-                    "No bills between this buyer and supplier. Bills come from orders: mark the bill received on the order in Order History first.",
+                    "No bills found from ${SearchText.firstLine(buyer)} to ${SearchText.firstLine(supplier)}. Names are matched " +
+                        "ignoring case, spacing, M/s, Ltd and a city typed after the name. A bill must be entered first: " +
+                        "Bills → Add bill, or “Mark bill received” on the order.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                addable!!.isNotEmpty() -> {
+                addable!!.isEmpty() -> Text(
+                    "All bills for this buyer and supplier are on this advice.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                else -> {
                     Text("Add a bill", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     addable.forEach { pair ->
-                        AddBillRow(pair, onAdd = { lines += LineState.fresh(pair) })
+                        key(pair.bill.id) { AddBillRow(pair, partyNote(pair, buyer, supplier), onAdd = { pick(pair) }) }
                     }
                 }
+            }
+            if (!searchingAll) {
+                TextButton(onClick = { searchingAll = true }) {
+                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (available.isNullOrEmpty()) "Search all unpaid bills" else "Bill not listed? Search all unpaid bills")
+                }
+            }
+            AnimatedVisibility(visible = searchingAll, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                AllUnpaidBills(
+                    query = allQuery,
+                    onQuery = { allQuery = it },
+                    bills = allUnpaid?.filter { p -> lines.none { it.billId == p.bill.id } },
+                    note = { partyNote(it, buyer, supplier) },
+                    onPick = { pick(it) },
+                    onClose = { searchingAll = false; allQuery = "" }
+                )
             }
         }
 
@@ -822,29 +890,102 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
     }
 }
 
+/** How a bill's own names compare with the advice's buyer and supplier; null when they match exactly. */
+private class PartyNote(val text: String, val differs: Boolean)
+
+private fun partyNote(pair: PairBill, buyer: String, supplier: String): PartyNote? {
+    if (pair.buyer.isBlank() || pair.supplier.isBlank()) return null
+    val names = "${pair.buyer} → ${pair.supplier}"
+    if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) return PartyNote(names, differs = false)
+    return when (PartyMatch.pairLevel(buyer, supplier, pair.buyer, pair.supplier)) {
+        PartyMatch.Level.EXACT -> null
+        PartyMatch.Level.CLOSE -> PartyNote("On bill: $names", differs = false)
+        PartyMatch.Level.NONE -> PartyNote("Different parties on bill: $names", differs = true)
+    }
+}
+
 @Composable
-private fun AddBillRow(pair: PairBill, onAdd: () -> Unit) {
+private fun AllUnpaidBills(
+    query: String,
+    onQuery: (String) -> Unit,
+    bills: List<PairBill>?,
+    note: (PairBill) -> PartyNote?,
+    onPick: (PairBill) -> Unit,
+    onClose: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("All unpaid bills", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Close bill search") }
+        }
+        FormTextField(
+            value = query,
+            onValueChange = onQuery,
+            label = "Search bill no., buyer, supplier",
+            icon = Icons.Default.Search,
+            singleLine = true,
+            imeAction = ImeAction.Search
+        )
+        val tokens = SearchText.tokens(query)
+        val shown = bills?.filter { p ->
+            val text = SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.buyer} ${p.supplier}")
+            tokens.all { it in text }
+        }
+        when {
+            shown == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+            shown.isEmpty() -> Text(
+                if (query.isBlank()) "No unpaid bills on this phone." else "No unpaid bill matches “$query”.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            else -> shown.take(50).forEach { pair -> key(pair.bill.id) { AddBillRow(pair, note(pair), onAdd = { onPick(pair) }) } }
+        }
+    }
+}
+
+@Composable
+private fun AddBillRow(pair: PairBill, note: PartyNote?, onAdd: () -> Unit) {
     val bill = pair.bill
-    LinkRow(
-        icon = Icons.Default.AddCircleOutline,
-        title = "Bill ${bill.billNo}" + (bill.billDate?.let { " · ${it.format(billDateFormat)}" } ?: ""),
-        subtitle = listOfNotNull(
-            bill.amount?.let { "Bill ${rupees(it)}" },
-            pair.balanceBefore?.let { "due ${rupees(it)}" } ?: "amount not entered",
-            if (pair.mixedParties) "orders for other parties too" else null
-        ).joinToString(" · "),
-        onClick = onAdd
+    Column {
+        LinkRow(
+            icon = Icons.Default.AddCircleOutline,
+            title = "Bill ${bill.billNo}" + (bill.billDate?.let { " · ${it.format(billDateFormat)}" } ?: ""),
+            subtitle = listOfNotNull(
+                bill.amount?.let { "Bill ${rupees(it)}" },
+                when {
+                    pair.balanceBefore == null -> "amount not entered"
+                    !pair.due -> "fully paid"
+                    pair.settledElsewhere > 0 -> "part paid · due ${rupees(pair.balanceBefore!!)}"
+                    else -> "due ${rupees(pair.balanceBefore!!)}"
+                },
+                if (pair.mixedParties) "orders for other parties too" else null
+            ).joinToString(" · "),
+            onClick = onAdd
+        )
+        note?.let { PartyNoteText(it, Modifier.padding(start = 52.dp, bottom = 4.dp)) }
+    }
+}
+
+@Composable
+private fun PartyNoteText(note: PartyNote, modifier: Modifier = Modifier) {
+    Text(
+        note.text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (note.differs) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier
     )
 }
 
 @Composable
-private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit) {
+private fun LineEditor(line: LineState, note: PartyNote?, onRemove: () -> Unit) {
     val bill = line.pair.bill
     val settled = line.amounts().settled
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = if (eligible) null else BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+        border = if (note?.differs == true) BorderStroke(1.dp, MaterialTheme.colorScheme.error) else null,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -855,12 +996,13 @@ private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit)
                         listOfNotNull(
                             bill.billDate?.format(billDateFormat),
                             bill.amount?.let { "Bill ${rupees(it)}" },
-                            line.pair.balanceBefore?.let { "due ${rupees(it)}" },
+                            line.pair.balanceBefore?.let { if (line.pair.settledElsewhere > 0) "due ${rupees(it)} after earlier advices" else "due ${rupees(it)}" },
                             if (line.pair.mixedParties) "mixed parties" else null
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    note?.let { PartyNoteText(it) }
                 }
                 IconButton(onClick = onRemove) { Icon(Icons.Default.Close, contentDescription = "Remove bill ${bill.billNo}") }
             }

@@ -125,9 +125,17 @@ data class PairBill(
     /** Settled by advices other than the one being edited. */
     val settledElsewhere: Double,
     /** The bill's orders are for more than one buyer/supplier pair. */
-    val mixedParties: Boolean
+    val mixedParties: Boolean,
+    /** The bill's own buyer and supplier (name line), as typed on its orders or on the bill. */
+    val buyer: String = "",
+    val supplier: String = "",
+    /** False when the bill's names only roughly match the advice's (e.g. "Arvind Ahmedabad" vs "Arvind"). */
+    val exactParties: Boolean = true
 ) {
     val balanceBefore: Double? get() = PaymentMath.balance(bill.amount, settledElsewhere)
+
+    /** Unknown amount, or something still due before this advice. */
+    val due: Boolean get() = balanceBefore.let { it == null || it > 0.004 }
 }
 
 /** An advice that pays (part of) a bill, as listed on the bill. */

@@ -56,7 +56,7 @@ val copyShared by tasks.registering(Sync::class) {
     from(androidSrc) {
         include(
             "OrderNumber.kt", "AdviceNumber.kt", "Units.kt", "OrderFromData.kt",
-            "data/SearchText.kt", "data/Models.kt", "data/PaymentModels.kt", "data/SyncModels.kt",
+            "data/SearchText.kt", "data/PartyMatch.kt", "data/Models.kt", "data/PaymentModels.kt", "data/SyncModels.kt",
             "cloud/SupabaseHttp.kt", "cloud/OrderCloudApi.kt", "cloud/CatalogCloudApi.kt"
         )
     }

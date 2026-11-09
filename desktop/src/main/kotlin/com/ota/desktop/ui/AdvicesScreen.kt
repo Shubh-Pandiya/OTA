@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -70,6 +71,7 @@ import com.example.otaapplication.data.AdviceTotals
 import com.example.otaapplication.data.BalanceSide
 import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.PairBill
+import com.example.otaapplication.data.PartyMatch
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PaymentMath
@@ -335,7 +337,9 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
         remarks = a.remarks
         val byId = pairs.associateBy { it.bill.id }
         a.lines.forEach { line ->
-            lines += LineState.of(byId[line.bill.id] ?: PairBill(line.bill, PaymentMath.round2(line.bill.settled - line.amounts.settled), false), line.amounts)
+            val pair = byId[line.bill.id] ?: withContext(Dispatchers.IO) { app.payments.pairBill(line.bill.id, editingId) }
+                ?: PairBill(line.bill, PaymentMath.round2(line.bill.settled - line.amounts.settled), false)
+            lines += LineState.of(pair, line.amounts)
         }
         ready = true
     }
@@ -346,13 +350,31 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
         available = if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) null
         else withContext(Dispatchers.IO) { app.payments.pairBills(buyer, supplier, editingId) }
         presetPending?.let { billId ->
-            available?.firstOrNull { it.bill.id == billId }?.let { pair -> if (lines.none { it.billId == billId }) lines += LineState.fresh(pair) }
+            val pair = available?.firstOrNull { it.bill.id == billId } ?: withContext(Dispatchers.IO) { app.payments.pairBill(billId, editingId) }
+            if (pair != null && lines.none { it.billId == billId }) lines += LineState.fresh(pair)
             presetPending = null
         }
     }
 
-    val eligibleIds = available?.map { it.bill.id }?.toSet()
-    val ineligible = if (eligibleIds == null) emptyList() else lines.filter { it.billId !in eligibleIds }
+    // "Search all unpaid bills": every bill with something due, whoever it is for.
+    var searchingAll by remember { mutableStateOf(false) }
+    var allQuery by remember { mutableStateOf("") }
+    var allUnpaid by remember { mutableStateOf<List<PairBill>?>(null) }
+    LaunchedEffect(searchingAll) {
+        if (searchingAll && allUnpaid == null) allUnpaid = withContext(Dispatchers.IO) { app.payments.unpaidBills(editingId) }
+    }
+    // A picked bill whose names don't match this advice's buyer and supplier waits here for the user's choice.
+    var confirmPick by remember { mutableStateOf<PairBill?>(null) }
+    fun addLine(pair: PairBill) { if (lines.none { it.billId == pair.bill.id }) lines += LineState.fresh(pair) }
+    fun pick(pair: PairBill) {
+        when {
+            pair.buyer.isBlank() || pair.supplier.isBlank() -> addLine(pair)
+            buyer.isBlank() && supplier.isBlank() -> { buyer = pair.buyer; supplier = pair.supplier; addLine(pair) }
+            PartyMatch.pairLevel(buyer, supplier, pair.buyer, pair.supplier) != PartyMatch.Level.NONE -> addLine(pair)
+            else -> confirmPick = pair
+        }
+    }
+
     val totals = AdviceTotals.of(lines.map { it.amounts() })
     val outstanding = available?.let { pairs ->
         val ids = pairs.map { it.bill.id }.toSet()
@@ -365,7 +387,6 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
         if (day == null) add("Enter the payment date as dd-mm-yyyy.")
         if (buyer.isBlank() || supplier.isBlank()) add("Pick who paid (buyer) and who was paid (supplier).")
         if (lines.isEmpty()) add("Add at least one bill.")
-        if (ineligible.isNotEmpty()) add("Remove bill ${ineligible.joinToString { it.pair.bill.billNo }}: not a bill between this buyer and supplier.")
         if (lines.any { !it.valid } || !amountValid(balanceText)) add("Fix the amounts marked in red.")
         if (lines.any { it.valid && it.amounts().settled <= 0.0 }) add("Each bill needs a paid amount or an adjustment.")
         if (mode != PaymentMode.CASH && reference.isBlank()) add("Enter the ${mode.referenceLabel.lowercase()}.")
@@ -387,6 +408,30 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
             }.onSuccess { toast("Advice ${it.adviceNo} saved · PDF in Documents/OTA Orders"); onDone(it.id) }
                 .onFailure { toast(it.message ?: "Could not save the advice"); busy = false }
         }
+    }
+
+    confirmPick?.let { pair ->
+        AlertDialog(
+            onDismissRequest = { confirmPick = null },
+            title = { Text("Bill ${pair.bill.billNo} is for other parties") },
+            text = {
+                Text(
+                    "This bill is from ${pair.buyer} to ${pair.supplier}, but this advice is from ${SearchText.firstLine(buyer)} " +
+                        "to ${SearchText.firstLine(supplier)}. One advice pays one buyer to one supplier." +
+                        if (lines.isEmpty()) " Switch the advice to the bill's parties, or add it anyway if it is the same party spelled differently."
+                        else " Add it anyway only if it is the same party spelled differently."
+                )
+            },
+            confirmButton = {
+                Row {
+                    if (lines.isEmpty()) TextButton(onClick = { buyer = pair.buyer; supplier = pair.supplier; addLine(pair); confirmPick = null }) {
+                        Text("Use bill's parties")
+                    }
+                    TextButton(onClick = { addLine(pair); confirmPick = null }) { Text("Add anyway") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmPick = null }) { Text("Cancel") } }
+        )
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -417,28 +462,48 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
                 Panel(Modifier.fillMaxWidth(), title = "Bills", actions = { Pill("${lines.size}", Brand.Muted) }) {
                     lines.forEach { line ->
                         key(line.billId) {
-                            LineEditor(line, eligibleIds == null || line.billId in eligibleIds) { lines.remove(line) }
+                            LineEditor(line, partyNote(line.pair, buyer, supplier)) { lines.remove(line) }
                             Spacer(Modifier.height(8.dp))
                         }
                     }
                     val addable = available?.filter { p -> lines.none { it.billId == p.bill.id } }
+                    val muted = MaterialTheme.colorScheme.onSurfaceVariant
                     when {
-                        available == null -> Text("Pick the buyer and supplier to see their bills.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        available!!.isEmpty() -> Text("No bills between this buyer and supplier. Attach the bill to its order first.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        addable!!.isNotEmpty() -> {
-                            Text("Add a bill", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        available == null -> Text("Pick the buyer and supplier to see their bills, or search all unpaid bills below.", color = muted)
+                        available!!.isEmpty() -> Text(
+                            "No bills found from ${SearchText.firstLine(buyer)} to ${SearchText.firstLine(supplier)}. Names are matched ignoring case, " +
+                                "spacing, M/s, Ltd and a city typed after the name. A bill must be entered first: Bills → Add bill, or attach it to its order.",
+                            color = muted
+                        )
+                        addable!!.isEmpty() -> Text("All bills for this buyer and supplier are on this advice.", color = muted)
+                        else -> {
+                            Text("Add a bill", style = MaterialTheme.typography.labelLarge, color = muted)
                             Spacer(Modifier.height(4.dp))
-                            addable.forEach { pair ->
-                                val b = pair.bill
-                                TableRow(false, { lines += LineState.fresh(pair) }) {
-                                    Icon(Icons.Default.Add, null, tint = Brand.Saffron, modifier = Modifier.size(18.dp))
-                                    Cell2(b.billNo, b.billDate.dmy(), 0f, bold = true, width = BILL_NO_W)
-                                    Cell(if (pair.mixedParties) "Orders for other parties too" else "", 1f, color = Brand.Amber, maxLines = 2)
-                                    Cell2(
-                                        pair.balanceBefore?.let { "due ${moneyFull(it)}" } ?: "amount not entered",
-                                        b.amount?.let { "bill ${moneyFull(it)}" }.orEmpty(), 0f, TextAlign.End, color = Brand.Red, width = 150.dp
-                                    )
-                                }
+                            addable.forEach { pair -> key(pair.bill.id) { AddBillRow(pair, partyNote(pair, buyer, supplier)) { pick(pair) } } }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    if (!searchingAll) {
+                        TextButton(onClick = { searchingAll = true }) {
+                            IconText(Icons.Default.Search, if (available.isNullOrEmpty()) "Search all unpaid bills" else "Bill not listed? Search all unpaid bills")
+                        }
+                    }
+                    AnimatedVisibility(searchingAll) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Field(allQuery, { allQuery = it }, "Search all unpaid bills: bill no., buyer, supplier", Modifier.weight(1f))
+                                IconButton(onClick = { searchingAll = false; allQuery = "" }) { Icon(Icons.Default.Close, "Close bill search") }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            val tokens = SearchText.tokens(allQuery)
+                            val shown = allUnpaid?.filter { p ->
+                                lines.none { it.billId == p.bill.id } &&
+                                    SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.buyer} ${p.supplier}").let { text -> tokens.all { it in text } }
+                            }
+                            when {
+                                shown == null -> androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())
+                                shown.isEmpty() -> Text(if (allQuery.isBlank()) "No unpaid bills on this laptop." else "No unpaid bill matches “$allQuery”.", color = muted)
+                                else -> shown.take(80).forEach { pair -> key(pair.bill.id) { AddBillRow(pair, partyNote(pair, buyer, supplier)) { pick(pair) } } }
                             }
                         }
                     }
@@ -487,13 +552,49 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
     }
 }
 
+/** How a bill's own names compare with the advice's buyer and supplier; null when they match exactly. */
+private class PartyNote(val text: String, val differs: Boolean)
+
+private fun partyNote(pair: PairBill, buyer: String, supplier: String): PartyNote? {
+    if (pair.buyer.isBlank() || pair.supplier.isBlank()) return null
+    val names = "${pair.buyer} → ${pair.supplier}"
+    if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) return PartyNote(names, differs = false)
+    return when (PartyMatch.pairLevel(buyer, supplier, pair.buyer, pair.supplier)) {
+        PartyMatch.Level.EXACT -> null
+        PartyMatch.Level.CLOSE -> PartyNote("On bill: $names", differs = false)
+        PartyMatch.Level.NONE -> PartyNote("Different parties on bill: $names", differs = true)
+    }
+}
+
 @Composable
-private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit) {
+private fun AddBillRow(pair: PairBill, note: PartyNote?, onAdd: () -> Unit) {
+    val b = pair.bill
+    TableRow(false, onAdd) {
+        Icon(Icons.Default.Add, null, tint = Brand.Saffron, modifier = Modifier.size(18.dp))
+        Cell2(b.billNo, b.billDate.dmy(), 0f, bold = true, width = BILL_NO_W)
+        Cell(
+            listOfNotNull(note?.text, if (pair.mixedParties) "Orders for other parties too" else null).joinToString(" · "),
+            1f, color = if (note?.differs == true) Brand.Red else if (note != null) MaterialTheme.colorScheme.onSurfaceVariant else Brand.Amber, maxLines = 2
+        )
+        Cell2(
+            when {
+                pair.balanceBefore == null -> "amount not entered"
+                !pair.due -> "fully paid"
+                else -> "due ${moneyFull(pair.balanceBefore!!)}"
+            },
+            listOfNotNull(b.amount?.let { "bill ${moneyFull(it)}" }, if (pair.settledElsewhere > 0 && pair.due) "part paid" else null).joinToString(" · "),
+            0f, TextAlign.End, color = Brand.Red, width = 150.dp
+        )
+    }
+}
+
+@Composable
+private fun LineEditor(line: LineState, note: PartyNote?, onRemove: () -> Unit) {
     val bill = line.pair.bill
     val settled = line.amounts().settled
     Surface(
         Modifier.fillMaxWidth(), RoundedCornerShape(10.dp), color = Brand.SaffronTint,
-        border = BorderStroke(1.dp, if (eligible) Brand.Line else Brand.Red)
+        border = BorderStroke(1.dp, if (note?.differs == true) Brand.Red else Brand.Line)
     ) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -501,9 +602,11 @@ private fun LineEditor(line: LineState, eligible: Boolean, onRemove: () -> Unit)
                     Text("Bill ${bill.billNo}", style = MaterialTheme.typography.titleSmall)
                     Text(
                         listOfNotNull(bill.billDate.dmy().ifEmpty { null }, bill.amount?.let { "Bill ${moneyFull(it)}" },
-                            line.pair.balanceBefore?.let { "due ${moneyFull(it)}" }, if (line.pair.mixedParties) "mixed parties" else null).joinToString(" · "),
+                            line.pair.balanceBefore?.let { if (line.pair.settledElsewhere > 0) "due ${moneyFull(it)} after earlier advices" else "due ${moneyFull(it)}" },
+                            if (line.pair.mixedParties) "mixed parties" else null).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    note?.let { Text(it.text, style = MaterialTheme.typography.bodySmall, color = if (it.differs) Brand.Red else MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 val after = line.pair.balanceBefore?.let { PaymentMath.round2(it - settled) }
                 Text(

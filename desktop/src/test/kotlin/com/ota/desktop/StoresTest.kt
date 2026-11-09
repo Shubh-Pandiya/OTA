@@ -162,6 +162,41 @@ class StoresTest {
     }
 
     @Test
+    fun adviceBillPickerForgivesCityAndSuffixAndListsEveryAdviceOfABill() {
+        // Orders typed with the city on the name line; the advice picks catalog names.
+        val a = numbered(order(buyer = "Shyam Garments Surat", supplier = "Arvind Ahmedabad"))
+        val b = numbered(order(buyer = "M/s. Shyam Garments", supplier = "Arvind Ltd"))
+        val other = numbered(order(buyer = "Shyam Textiles", supplier = "Arvind"))
+        val b1 = orders.attachBill(listOf(a.id), "AR-1", BillDetails(amount = 1000.0))
+        val b2 = orders.attachBill(listOf(b.id), "AR-2", BillDetails(amount = 400.0))
+        orders.attachBill(listOf(other.id), "ST-1", BillDetails(amount = 300.0))
+
+        val pair = payments.pairBills("Shyam Garments", "Arvind")
+        assertEquals(listOf("AR-1", "AR-2"), pair.map { it.bill.billNo }.sorted())
+        assertTrue(pair.none { it.exactParties })
+        assertEquals("Shyam Garments Surat", pair.single { it.bill.billNo == "AR-1" }.buyer)
+
+        // Two bills on one advice, then a second advice on a partly paid bill.
+        val draft = AdviceDraft(
+            payDate = day, buyer = "Shyam Garments", supplier = "Arvind", mode = PaymentMode.CASH, reference = "",
+            balanceAmount = null, balanceSide = null, remarks = "",
+            lines = listOf(b1.id to LineAmounts(paid = 600.0), b2.id to LineAmounts(paid = 400.0))
+        )
+        val first = payments.save(draft, 3)
+        assertEquals(400.0, payments.pairBills("Shyam Garments", "Arvind").single { it.bill.billNo == "AR-1" }.balanceBefore)
+        assertFalse(payments.pairBills("Shyam Garments", "Arvind").single { it.bill.billNo == "AR-2" }.due)
+        val second = payments.save(draft.copy(lines = listOf(b1.id to LineAmounts(paid = 400.0))), 3)
+        assertEquals(listOf(first.id, second.id), payments.advicesForBill(b1.id).map { it.adviceId })
+        assertEquals(PaymentStatus.PAID, orders.bill(b1.id)!!.status)
+
+        // Search all unpaid bills: only ST-1 is still due, with its own parties for the "names differ" note.
+        val unpaid = payments.unpaidBills()
+        assertEquals(listOf("ST-1"), unpaid.map { it.bill.billNo })
+        assertEquals("Shyam Textiles" to "Arvind", unpaid.single().buyer to unpaid.single().supplier)
+        assertEquals("Arvind Ahmedabad", payments.pairBill(b1.id)!!.supplier)
+    }
+
+    @Test
     fun advicesSettleBillsAndAreSearchable() {
         val a = numbered()
         val other = numbered(order(buyer = "Other Buyer"))

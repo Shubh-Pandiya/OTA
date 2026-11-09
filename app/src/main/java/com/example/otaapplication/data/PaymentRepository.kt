@@ -226,43 +226,88 @@ class PaymentRepository(
      * [excludeAdviceId] is the advice being edited: its own lines don't count as settled.
      */
     fun pairBills(buyer: String, supplier: String, excludeAdviceId: String? = null): List<PairBill> {
-        val buyerKey = SearchText.partyKey(buyer)
-        val supplierKey = SearchText.partyKey(supplier)
-        if (buyerKey.isEmpty() || supplierKey.isEmpty()) return emptyList()
+        if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) return emptyList()
+        val pairs = billParties()
+        val best = HashMap<String, Pair<PartyPair, PartyMatch.Level>>()
+        for ((billId, list) in pairs) {
+            val match = list.map { it to PartyMatch.pairLevel(buyer, supplier, it.buyer, it.supplier) }.maxBy { it.second }
+            if (match.second != PartyMatch.Level.NONE) best[billId] = match
+        }
+        return loadPairBills(best.keys, excludeAdviceId) { bill ->
+            val (pair, level) = best.getValue(bill.id)
+            Triple(pair, pairs.getValue(bill.id).isMixed(), level == PartyMatch.Level.EXACT)
+        }
+    }
+
+    /** Every bill with something still due (or no amount yet), whatever its parties. */
+    fun unpaidBills(excludeAdviceId: String? = null): List<PairBill> {
+        val pairs = billParties()
+        val ids = helper.readableDatabase.rawQuery("SELECT id FROM bills WHERE is_deleted = 0", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+        return loadPairBills(ids, excludeAdviceId) { bill ->
+            val list = pairs[bill.id].orEmpty()
+            Triple(list.firstOrNull() ?: PartyPair("", ""), list.isMixed(), true)
+        }.filter { it.due }
+    }
+
+    /** One bill as a [PairBill] with its own parties, e.g. a line of an advice whose names no longer match. */
+    fun pairBill(billId: String, excludeAdviceId: String? = null): PairBill? {
+        val list = billParties()[billId].orEmpty()
+        return loadPairBills(listOf(billId), excludeAdviceId) { Triple(list.firstOrNull() ?: PartyPair("", ""), list.isMixed(), true) }
+            .firstOrNull()
+    }
+
+    private data class PartyPair(val buyer: String, val supplier: String)
+
+    private fun List<PartyPair>.isMixed(): Boolean =
+        any { a -> any { b -> PartyMatch.pairLevel(a.buyer, a.supplier, b.buyer, b.supplier) == PartyMatch.Level.NONE } }
+
+    /** Bill id to the buyer/supplier name lines of its orders and of the bill itself, bill's own first. */
+    private fun billParties(): Map<String, List<PartyPair>> {
         val db = helper.readableDatabase
-        val pairs = HashMap<String, MutableSet<Pair<String, String>>>()
+        val pairs = HashMap<String, LinkedHashSet<PartyPair>>()
+        fun add(billId: String, buyer: String, supplier: String) {
+            pairs.getOrPut(billId) { LinkedHashSet() } += PartyPair(SearchText.firstLine(buyer), SearchText.firstLine(supplier))
+        }
+        db.rawQuery("SELECT id, buyer, supplier FROM bills WHERE is_deleted = 0 AND buyer <> '' AND supplier <> ''", null).use { c ->
+            while (c.moveToNext()) add(c.getString(0), c.getString(1), c.getString(2))
+        }
         db.rawQuery(
             """
             SELECT ob.bill_id, o.buyer, o.supplier
             FROM order_bills ob JOIN orders o ON o.id = ob.order_id JOIN bills b ON b.id = ob.bill_id
             WHERE ob.is_deleted = 0 AND o.is_deleted = 0 AND b.is_deleted = 0
+            ORDER BY o.day_key, o.seq
             """.trimIndent(),
             null
         ).use { c ->
-            while (c.moveToNext()) {
-                pairs.getOrPut(c.getString(0)) { HashSet() } += SearchText.partyKey(c.getString(1)) to SearchText.partyKey(c.getString(2))
-            }
+            while (c.moveToNext()) add(c.getString(0), c.getString(1), c.getString(2))
         }
-        db.rawQuery("SELECT id, buyer, supplier FROM bills WHERE is_deleted = 0 AND buyer <> '' AND supplier <> ''", null).use { c ->
-            while (c.moveToNext()) {
-                pairs.getOrPut(c.getString(0)) { HashSet() } += SearchText.partyKey(c.getString(1)) to SearchText.partyKey(c.getString(2))
-            }
-        }
-        val eligible = pairs.filterValues { (buyerKey to supplierKey) in it }
-        if (eligible.isEmpty()) return emptyList()
+        return pairs.mapValues { (_, set) -> set.distinctBy { SearchText.partyKey(it.buyer) to SearchText.partyKey(it.supplier) } }
+    }
+
+    /** Loads [ids] as [PairBill]s; [describe] gives each bill's display parties, mixed flag and exactness. */
+    private fun loadPairBills(
+        ids: Collection<String>,
+        excludeAdviceId: String?,
+        describe: (Bill) -> Triple<PartyPair, Boolean, Boolean>
+    ): List<PairBill> {
+        if (ids.isEmpty()) return emptyList()
         val out = ArrayList<PairBill>()
-        eligible.keys.chunked(400).forEach { chunk ->
-            db.rawQuery(
+        ids.chunked(400).forEach { chunk ->
+            helper.readableDatabase.rawQuery(
                 "SELECT ${BillSql.COLUMNS}, ${BillSql.SETTLED_EXCLUDING} FROM bills b WHERE b.id IN (${chunk.joinToString(",") { "?" }})",
                 arrayOf(excludeAdviceId.orEmpty()) + chunk
             ).use { c ->
                 while (c.moveToNext()) {
                     val bill = c.toBill()
-                    out += PairBill(bill, PaymentMath.round2(c.getDouble(BillSql.COUNT)), mixedParties = eligible.getValue(bill.id).size > 1)
+                    val (pair, mixed, exact) = describe(bill)
+                    out += PairBill(bill, PaymentMath.round2(c.getDouble(BillSql.COUNT)), mixed, pair.buyer, pair.supplier, exact)
                 }
             }
         }
-        return out.sortedWith(compareBy<PairBill>({ it.bill.billDate == null }, { it.bill.billDate }, { it.bill.billNo }))
+        // Bills with something still due first, oldest first, so the usual pick is at the top.
+        return out.sortedWith(compareBy<PairBill>({ !it.due }, { it.bill.billDate == null }, { it.bill.billDate }, { it.bill.billNo }))
     }
 
     /** Bills for the Bills list: matches bill/LR number, buyer, supplier or order number; newest first. */

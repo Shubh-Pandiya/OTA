@@ -7,6 +7,7 @@ import com.example.otaapplication.data.BalanceSide
 import com.example.otaapplication.data.Bill
 import com.example.otaapplication.data.BillPayment
 import com.example.otaapplication.data.PairBill
+import com.example.otaapplication.data.PartyMatch
 import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentMode
@@ -198,27 +199,75 @@ class PaymentStore(private val db: Db, private val numbers: Numbers, private val
      * Bills spanning several pairs are flagged as mixed.
      */
     fun pairBills(buyer: String, supplier: String, excludeAdviceId: String? = null): List<PairBill> {
-        val buyerKey = SearchText.partyKey(buyer)
-        val supplierKey = SearchText.partyKey(supplier)
-        if (buyerKey.isEmpty() || supplierKey.isEmpty()) return emptyList()
+        if (SearchText.partyKey(buyer).isEmpty() || SearchText.partyKey(supplier).isEmpty()) return emptyList()
+        val pairs = billParties()
+        val best = HashMap<String, Pair<PartyPair, PartyMatch.Level>>()
+        for ((billId, list) in pairs) {
+            val match = list.map { it to PartyMatch.pairLevel(buyer, supplier, it.buyer, it.supplier) }.maxBy { it.second }
+            if (match.second != PartyMatch.Level.NONE) best[billId] = match
+        }
+        return loadPairBills(best.keys, excludeAdviceId) { billId ->
+            val (pair, level) = best.getValue(billId)
+            Triple(pair, pairs.getValue(billId).isMixed(), level == PartyMatch.Level.EXACT)
+        }
+    }
+
+    /** Every bill with something still due (or no amount yet), whatever its parties. */
+    fun unpaidBills(excludeAdviceId: String? = null): List<PairBill> {
+        val pairs = billParties()
+        val ids = db.read { c -> c.query("select id from bills where not deleted") { it.id("id") } }
+        return loadPairBills(ids, excludeAdviceId) { billId ->
+            val list = pairs[billId].orEmpty()
+            Triple(list.firstOrNull() ?: PartyPair("", ""), list.isMixed(), true)
+        }.filter { it.due }
+    }
+
+    /** One bill as a [PairBill] with its own parties, e.g. a line of an advice whose names no longer match. */
+    fun pairBill(billId: String, excludeAdviceId: String? = null): PairBill? {
+        val list = billParties()[billId].orEmpty()
+        return loadPairBills(listOf(billId), excludeAdviceId) { Triple(list.firstOrNull() ?: PartyPair("", ""), list.isMixed(), true) }
+            .firstOrNull()
+    }
+
+    private data class PartyPair(val buyer: String, val supplier: String)
+
+    private fun List<PartyPair>.isMixed(): Boolean =
+        any { a -> any { b -> PartyMatch.pairLevel(a.buyer, a.supplier, b.buyer, b.supplier) == PartyMatch.Level.NONE } }
+
+    /** Bill id to the buyer/supplier name lines of the bill itself and of its live orders, bill's own first. */
+    private fun billParties(): Map<String, List<PartyPair>> = db.read { c ->
+        val pairs = HashMap<String, LinkedHashSet<PartyPair>>()
+        fun add(billId: String, buyer: String, supplier: String) {
+            pairs.getOrPut(billId) { LinkedHashSet() } += PartyPair(SearchText.firstLine(buyer), SearchText.firstLine(supplier))
+        }
+        c.query("select id, buyer, supplier from bills where not deleted and buyer <> '' and supplier <> ''") {
+            add(it.id("id"), it.str("buyer"), it.str("supplier"))
+        }
+        c.query(
+            """select l.bill_id, o.buyer, o.supplier
+               from order_bills l join orders o on o.id = l.order_id join bills b on b.id = l.bill_id
+               where not l.deleted and not o.deleted and not b.deleted order by o.order_day nulls last, o.order_no"""
+        ) { add(it.id("bill_id"), it.str("buyer"), it.str("supplier")) }
+        pairs.mapValues { (_, set) -> set.distinctBy { SearchText.partyKey(it.buyer) to SearchText.partyKey(it.supplier) } }
+    }
+
+    /** Loads [ids] as [PairBill]s; [describe] gives each bill's display parties, mixed flag and exactness. */
+    private fun loadPairBills(
+        ids: Collection<String>,
+        excludeAdviceId: String?,
+        describe: (String) -> Triple<PartyPair, Boolean, Boolean>
+    ): List<PairBill> {
+        if (ids.isEmpty()) return emptyList()
         return db.read { c ->
-            val pairs = HashMap<String, MutableSet<Pair<String, String>>>()
-            c.query(
-                """select l.bill_id, ota_party_key(o.buyer) as bk, ota_party_key(o.supplier) as sk
-                   from order_bills l join orders o on o.id = l.order_id join bills b on b.id = l.bill_id
-                   where not l.deleted and not o.deleted and not b.deleted"""
-            ) { pairs.getOrPut(it.id("bill_id")) { HashSet() } += it.str("bk") to it.str("sk") }
-            c.query(
-                "select id, ota_party_key(buyer) as bk, ota_party_key(supplier) as sk from bills where not deleted and buyer <> '' and supplier <> ''"
-            ) { pairs.getOrPut(it.id("id")) { HashSet() } += it.str("bk") to it.str("sk") }
-            val eligible = pairs.filterValues { (buyerKey to supplierKey) in it }
-            if (eligible.isEmpty()) return@read emptyList()
             c.query(
                 "select ${BillSql.COLUMNS}, ${BillSql.SETTLED_EXCLUDING} from bills b where b.id = any(?)",
-                excludeAdviceId.orEmpty(), uuidArray(eligible.keys)
-            ) { PairBill(it.toBill(), PaymentMath.round2(it.dbl("settled_elsewhere") ?: 0.0), eligible.getValue(it.id("id")).size > 1) }
-                .sortedWith(compareBy<PairBill>({ it.bill.billDate == null }, { it.bill.billDate }, { it.bill.billNo }))
-        }
+                excludeAdviceId.orEmpty(), uuidArray(ids)
+            ) {
+                val bill = it.toBill()
+                val (pair, mixed, exact) = describe(bill.id)
+                PairBill(bill, PaymentMath.round2(it.dbl("settled_elsewhere") ?: 0.0), mixed, pair.buyer, pair.supplier, exact)
+            }
+        }.sortedWith(compareBy<PairBill>({ !it.due }, { it.bill.billDate == null }, { it.bill.billDate }, { it.bill.billNo }))
     }
 
     /** Bills list: bill/LR number, buyer, supplier or order number; newest first. */
