@@ -46,6 +46,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
+import com.example.otaapplication.weather.rememberHomeWeather
 import com.example.otaapplication.ui.icons.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -97,6 +98,7 @@ data class OrderHistoryItem(
 
 enum class Screen(val title: String, val tabLabel: String) {
     Home("OTA Business", "Home"),
+    Insights("Insights", "Insights"),
     OrderEntry("Order Entry", "New order"),
     OrderHistory("Order History", "Orders"),
     Bills("Bills", "Bills"),
@@ -110,7 +112,7 @@ private val bottomTabs = listOf(Screen.Home, Screen.OrderEntry, Screen.OrderHist
 
 /** Drawer groups: orders and payments are separate sections. */
 private val drawerGroups = listOf(
-    null to listOf(Screen.Home),
+    null to listOf(Screen.Home, Screen.Insights),
     "Orders" to listOf(Screen.OrderEntry, Screen.OrderHistory),
     "Payments" to listOf(Screen.Bills, Screen.Advices),
     "Manage" to listOf(Screen.Catalog, Screen.SyncSettings)
@@ -118,6 +120,7 @@ private val drawerGroups = listOf(
 
 private val screenIcons = mapOf(
     Screen.Home to Icons.Default.Home,
+    Screen.Insights to Icons.Default.Insights,
     Screen.OrderEntry to Icons.Default.EditNote,
     Screen.OrderHistory to Icons.Default.History,
     Screen.Bills to Icons.AutoMirrored.Filled.ReceiptLong,
@@ -153,9 +156,18 @@ class MainActivity : ComponentActivity() {
     // Bumped on every resume so the previewed order number follows a change of day.
     private var resumeTick by mutableIntStateOf(0)
 
+    // True while the app is in front; Home's cat and weather pause otherwise to save battery.
+    private var inForeground by mutableStateOf(false)
+
     override fun onResume() {
         super.onResume()
         resumeTick++
+        inForeground = true
+    }
+
+    override fun onPause() {
+        inForeground = false
+        super.onPause()
     }
 
     // Bumped when a reminder notification is tapped, which opens Home.
@@ -254,8 +266,29 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
         BackHandler(enabled = drawerState.isClosed && currentScreen != Screen.Home) { currentScreen = Screen.Home }
 
-        val homeStats by produceState<HomeStats?>(null, currentScreen == Screen.Home, resumed, remoteOrderChanges, cloudStatus.lastSyncAt) {
-            if (currentScreen == Screen.Home) value = withContext(Dispatchers.IO) { runCatching { loadHomeStats() }.onFailure { it.printStackTrace() }.getOrNull() } ?: value
+        val statsShown = currentScreen == Screen.Home || currentScreen == Screen.Insights
+        val homeStats by produceState<HomeStats?>(null, statsShown, resumed, remoteOrderChanges, cloudStatus.lastSyncAt) {
+            if (statsShown) value = withContext(Dispatchers.IO) { runCatching { loadHomeStats() }.onFailure { it.printStackTrace() }.getOrNull() } ?: value
+        }
+        val homeWeather = rememberHomeWeather(active = currentScreen == Screen.Home && inForeground)
+        val reduceMotion = remember(resumed) {
+            android.provider.Settings.Global.getFloat(contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+        }
+        val homeActions = remember {
+            HomeActions(
+                newOrder = { currentScreen = Screen.OrderEntry },
+                newAdvice = { pendingPage = PaymentPage.AdviceEdit(null); currentScreen = Screen.Advices },
+                addBill = { pendingPage = PaymentPage.BillEdit(null); currentScreen = Screen.Bills },
+                orders = { currentScreen = Screen.OrderHistory },
+                bills = { currentScreen = Screen.Bills },
+                advices = { currentScreen = Screen.Advices },
+                parties = { currentScreen = Screen.Catalog },
+                openBill = { pendingPage = PaymentPage.BillView(it); currentScreen = Screen.Bills },
+                openAdvice = { pendingPage = PaymentPage.AdviceView(it); currentScreen = Screen.Advices },
+                sync = { scope.launch { cloud.syncNow() } },
+                insights = { currentScreen = Screen.Insights },
+                weather = { homeWeather.showSettings = true }
+            )
         }
         val imeVisible = WindowInsets.isImeVisible
 
@@ -325,22 +358,13 @@ class MainActivity : ComponentActivity() {
                             stats = homeStats,
                             cloudStatus = cloudStatus,
                             staffName = staff?.name,
-                            actions = remember {
-                                HomeActions(
-                                    newOrder = { currentScreen = Screen.OrderEntry },
-                                    newAdvice = { pendingPage = PaymentPage.AdviceEdit(null); currentScreen = Screen.Advices },
-                                    addBill = { pendingPage = PaymentPage.BillEdit(null); currentScreen = Screen.Bills },
-                                    orders = { currentScreen = Screen.OrderHistory },
-                                    bills = { currentScreen = Screen.Bills },
-                                    advices = { currentScreen = Screen.Advices },
-                                    parties = { currentScreen = Screen.Catalog },
-                                    openBill = { pendingPage = PaymentPage.BillView(it); currentScreen = Screen.Bills },
-                                    openAdvice = { pendingPage = PaymentPage.AdviceView(it); currentScreen = Screen.Advices },
-                                    sync = { scope.launch { cloud.syncNow() } }
-                                )
-                            },
-                            refreshKey = resumed
+                            actions = homeActions,
+                            weather = homeWeather.view,
+                            refreshKey = resumed,
+                            catActive = inForeground && !drawerState.isOpen,
+                            reduceMotion = reduceMotion
                         )
+                        Screen.Insights -> InsightsScreen(stats = homeStats, actions = homeActions)
                         Screen.OrderEntry -> OrderFormScreen(
                             // New orders get their number from the cloud when saved; orders reopened
                             // from history keep their original one.
@@ -413,6 +437,10 @@ class MainActivity : ComponentActivity() {
             ordersToday = orderRepository.counts(OrderQuery(from = today, to = today)).total,
             ordersThisMonth = orderRepository.counts(OrderQuery(from = today.withDayOfMonth(1), to = today)).total,
             ordersAwaitingBill = orderRepository.counts(OrderQuery()).pending,
+            pendingNumbers = orderRepository.unnumberedOrders().count { !it.deleted },
+            ordersPerMonth = HomeStats.monthStarts(today).map { m ->
+                orderRepository.counts(OrderQuery(from = m, to = minOf(m.plusMonths(1).minusDays(1), today))).total
+            },
             recentOrders = orderRepository.search(OrderQuery()).take(3),
             bills = payments.bills(BillQuery()),
             advices = payments.search("")
@@ -658,6 +686,10 @@ fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null) {
                 icon = Icons.Default.Badge,
                 imeAction = androidx.compose.ui.text.input.ImeAction.Done
             )
+        }
+
+        FormSection(title = "Weather on Home", icon = Icons.Default.LocationOn) {
+            com.example.otaapplication.weather.WeatherSettingsSection()
         }
 
         Surface(

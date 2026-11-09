@@ -54,4 +54,29 @@ class HomeStatsTest {
         assertEquals(listOf("a", "b", "c"), stats.recentAdvices.map { it.id })
         assertEquals(0.0, stats.outstanding, 0.0)
     }
+
+    @Test
+    fun insightsSeriesAndTopParties() {
+        fun due(id: String, buyer: String, supplier: String, amount: Double, age: Long) =
+            BillListItem(Bill(id = id, billNo = id, billDate = today.minusDays(age), amount = amount), buyer, supplier)
+        val stats = HomeStats.compute(
+            today = today, ordersToday = 0, ordersThisMonth = 0, ordersAwaitingBill = 0, recentOrders = emptyList(),
+            bills = listOf(
+                due("1", "Shah Textiles", "Raymond", 1_000.0, 10),
+                due("2", "shah  textiles\nSurat", "Raymond", 500.0, 100),
+                due("3", "Mehta", "Siyaram", 2_000.0, 5)
+            ),
+            advices = listOf(advice("a", today, 300.0), advice("b", today.minusMonths(2), 200.0), advice("old", today.minusMonths(8), 9.0)),
+            pendingNumbers = 2,
+            ordersPerMonth = listOf(1, 2, 3, 4, 5, 6)
+        )
+        assertEquals(listOf("Jun", "Jul", "Aug", "Sep", "Oct", "Nov"), stats.ordersByMonth.map { it.label })
+        assertEquals(6.0, stats.ordersByMonth.last().value, 0.0)
+        assertEquals(listOf(0.0, 0.0, 0.0, 200.0, 0.0, 300.0), stats.paidByMonth.map { it.value })
+        assertEquals(listOf("Mehta" to 2_000.0, "Shah Textiles" to 1_500.0), stats.topBuyers.map { it.name to it.amount })
+        assertEquals(2, stats.topBuyers[1].bills)
+        assertEquals(listOf("Siyaram" to 2_000.0, "Raymond" to 1_500.0), stats.topSuppliers.map { it.name to it.amount })
+        assertEquals(1, stats.overdueBills)
+        assertEquals(2, stats.pendingNumbers)
+    }
 }
