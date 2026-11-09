@@ -328,7 +328,10 @@ private fun BillCard(item: BillListItem, onClick: () -> Unit, modifier: Modifier
         Spacer(Modifier.height(2.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                listOfNotNull(bill.billDate?.format(billDateFormat), bill.lrNo.takeIf { it.isNotBlank() }?.let { "LR $it" }, bill.amount?.let(::rupees))
+                listOfNotNull(
+                    bill.billDate?.format(billDateFormat), bill.lrNo.takeIf { it.isNotBlank() }?.let { "LR $it" },
+                    bill.transport.takeIf { it.isNotBlank() }, bill.amount?.let(::rupees)
+                )
                     .joinToString(" · ").ifEmpty { "No details yet" },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -928,7 +931,7 @@ private fun AllUnpaidBills(
         )
         val tokens = SearchText.tokens(query)
         val shown = bills?.filter { p ->
-            val text = SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.buyer} ${p.supplier}")
+            val text = SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.bill.transport} ${p.buyer} ${p.supplier}")
             tokens.all { it in text }
         }
         when {

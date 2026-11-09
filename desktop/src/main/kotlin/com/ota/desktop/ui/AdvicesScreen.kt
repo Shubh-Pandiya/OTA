@@ -498,7 +498,7 @@ private fun AdviceEditor(editingId: String?, presetBillId: String?, onDone: (Str
                             val tokens = SearchText.tokens(allQuery)
                             val shown = allUnpaid?.filter { p ->
                                 lines.none { it.billId == p.bill.id } &&
-                                    SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.buyer} ${p.supplier}").let { text -> tokens.all { it in text } }
+                                    SearchText.normalize("${p.bill.billNo} ${p.bill.lrNo} ${p.bill.transport} ${p.buyer} ${p.supplier}").let { text -> tokens.all { it in text } }
                             }
                             when {
                                 shown == null -> androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())

@@ -2,7 +2,7 @@ package com.ota.desktop.db
 
 /** Runs the bundled SQL migrations in order, once each, inside a transaction. */
 object Migrations {
-    private val files = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql")
+    private val files = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql")
 
     fun run(db: Db) {
         db.tx { c ->

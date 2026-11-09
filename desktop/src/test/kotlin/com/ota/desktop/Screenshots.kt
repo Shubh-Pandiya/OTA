@@ -42,6 +42,8 @@ fun main(args: Array<String>) {
     val advice = demo.payments.search(AdviceFilter()).first()
     val order = demo.orders.list().first { it.billNos.isNotEmpty() }
     val handBill = demo.orders.billByNumber("RL/8812")!!
+    val splitBill = demo.orders.billByNumber("RL/8815")!!
+    val twoBillAdvice = demo.payments.search(AdviceFilter()).first { a -> demo.payments.advice(a.id)!!.lines.size >= 2 }
     val claimAdvice = demo.payments.search(AdviceFilter()).first { a -> demo.payments.advice(a.id)!!.lines.any { it.amounts.claim != null } }
     // One order saved while offline, waiting for its number.
     val pending = demo.orders.create(demo.orders.list().first().data.copy(remarks = "Saved offline"), "")
@@ -76,8 +78,10 @@ fun main(args: Array<String>) {
     shot("05-bills", at(Section.BILLS, Target.Bill(bill.id)))
     shot("05b-bill-entered-by-hand", at(Section.BILLS, Target.Bill(handBill.id)))
     shot("05c-add-bill", at(Section.BILLS, Target.NewBill))
+    shot("05d-bill-in-two-advices", at(Section.BILLS, Target.Bill(splitBill.id)), height = 1250)
     shot("06-payment-advices", at(Section.ADVICES, Target.Advice(advice.id)))
     shot("06b-advice-with-claim", at(Section.ADVICES, Target.Advice(claimAdvice.id)))
+    shot("06c-advice-with-two-bills", at(Section.ADVICES, Target.Advice(twoBillAdvice.id)))
     shot("07-advice-editor", at(Section.ADVICES, Target.NewAdvice(bill.id)))
     shot("08-buyers-suppliers", at(Section.CATALOG))
     shot("09-sync-cloud", at(Section.SYNC))

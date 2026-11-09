@@ -316,13 +316,13 @@ class PaymentRepository(
         val args = ArrayList<String>()
         for (token in SearchText.tokens(query.text)) {
             where.append(
-                """ AND (lower(b.bill_no) LIKE ? ESCAPE '\' OR lower(b.lr_no) LIKE ? ESCAPE '\'
+                """ AND (lower(b.bill_no) LIKE ? ESCAPE '\' OR lower(b.lr_no) LIKE ? ESCAPE '\' OR lower(b.transport) LIKE ? ESCAPE '\'
                     OR lower(b.buyer) LIKE ? ESCAPE '\' OR lower(b.supplier) LIKE ? ESCAPE '\' OR EXISTS (
                     SELECT 1 FROM order_bills sob JOIN orders so ON so.id = sob.order_id
                     WHERE sob.bill_id = b.id AND sob.is_deleted = 0 AND so.is_deleted = 0 AND so.search_text LIKE ? ESCAPE '\'))"""
             )
             val pattern = SearchText.containsPattern(token)
-            repeat(5) { args += pattern }
+            repeat(6) { args += pattern }
         }
         val party = """FROM order_bills pob JOIN orders po ON po.id = pob.order_id
             WHERE pob.bill_id = b.id AND pob.is_deleted = 0 AND po.is_deleted = 0 ORDER BY po.day_key, po.seq LIMIT 1"""

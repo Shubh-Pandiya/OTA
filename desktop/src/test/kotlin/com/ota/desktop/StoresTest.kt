@@ -197,6 +197,22 @@ class StoresTest {
     }
 
     @Test
+    fun billTransportIsSavedSuggestedAndSearchable() {
+        val o = numbered()
+        val b = orders.attachBill(listOf(o.id), "TR-1", BillDetails(amount = 100.0, transport = "VRL Logistics"))
+        orders.saveBill(null, "TR-2", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills", transport = " vrl logistics "), emptyList())
+        orders.saveBill(null, "TR-3", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills", transport = "Patel Roadways"), emptyList())
+        assertEquals("VRL Logistics", orders.bill(b.id)!!.transport)
+        assertEquals("vrl logistics", orders.transports("").first()) // one entry per company, latest spelling
+        assertEquals(2, orders.transports("").size)
+        assertEquals(listOf("Patel Roadways"), orders.transports("road"))
+        assertEquals(listOf("TR-3"), payments.bills(com.ota.desktop.data.BillFilter(text = "patel")).map { it.bill.billNo })
+        // The full bill editor saves every field, so clearing Transport clears it.
+        orders.saveBill(b.id, "TR-1", BillDetails(amount = 120.0), listOf(o.id))
+        assertEquals("", orders.bill(b.id)!!.transport)
+    }
+
+    @Test
     fun advicesSettleBillsAndAreSearchable() {
         val a = numbered()
         val other = numbered(order(buyer = "Other Buyer"))

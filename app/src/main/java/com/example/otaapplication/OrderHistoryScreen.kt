@@ -947,7 +947,7 @@ private fun AttachBillDialog(
             }
         }
         val context = LocalContext.current
-        BillFields(fields, optional = true, loadOrderItems = { orderItemsFor(context, orders.uuidsOf(targets)) })
+        BillFields(fields, optional = true, loadOrderItems = { orderItemsFor(context, orders.uuidsOf(targets)) }, transports = orders::transports)
     }
 }
 

@@ -92,6 +92,12 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         createPaymentTables(db)
         addBillLinesClaimsImages(db)
         addBillParties(db)
+        addBillTransport(db)
+    }
+
+    /** v7: transport company on a bill (the supplier may send goods by another transport). */
+    private fun addBillTransport(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE bills ADD COLUMN transport TEXT NOT NULL DEFAULT ''")
     }
 
     /** v6: buyer and supplier stored on a bill, for bills added without orders. */
@@ -176,6 +182,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         }
         if (oldVersion < 5) addBillLinesClaimsImages(db)
         if (oldVersion < 6) addBillParties(db)
+        if (oldVersion < 7) addBillTransport(db)
     }
 
     /**
@@ -211,7 +218,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 6
+        const val VERSION = 7
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

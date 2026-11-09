@@ -127,18 +127,18 @@ class LocalSyncTable<T>(
 
         val BILLS = LocalSyncTable(
             OrderTable.BILLS, "bills",
-            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount", "items", "buyer", "supplier"),
+            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount", "items", "buyer", "supplier", "transport"),
             { b ->
                 listOf(
                     b.billNo, SearchText.billKey(b.billNo), date(b.billDate), b.amount, b.lrNo, b.cdPercent, b.cdAmount,
-                    Json(OrderTable.itemsToJson(b.items).toString()), b.buyer, b.supplier
+                    Json(OrderTable.itemsToJson(b.items).toString()), b.buyer, b.supplier, b.transport
                 )
             },
-            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount, items, buyer, supplier",
+            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount, items, buyer, supplier, transport",
             { rs ->
                 BillValue(
                     rs.str("bill_no"), rs.date("bill_date")?.toString(), rs.dbl("amount"), rs.str("lr_no"), rs.dbl("cd_percent"), rs.dbl("cd_amount"),
-                    readItems(rs), rs.str("buyer"), rs.str("supplier")
+                    readItems(rs), rs.str("buyer"), rs.str("supplier"), rs.str("transport")
                 )
             }
         )

@@ -28,7 +28,7 @@ and `client_updated_at bigint` (the editing device's clock in epoch ms).
 |---|---|
 | `buyers`, `suppliers` | name, address, city, phone, gstin, bank fields (see the catalog migration) |
 | `orders` | order_no, order_date (`dd-MM-yyyy` text, as printed), buyer, supplier (text as printed), items (`[[s.no, particulars, qty, rate, unit?], …]`, see *Item units* below), remarks, delivery_ready, transport_to, cash_payment, less_disc, side, created_by, archived_at |
-| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), items (`jsonb`, same arrays as order items, null = no lines), buyer, supplier (text, null = take them from the bill's orders), archived_at |
+| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), items (`jsonb`, same arrays as order items, null = no lines), buyer, supplier (text, null = take them from the bill's orders), transport (transport company the goods came by, null = none; migration `20261115000000_bill_transport.sql`), archived_at |
 | `order_bills` | order_id, bill_id, archived_at. Many-to-many. **No foreign keys**, see below. |
 | `payment_advices` | advice_no, pay_date (`date`), buyer (paid by), supplier (paid to), mode (`CHEQUE`/`ONLINE`/`CASH`), reference (cheque no / txn id), balance (`numeric(14,2)`, Dr/Cr balance as entered), balance_side (`DR`/`CR`/null), remarks, created_by, archived_at |
 | `advice_lines` | advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim (`numeric(14,2)`, claim / defect deduction), claim_note (reason, `''` if none), archived_at. Advice ↔ bill is many-to-many. **No foreign keys.** |
@@ -86,6 +86,15 @@ A bill can be added on its own from the Bills section, with zero or more orders.
 null, the parties come from the bill's orders (and a bill whose orders disagree is "mixed").
 Payment-advice eligibility uses the bill's own parties first. A bill with its own parties stays
 when its last order is detached; a bill without them is retired (soft-deleted) then.
+
+Party names are matched forgivingly (`data/PartyMatch.kt`, shared by both apps): only the first
+line counts, case, spacing, punctuation, `&`/"and", a leading "M/s" and trailing "Pvt / Ltd / Co"
+are ignored, Shree/Shri/Sri are the same, and a name that starts with the other's words (e.g.
+"Shyam Garments Surat" vs "Shyam Garments") is a close match. The advice bill picker lists the
+pair's unpaid bills (exact and close), and "Search all unpaid bills" can add any other bill: when its
+parties differ, the app warns and asks before adding. An advice can hold many bills and a bill can
+be paid by many advices; a bill's balance due subtracts every live advice line (paid + CD + goods
+return + rate difference + claim).
 
 ## Pulling (delta sync)
 

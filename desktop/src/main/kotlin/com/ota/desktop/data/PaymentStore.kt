@@ -276,7 +276,7 @@ class PaymentStore(private val db: Db, private val numbers: Numbers, private val
         val args = ArrayList<Any?>()
         for (token in SearchText.tokens(filter.text)) {
             where.append(
-                """ and (lower(b.bill_no || ' ' || b.lr_no || ' ' || b.buyer || ' ' || b.supplier || ' ' || b.items::text) like ? escape '\' or exists (
+                """ and (lower(b.bill_no || ' ' || b.lr_no || ' ' || b.transport || ' ' || b.buyer || ' ' || b.supplier || ' ' || b.items::text) like ? escape '\' or exists (
                      select 1 from order_bills sl join orders so on so.id = sl.order_id
                      where sl.bill_id = b.id and not sl.deleted and not so.deleted
                        and lower(so.order_no || ' ' || so.buyer || ' ' || so.supplier || ' ' || so.items::text) like ? escape '\'))"""

@@ -126,9 +126,10 @@ class SyncEngineTest {
     fun standaloneBillsAndClaimsSync() = runBlocking {
         val bill = orders.saveBill(
             null, "SB-1",
-            BillDetails(amount = 1000.0, buyer = "Ram Traders\nSurat", supplier = "Shiv Mills", items = listOf(OrderItem("1", "Shirting", "25", "40", "M"))),
+            BillDetails(amount = 1000.0, buyer = "Ram Traders\nSurat", supplier = "Shiv Mills", items = listOf(OrderItem("1", "Shirting", "25", "40", "M")), transport = "VRL Logistics"),
             emptyList()
         )
+        orders.saveBill(null, "SB-2", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())
         payments.save(
             com.example.otaapplication.data.AdviceDraft(
                 payDate = day, buyer = "Ram Traders", supplier = "Shiv Mills", mode = com.example.otaapplication.data.PaymentMode.ONLINE, reference = "",
@@ -138,7 +139,9 @@ class SyncEngineTest {
             3
         )
         assertNull(engine.sync().error)
-        val row = cloud.table("bills").values.single()
+        val row = cloud.table("bills").values.single { it.getString("bill_no") == "SB-1" }
+        assertEquals("VRL Logistics", row.getString("transport"))
+        assertTrue(cloud.table("bills").values.single { it.getString("bill_no") == "SB-2" }.isNull("transport"))
         assertEquals("Ram Traders\nSurat", row.getString("buyer"))
         assertEquals("Shiv Mills", row.getString("supplier"))
         assertEquals(1, row.getJSONArray("items").length())

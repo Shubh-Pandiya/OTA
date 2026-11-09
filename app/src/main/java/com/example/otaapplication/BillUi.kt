@@ -3,6 +3,13 @@
 package com.example.otaapplication
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -22,7 +29,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -47,6 +56,7 @@ import com.example.otaapplication.ui.theme.BillReceivedContainer
 import com.example.otaapplication.ui.theme.OnBillPendingContainer
 import com.example.otaapplication.ui.theme.OnBillReceivedContainer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.NumberFormat
@@ -164,12 +174,14 @@ class BillFieldsState(
     lrNo: String = "",
     cdPercent: String = "",
     cdAmount: String = "",
-    items: List<OrderItem> = emptyList()
+    items: List<OrderItem> = emptyList(),
+    transport: String = ""
 ) {
     var day by mutableStateOf(day)
     var amount by mutableStateOf(amount)
         private set
     var lrNo by mutableStateOf(lrNo)
+    var transport by mutableStateOf(transport)
     var cdPercent by mutableStateOf(cdPercent)
     var cdAmount by mutableStateOf(cdAmount)
     val items = mutableStateListOf<OrderItem>().apply { addAll(items) }
@@ -213,6 +225,7 @@ class BillFieldsState(
         billDate = day?.let(LocalDate::ofEpochDay),
         amount = PaymentMath.parse(amount),
         lrNo = lrNo.trim(),
+        transport = transport.trim(),
         cdPercent = PaymentMath.parse(cdPercent),
         cdAmount = PaymentMath.parse(cdAmount),
         items = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
@@ -225,6 +238,7 @@ class BillFieldsState(
         if (items.isEmpty() && bill.items.isNotEmpty()) setItems(bill.items)
         if (amount.isBlank()) typeAmount(PaymentMath.plain(bill.amount))
         if (lrNo.isBlank()) lrNo = bill.lrNo
+        if (transport.isBlank()) transport = bill.transport
         if (cdPercent.isBlank()) cdPercent = PaymentMath.plain(bill.cdPercent)
         if (cdAmount.isBlank()) cdAmount = PaymentMath.plain(bill.cdAmount)
     }
@@ -232,7 +246,7 @@ class BillFieldsState(
     companion object {
         fun of(bill: Bill) = BillFieldsState(
             bill.billDate?.toEpochDay(), PaymentMath.plain(bill.amount), bill.lrNo, PaymentMath.plain(bill.cdPercent),
-            PaymentMath.plain(bill.cdAmount), bill.items
+            PaymentMath.plain(bill.cdAmount), bill.items, bill.transport
         )
     }
 }
@@ -240,9 +254,15 @@ class BillFieldsState(
 /**
  * Bill fields. [loadOrderItems], when given, offers to copy the linked orders' items into the
  * bill lines as a starting point (what was billed often differs, so they stay editable).
+ * [transports] suggests transport companies used on earlier bills.
  */
 @Composable
-fun BillFields(state: BillFieldsState, optional: Boolean, loadOrderItems: (suspend () -> List<OrderItem>)? = null) {
+fun BillFields(
+    state: BillFieldsState,
+    optional: Boolean,
+    loadOrderItems: (suspend () -> List<OrderItem>)? = null,
+    transports: (suspend (String) -> List<String>)? = null
+) {
     val suffix = if (optional) " (optional)" else ""
     DateField(label = "Bill date$suffix", day = state.day, onChange = { state.day = it })
     OutlinedTextField(
@@ -255,6 +275,7 @@ fun BillFields(state: BillFieldsState, optional: Boolean, loadOrderItems: (suspe
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, imeAction = ImeAction.Next),
         modifier = Modifier.fillMaxWidth()
     )
+    TransportField(state.transport, { state.transport = it }, "Transport$suffix", transports)
     BillLinesEditor(state, loadOrderItems)
     val total = state.linesTotal
     AmountField(
@@ -285,6 +306,59 @@ fun BillFields(state: BillFieldsState, optional: Boolean, loadOrderItems: (suspe
             imeAction = ImeAction.Done,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/** Transport company the goods came by, with type-ahead from transports used on earlier bills. */
+@Composable
+private fun TransportField(value: String, onValueChange: (String) -> Unit, label: String, transports: (suspend (String) -> List<String>)?) {
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    var suggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(value, focused) {
+        if (!focused || transports == null) { suggestions = emptyList(); return@LaunchedEffect }
+        delay(150)
+        val found = withContext(Dispatchers.IO) { transports(value) }
+        suggestions = found.filterNot { it.equals(value.trim(), ignoreCase = true) }
+    }
+    Column {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            placeholder = { Text("e.g. VRL Logistics") },
+            leadingIcon = { Icon(Icons.Default.LocalShipping, contentDescription = null, modifier = Modifier.size(20.dp)) },
+            singleLine = true,
+            shape = MaterialTheme.shapes.small,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
+        )
+        AnimatedVisibility(
+            visible = focused && suggestions.isNotEmpty(),
+            enter = expandVertically(tween(200)) + fadeIn(tween(180)),
+            exit = shrinkVertically(tween(160)) + fadeOut(tween(120))
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    suggestions.forEach { name ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onValueChange(name); focusManager.clearFocus() }.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.LocalShipping, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(12.dp))
+                            Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Icon(Icons.Default.NorthWest, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -544,6 +618,7 @@ private fun BillDetailPage(
                         DetailRow("Bill date", bill.billDate?.format(billDateFormat).orEmpty())
                         DetailRow("Amount", bill.amount?.let(::rupees).orEmpty())
                         DetailRow("LR / Bilty no", bill.lrNo)
+                        DetailRow("Transport", bill.transport)
                         DetailRow("Cash discount", cashDiscountText(bill.cdPercent, bill.cdAmount))
                     }
                 }
@@ -803,7 +878,7 @@ private fun BillEditPage(billId: String?, deps: PaymentDeps, onDone: (savedId: S
         FormSection(title = "Bill details", icon = Icons.Default.Description) {
             BillFields(s, optional = true, loadOrderItems = if (linked.isEmpty()) null else {
                 { orderItemsFor(context, linked.mapNotNull { it.uuid }) }
-            })
+            }, transports = deps.orders::transports)
         }
         if (billId != null || billNo.isNotBlank()) problems.firstOrNull()?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -901,6 +976,7 @@ fun BillSummaryRow(bill: Bill, onClick: () -> Unit, onRemove: (() -> Unit)? = nu
                 bill.billDate?.format(billDateFormat),
                 bill.amount?.let(::rupees),
                 bill.lrNo.takeIf { it.isNotBlank() }?.let { "LR $it" },
+                bill.transport.takeIf { it.isNotBlank() },
                 if (bill.orderCount > 1) "covers ${bill.orderCount} orders" else null
             )
             if (details.isNotEmpty()) {

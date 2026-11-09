@@ -22,6 +22,8 @@ import java.time.format.DateTimeFormatter
 import kotlin.random.Random
 
 /** A realistic, deterministic data set (about 6 months of an agency's work) for tests and screenshots. */
+private val TRANSPORTS = listOf("VRL Logistics", "Patel Roadways", "Shree Maruti Courier", "Gati Ltd", "Om Logistics")
+
 class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
     private var clock = today
     val kv = Kv(db)
@@ -87,7 +89,8 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                     val amount = (20_000 + rnd.nextInt(180_000)).toDouble()
                     orders.attachBill(
                         listOf(o.id), "INV-${billNo++}",
-                        BillDetails(billDate = day.plusDays(3L + rnd.nextInt(6)), amount = amount, lrNo = "LR ${7000 + rnd.nextInt(2000)}", cdPercent = 2.0, cdAmount = amount * 0.02)
+                        BillDetails(billDate = day.plusDays(3L + rnd.nextInt(6)), amount = amount, lrNo = "LR ${7000 + rnd.nextInt(2000)}", cdPercent = 2.0, cdAmount = amount * 0.02,
+                            transport = TRANSPORTS[rnd.nextInt(TRANSPORTS.size)])
                     )
                 }
             }
@@ -96,7 +99,7 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
         orders.saveBill(
             null, "RL/8812",
             BillDetails(
-                billDate = today.minusDays(4), amount = 30_250.0, lrNo = "LR 9120", buyer = "Kapoor Readymade\nBhopal", supplier = "Raymond Ltd\nThane",
+                billDate = today.minusDays(4), amount = 30_250.0, lrNo = "LR 9120", transport = "Patel Roadways", buyer = "Kapoor Readymade\nBhopal", supplier = "Raymond Ltd\nThane",
                 items = listOf(OrderItem("1", "Poly-viscose suiting navy", "125", "180", "M"), OrderItem("2", "Safari suit set", "25", "310", "S"))
             ),
             emptyList()
@@ -128,6 +131,26 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
                     listOf(1, 2, 4)[rnd.nextInt(3)]
                 )
             }
+        }
+        // One bill paid in two instalments, i.e. listed on two advices.
+        val split = orders.saveBill(
+            null, "RL/8815",
+            BillDetails(
+                billDate = today.minusDays(40), amount = 48_000.0, lrNo = "LR 9204", transport = "VRL Logistics", buyer = "Kapoor Readymade\nBhopal",
+                supplier = "Raymond Ltd\nThane", items = listOf(OrderItem("1", "Terry-rayon suiting grey", "200", "240", "M"))
+            ),
+            emptyList()
+        )
+        for ((daysAgo, paid) in listOf(20L to 20_000.0, 6L to 27_040.0)) {
+            clock = today.minusDays(daysAgo)
+            payments.save(
+                AdviceDraft(
+                    payDate = clock, buyer = "Kapoor Readymade", supplier = "Raymond Ltd", mode = PaymentMode.ONLINE, reference = "UTR${880000 + daysAgo}",
+                    balanceAmount = null, balanceSide = null, remarks = "",
+                    lines = listOf(split.id to if (daysAgo == 6L) LineAmounts(paid, 2.0, 960.0) else LineAmounts(paid))
+                ),
+                1
+            )
         }
         clock = today
         return this

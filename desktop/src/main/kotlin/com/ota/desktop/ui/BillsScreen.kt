@@ -108,7 +108,7 @@ fun BillsScreen() {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Panel(Modifier.weight(1.5f).fillMaxHeight(), padding = PaddingValues(0.dp)) {
                 Column(Modifier.padding(14.dp)) {
-                    Field(text, { text = it }, "Search bill no, LR no, buyer, supplier…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
+                    Field(text, { text = it }, "Search bill no, LR no, transport, buyer, supplier…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
                     Spacer(Modifier.height(10.dp))
                     ChipRow() {
                         Chip("All", status == null) { status = null }
@@ -183,6 +183,7 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 LabelValue("LR (bilty) no", b.lrNo, Modifier.weight(1f))
+                LabelValue("Transport", b.transport, Modifier.weight(1f))
                 LabelValue("Cash discount", listOfNotNull(b.cdPercent?.let { "${PaymentMath.plain(it)}%" }, b.cdAmount?.let(::moneyFull)).joinToString(" · "), Modifier.weight(1f))
             }
             if (b.items.isNotEmpty()) {
@@ -278,6 +279,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
     val linked = remember { mutableStateListOf<OrderRow>() }
     var date by remember { mutableStateOf((bill?.billDate ?: if (bill == null) LocalDate.now() else null).dmy()) }
     var lr by remember { mutableStateOf(bill?.lrNo.orEmpty()) }
+    var transport by remember { mutableStateOf(bill?.transport.orEmpty()) }
     var cdPct by remember { mutableStateOf(PaymentMath.plain(bill?.cdPercent)) }
     var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
     var items by remember { mutableStateOf(bill?.items?.map(Units::splitLegacy).orEmpty()) }
@@ -317,7 +319,10 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                         error = if (bill == null && number.isBlank() && error != null) "Required" else null
                     )
                     DateField(date, { date = it }, "Bill date", Modifier.weight(0.7f), optional = true)
-                    Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(0.8f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(1f))
+                    SuggestField(transport, { transport = it }, "Transport (company)", Modifier.weight(1f)) { app.orders.transports(it) }
                 }
                 if (bill != null) Text("The number can't be changed; delete the bill and add it again.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 val suffix = if (linked.isEmpty()) "" else " (from orders)"
@@ -409,7 +414,8 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                     .mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
                 val details = BillDetails(
                     day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), lines,
-                    if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier)
+                    if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier),
+                    transport.trim()
                 )
                 busy = true
                 scope.launch {
@@ -460,11 +466,13 @@ private fun LinkedOrders(linked: MutableList<OrderRow>, onLink: (OrderRow) -> Un
 /** Quick "bill received" from an order: bill number, date, amount, LR number and cash discount. */
 @Composable
 fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspend (String, BillDetails) -> Unit) {
+    val app = LocalApp.current
     val scope = rememberCoroutineScope()
     var number by remember { mutableStateOf(bill?.billNo.orEmpty()) }
     var date by remember { mutableStateOf(bill?.billDate.dmy()) }
     var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
     var lr by remember { mutableStateOf(bill?.lrNo.orEmpty()) }
+    var transport by remember { mutableStateOf(bill?.transport.orEmpty()) }
     var cdPct by remember { mutableStateOf(PaymentMath.plain(bill?.cdPercent)) }
     var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -484,7 +492,10 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                     DateField(date, { date = it }, "Bill date", Modifier.weight(1f), optional = true)
                     Field(amount, { amount = it }, "Bill amount (₹)", Modifier.weight(1f), number = true, error = if (bad(amount)) "Invalid" else null)
                 }
-                Field(lr, { lr = it }, "LR (bilty) number", Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(1f))
+                    SuggestField(transport, { transport = it }, "Transport", Modifier.weight(1f)) { app.orders.transports(it) }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Field(cdPct, {
                         cdPct = it
@@ -508,7 +519,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                 busy = true
                 scope.launch {
                     runCatching {
-                        onSave(number.trim(), BillDetails(day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt)))
+                        onSave(number.trim(), BillDetails(day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), transport = transport.trim()))
                     }.onFailure { error = it.message; busy = false }
                 }
             }) { Text("Save") }

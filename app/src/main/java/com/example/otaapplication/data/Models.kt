@@ -84,6 +84,8 @@ data class Bill(
     /** Agreed cash discount, as a percentage and/or in rupees. */
     val cdPercent: Double? = null,
     val cdAmount: Double? = null,
+    /** Transport company the goods actually came by (may differ from the order's). */
+    val transport: String = "",
     /** Settled so far by payment advices: paid + cash discount + goods return + rate difference. */
     val settled: Double = 0.0,
     val adviceCount: Int = 0,
@@ -112,7 +114,8 @@ data class BillDetails(
     val items: List<OrderItem> = emptyList(),
     /** Parties stored on the bill; blank = taken from its orders. */
     val buyer: String = "",
-    val supplier: String = ""
+    val supplier: String = "",
+    val transport: String = ""
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

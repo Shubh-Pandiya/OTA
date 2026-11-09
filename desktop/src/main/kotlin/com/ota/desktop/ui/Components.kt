@@ -473,6 +473,50 @@ fun PartyField(
     }
 }
 
+/** Free text with type-ahead from earlier values (e.g. transport companies on bills). */
+@Composable
+fun SuggestField(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    suggest: (String) -> List<String>
+) {
+    var focused by remember { mutableStateOf(false) }
+    var suggestions by remember { mutableStateOf(emptyList<String>()) }
+    var dismissedFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(value, focused) {
+        if (!focused) { suggestions = emptyList(); return@LaunchedEffect }
+        delay(120)
+        suggestions = withContext(Dispatchers.IO) { suggest(value) }.filterNot { it.equals(value.trim(), ignoreCase = true) }
+    }
+    Box(modifier) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { onChange(it); dismissedFor = null },
+            label = { Text(label) },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge,
+            shape = RoundedCornerShape(10.dp),
+            trailingIcon = if (value.isNotEmpty()) {
+                { androidx.compose.material3.IconButton(onClick = { onChange("") }) { Icon(Icons.Default.Close, "Clear", Modifier.size(18.dp)) } }
+            } else null,
+            colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = MaterialTheme.colorScheme.outline, unfocusedContainerColor = Color.White, focusedContainerColor = Color.White),
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
+        )
+        DropdownMenu(
+            expanded = focused && suggestions.isNotEmpty() && dismissedFor != value,
+            onDismissRequest = { dismissedFor = value },
+            properties = PopupProperties(focusable = false),
+            modifier = Modifier.widthIn(min = 220.dp)
+        ) {
+            suggestions.forEach { text ->
+                DropdownMenuItem(text = { Text(text) }, onClick = { onChange(text); dismissedFor = text })
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------------ dialogs
 
 @Composable

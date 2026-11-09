@@ -71,7 +71,7 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,transport,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
@@ -85,6 +85,7 @@ class OrderTable<T>(
                     // Null (not "") when the parties come from the bill's orders: keeps rows small.
                     .put("buyer", row.value.buyer.ifBlank { null } ?: JSONObject.NULL)
                     .put("supplier", row.value.supplier.ifBlank { null } ?: JSONObject.NULL)
+                    .put("transport", row.value.transport.ifBlank { null } ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -98,7 +99,8 @@ class OrderTable<T>(
                     cdAmount = json.number("cd_amount"),
                     items = itemsFromJson(json.optJSONArray("items")),
                     buyer = json.text("buyer"),
-                    supplier = json.text("supplier")
+                    supplier = json.text("supplier"),
+                    transport = json.text("transport")
                 ))
             }
         )
