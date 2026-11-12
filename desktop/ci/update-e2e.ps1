@@ -34,7 +34,7 @@ function AppExe { (Get-ChildItem "$env:LOCALAPPDATA\OTA Business" -Recurse -Filt
 function SelfTest($label) {
     $report = "$t\self-test-$label.txt"
     $run = Start-Process (AppExe) -ArgumentList "--self-test", "`"$report`"" -Wait -PassThru
-    Write-Host "---- self-test $label"; Get-Content $report | Where-Object { $_ -notmatch '^table ' }
+    Write-Host "---- self-test $label"; Get-Content $report | Where-Object { $_ -notmatch '^table ' } | Out-String | Write-Host
     if ($run.ExitCode -ne 0 -or -not (Select-String -Path $report -Pattern '^OK$' -Quiet)) { throw "Self-test $label failed ($($run.ExitCode))" }
     $report
 }
