@@ -34,9 +34,21 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
     companion object {
         const val DB_NAME = "ota"
 
-        fun start(dataDir: File = AppPaths.pgData, binDir: File = AppPaths.pgBinaries, logFile: File = File(AppPaths.logs, "postgres.log")): EmbeddedDb {
+        /**
+         * [beforeStart] runs with the instance lock held and no server using [dataDir] (a leftover
+         * one from a crash is stopped first): the moment to copy or check the data folder.
+         */
+        fun start(
+            dataDir: File = AppPaths.pgData,
+            binDir: File = AppPaths.pgBinaries,
+            logFile: File = File(AppPaths.logs, "postgres.log"),
+            beforeStart: () -> Unit = {}
+        ): EmbeddedDb {
             val lock = instanceLock(dataDir)
             try {
+                prepareDataDir(dataDir)
+                clearStalePid(dataDir, binDir)
+                beforeStart()
                 return startLocked(dataDir, binDir, logFile, lock)
             } catch (e: Throwable) {
                 runCatching { lock.release(); lock.channel().close() }
@@ -60,8 +72,18 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
             return lock
         }
 
+        /** Runs [block] holding the instance lock, without starting the server (backup restore). */
+        fun <T> locked(dataDir: File = AppPaths.pgData, binDir: File = AppPaths.pgBinaries, block: () -> T): T {
+            val lock = instanceLock(dataDir)
+            try {
+                clearStalePid(dataDir, binDir)
+                return block()
+            } finally {
+                runCatching { lock.release(); lock.channel().close() }
+            }
+        }
+
         private fun startLocked(dataDir: File, binDir: File, logFile: File, lock: FileLock): EmbeddedDb {
-            prepareDataDir(dataDir)
             binDir.mkdirs()
             val log = ProcessBuilder.Redirect.appendTo(logFile)
             val pg = try {
@@ -114,7 +136,7 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
          */
         private fun clearStalePid(dataDir: File, binDir: File) {
             val pid = File(dataDir, "postmaster.pid")
-            if (!pid.exists()) return
+            if (!pid.exists() || !dataDir.isDirectory) return
             val pgCtl = binDir.walkTopDown().firstOrNull { it.isFile && (it.name == "pg_ctl" || it.name == "pg_ctl.exe") }
             if (pgCtl != null) {
                 runCatching {

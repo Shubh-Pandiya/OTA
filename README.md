@@ -166,6 +166,21 @@ only while the app is open), applies the schema, and asks for a one-time staff s
 Uninstalling or upgrading never touches the data folder. The installer is not code-signed, so
 Windows SmartScreen may ask for *More info → Run anyway* the first time.
 
+**Updates (1.3.0 and later):** the app checks the public GitHub Releases (`desktop-v*` tags, no token)
+a few seconds after start and every 6 hours, and asks *Update now / Later* with the release notes
+(*Later* waits a day; *Sync & Cloud → App version → Check for updates* checks at once). *Update now*:
+1. downloads the MSI and verifies its size and SHA-256 (`SHA256SUMS.txt` in the release, and GitHub's asset digest); nothing is changed if it does not match;
+2. sends unsynced changes to the cloud; when offline they simply stay in the local database (and upload after the update);
+3. stops the local PostgreSQL cleanly and zips the whole `pgdata` folder to `%LOCALAPPDATA%\OTA Business Data\backups` (verified, the last 5 kept);
+4. runs the installer and restarts on the new version, which reports the result.
+
+On every start the app also refuses data last opened by a newer version (no downgrades), takes a backup
+whenever the version changed (if the updater has not just made one), and applies database migrations in
+one transaction, so a failed migration leaves the database exactly as it was and says which backup to use.
+To put a backup back (with the app closed): `"OTA Business.exe" --restore-backup "<backup .zip>"`; the
+current database is kept beside it as `pgdata-before-restore-<time>`.
+**Coming from 1.2.1 or older:** install 1.3.0 once by hand (download and run the MSI); later versions update themselves.
+
 **What it does:**
 - A Home screen: today's orders, bills still to receive, outstanding and this month's receipts, dues by age, the oldest dues, recent orders and advices, and quick actions.
 - Everything the phone does: orders with units and PDFs, bills (with their own item lines, added from an order or on their own), payment advices with claim / defect deductions and PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. Order numbers come from the shared financial-year counter (`26270001`, …); an order saved offline waits for its number until the next sync. Advice numbers use the signed-in staff digit. Advice images stay on the phone.
@@ -186,5 +201,10 @@ cd desktop
 
 Windows installers are built by [`.github/workflows/desktop.yml`](.github/workflows/desktop.yml) on
 `windows-latest`. It runs the tests, builds the MSI and EXE, installs the MSI silently, and runs
-`OTA Business.exe --self-test`, which boots the bundled PostgreSQL and migrates the schema. Pushing a
-tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers as a GitHub Release.
+`OTA Business.exe --self-test`, which boots the bundled PostgreSQL and migrates the schema. It then runs the
+update test ([`desktop/ci/update-e2e.ps1`](desktop/ci/update-e2e.ps1)): it installs the previous public release
+and fills it with realistic and unsynced data. Next it installs this build over it, then updates in-app to a
+newer build served from a local feed. Every table's row count and checksum must be unchanged, with no
+duplicate ids or numbers and two backups taken. A downgrade must be refused, and uninstalling must keep the data. Pushing a
+tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers and `SHA256SUMS.txt`
+as a GitHub Release, using `desktop/release-notes/<version>.md` as the notes (shown in the app's update prompt).

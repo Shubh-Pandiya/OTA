@@ -25,6 +25,14 @@ import kotlin.system.exitProcess
  * Renders the real screens over the demo data set to PNGs (README / release screenshots).
  * Run with `./gradlew screenshots`; files go to build/screenshots.
  */
+import com.ota.desktop.ui.UpdateDialog
+import com.ota.desktop.ui.UpdatingScreen
+import com.ota.desktop.update.AppVersion
+import com.ota.desktop.update.Installer
+import com.ota.desktop.update.Release
+import com.ota.desktop.update.UpdateState
+import com.ota.desktop.update.UpdateStep
+
 fun main(args: Array<String>) {
     val out = File(args.firstOrNull() ?: "build/screenshots").apply { mkdirs() }
     val db = TestDb.fresh()
@@ -91,6 +99,23 @@ fun main(args: Array<String>) {
     shot("08-buyers-suppliers", at(Section.CATALOG))
     shot("09-sync-cloud", at(Section.SYNC))
     shot("10-export", at(Section.EXPORT))
+
+    val notes = """
+        ## What's new
+        - **Automatic updates**: the app tells you when a new version is out and installs it for you.
+        - A backup of all your data is taken before every update (Sync & cloud → Updates).
+        - Unsynced work is uploaded first, or kept safely on this laptop when you are offline.
+
+        Coming from 1.2.1? Install this version once by hand; later versions update themselves.
+    """.trimIndent()
+    val release = Release(AppVersion.parse("1.3.0")!!, "desktop-v1.3.0", notes, "https://github.com/Shubh-Pandiya/OTA/releases/tag/desktop-v1.3.0",
+        Installer("OTA-Business-1.3.0.msi", "https://example.invalid/OTA-Business-1.3.0.msi", 96_416_484, "0".repeat(64)), null)
+    app.updates.preview(UpdateState.Available(release, canInstall = true))
+    shot("11-update-available") { AppShell(app, at(Section.HOME)); UpdateDialog(app) {} }
+    app.updates.preview(UpdateState.Working(release, UpdateStep.BACKING_UP))
+    shot("11b-updating") { UpdatingScreen(app.updates.state.value) {} }
+    app.updates.preview(UpdateState.Idle)
+    shot("11c-sync-updates-panel", at(Section.SYNC), height = 1350)
     app.close()
     exitProcess(0)
 }

@@ -143,6 +143,13 @@ tasks.register<JavaExec>("screenshots") {
     systemProperty("java.awt.headless", "true")
 }
 
+// CI's update test: seeds an installed app's database or snapshots it (see E2eData.kt).
+tasks.register<JavaExec>("e2eData") {
+    dependsOn("testClasses")
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.ota.desktop.E2eDataKt")
+}
+
 compose.desktop {
     application {
         mainClass = "com.ota.desktop.MainKt"

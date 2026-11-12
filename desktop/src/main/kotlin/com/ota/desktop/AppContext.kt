@@ -12,12 +12,14 @@ import com.ota.desktop.data.PaymentStore
 import com.ota.desktop.db.Db
 import com.ota.desktop.db.EmbeddedDb
 import com.ota.desktop.db.Kv
-import com.ota.desktop.db.Migrations
 import com.ota.desktop.export.DataExport
 import com.ota.desktop.sync.CloudSettings
 import com.ota.desktop.sync.StaffProfile
 import com.ota.desktop.sync.SyncEngine
 import com.ota.desktop.sync.SyncScheduler
+import com.ota.desktop.update.StartupGuard
+import com.ota.desktop.update.UpdateHost
+import com.ota.desktop.update.UpdateManager
 import com.ota.desktop.weather.DesktopWeather
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val scheduler = SyncScheduler(engine)
     val cloudSettings = CloudSettings(config, auth)
     val weather = DesktopWeather(kv)
+    val updates = UpdateManager(UpdateManager.RUNNING)
 
     private val _staff = MutableStateFlow(engine.cachedStaff())
     val staff: StateFlow<StaffProfile?> = _staff.asStateFlow()
@@ -71,6 +74,8 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
         started = true
         engine.refreshPending()
         scheduler.start(scope)
+        updates.consumeOutcome()
+        updates.start(scope)
         scope.launch {
             // A finished sync round may have pulled rows from the phones.
             engine.status.distinctUntilChangedBy { it.lastSyncAt to it.running }.drop(1).collect {
@@ -95,7 +100,23 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
         _staff.value = null
     }
 
+    /** For the updater: a last sync round, then a clean stop; [onExit] ends the process. */
+    fun updateHost(onExit: () -> Unit) = object : UpdateHost {
+        override suspend fun syncBeforeUpdate(): String? {
+            scheduler.stop()
+            if (auth.session.value == null) return "not signed in"
+            // Waits for a round already running (the engine is single-flight), then runs one more.
+            val status = engine.sync()
+            return status.error ?: status.pending.takeIf { it > 0 }?.let { "$it changes still pending" }
+        }
+
+        override fun shutdown() = close()
+
+        override fun exit() = onExit()
+    }
+
     override fun close() {
+        updates.stop()
         scheduler.stop()
         scope.cancel()
         runCatching { db.close() }
@@ -105,10 +126,13 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     companion object {
         /** Boots (and on first launch creates) the local PostgreSQL, then migrates the schema. */
         fun open(): AppContext {
-            val server = EmbeddedDb.start()
+            // Backs up before a new version touches the data, refuses data from a newer version.
+            val guard = StartupGuard(AppPaths.home, AppPaths.pgData, UpdateManager.RUNNING)
+            val server = EmbeddedDb.start(beforeStart = guard::beforeStart)
             try {
                 val db = Db(server::connect)
-                Migrations.run(db)
+                guard.migrate(db)
+                guard.started()
                 return AppContext(server, db)
             } catch (e: Throwable) {
                 runCatching { server.close() }

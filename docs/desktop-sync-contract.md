@@ -243,6 +243,25 @@ The desktop keeps every row in its own PostgreSQL (Flyway migrations in
 parties and the claim columns, and resets the bill and advice-line pull cursors so the next sync
 pulls those columns for rows it already had.
 
+### Updating the desktop app
+
+From 1.3.0 the app updates itself from GitHub Releases. See the README for the details. The parts
+that matter for data safety are:
+
+- Before the installer runs, the app syncs, so pending rows are pushed when it is online. Offline,
+  `sync_pending` rows stay in the local database untouched and upload after the restart.
+  - Orders and advices still waiting for a FY number keep an empty number.
+  - The cloud RPC numbers each one exactly once, on the first sync that reaches it.
+  - The update never allocates numbers itself.
+- The app then stops PostgreSQL and backs up `pgdata` as a zip to `%LOCALAPPDATA%\OTA Business Data\backups`.
+- On the first start of a new version, local migrations run in a single transaction. A failure rolls
+  everything back and blocks startup, and the message names the backup.
+- Migrations that force a re-pull (V2 nulls `server_updated_at` and clears the `cursor.*` keys)
+  re-apply cloud rows by `insert … on conflict (id)`. Rows are matched by id, so a re-pull never
+  adds rows.
+- `app-version.properties` in the data folder records the last version and schema that opened
+  the data. An older app refuses to open it.
+
 ## Local-only Home features
 
 Weather, the roaming cat, and to-dos/reminders never sync, and they have no cloud tables or columns.

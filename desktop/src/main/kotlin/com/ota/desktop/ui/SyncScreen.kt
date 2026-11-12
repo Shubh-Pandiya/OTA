@@ -108,6 +108,8 @@ fun SyncScreen() {
             }
         }
         Spacer(Modifier.height(14.dp))
+        UpdatesPanel(Modifier.fillMaxWidth())
+        Spacer(Modifier.height(14.dp))
         if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent)
         else Panel(Modifier.fillMaxWidth(), title = "Cloud settings") {
             Text("Only the admin can change the retention days and run the cloud clean-up.", color = MaterialTheme.colorScheme.onSurfaceVariant)

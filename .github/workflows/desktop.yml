@@ -24,7 +24,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 100
     defaults:
       run:
         working-directory: desktop
@@ -129,13 +129,50 @@ jobs:
           if (-not (Test-Path "$env:LOCALAPPDATA\OTA Business Data\pgdata\PG_VERSION")) { throw "Uninstall removed the user's database" }
           Write-Host "Uninstall kept the database folder."
 
+      # Keep this build's installers aside: the update test below builds a newer one in the same place.
+      - name: Stage installers
+        run: |
+          New-Item -ItemType Directory -Force build/release/msi, build/release/exe | Out-Null
+          Copy-Item build/compose/binaries/main/msi/*.msi build/release/msi/
+          Copy-Item build/compose/binaries/main/exe/*.exe build/release/exe/
+
       - uses: actions/upload-artifact@v4
         with:
           name: OTA-Business-Windows
           path: |
-            desktop/build/compose/binaries/main/msi/*.msi
-            desktop/build/compose/binaries/main/exe/*.exe
+            desktop/build/release/msi/*.msi
+            desktop/build/release/exe/*.exe
           if-no-files-found: error
+
+      # The update path users take, with the real installers: previous release with realistic and
+      # unsynced data -> manual install of this build -> in-app update to a newer build from a local
+      # feed. Every table's rows and checksums must survive, with no duplicates (desktop/ci/update-e2e.ps1).
+      - name: Build a newer version for the update test
+        run: |
+          $version = ((Get-Content gradle.properties | Select-String '^otaDesktopVersion=').Line -split '=')[1].Trim()
+          $parts = $version.Split('.')
+          $parts[-1] = [string]([int]$parts[-1] + 1)
+          $next = $parts -join '.'
+          "NEXT_VERSION=$next" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          ./gradlew.bat packageMsi -PpgPlatform=windows-amd64 -PotaDesktopVersion=$next --console=plain
+          if ($LASTEXITCODE -ne 0) { throw "Building $next failed" }
+
+      - name: Update test (previous release -> this build -> in-app update)
+        run: |
+          $new = (Get-ChildItem build/release/msi/*.msi | Select-Object -First 1).FullName
+          $next = (Get-ChildItem build/compose/binaries/main/msi/*$env:NEXT_VERSION*.msi | Select-Object -First 1).FullName
+          if (-not $next) { throw "No $env:NEXT_VERSION installer was built" }
+          ./ci/update-e2e.ps1 -NewMsi $new -NextMsi $next -NextVersion $env:NEXT_VERSION
+
+      - name: Update test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-test
+          path: |
+            ${{ runner.temp }}/update-e2e/*.txt
+            ${{ runner.temp }}/update-e2e/*.log
+          if-no-files-found: ignore
 
   release:
     needs: windows
@@ -159,15 +196,19 @@ jobs:
           mkdir -p out
           cp dist/msi/*.msi "out/OTA-Business-$version.msi"
           cp dist/exe/*.exe "out/OTA-Business-Setup-$version.exe"
+          (cd out && sha256sum OTA-Business-* > SHA256SUMS.txt)
+          cat out/SHA256SUMS.txt
           files=(out/*)
           ls -la out
-          notes="OTA Business for Windows $version.
-
-          Download **OTA-Business-$version.msi** (or **OTA-Business-Setup-$version.exe**) and run it. It installs for the current user without admin rights and sets up its own database on first launch. Sign in with your staff account once; after that it works offline and syncs with the cloud in the background.
-
-          Windows may show a SmartScreen warning because the installer is not code-signed: choose *More info* > *Run anyway*."
+          notes_file="desktop/release-notes/$version.md"
+          if [ ! -f "$notes_file" ]; then
+            notes_file=$(mktemp)
+            printf '%s\n' "OTA Business for Windows $version." "" \
+              "Download **OTA-Business-$version.msi** (or **OTA-Business-Setup-$version.exe**) and run it. It installs for the current user without admin rights and keeps your data in its own folder." "" \
+              "Windows may show a SmartScreen warning because the installer is not code-signed: choose *More info* > *Run anyway*." > "$notes_file"
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" "${files[@]}" --title "OTA Business Desktop $version" --notes "$notes" --target "$GITHUB_SHA"
+            gh release create "$tag" "${files[@]}" --title "OTA Business Desktop $version" --notes-file "$notes_file" --target "$GITHUB_SHA"
           fi

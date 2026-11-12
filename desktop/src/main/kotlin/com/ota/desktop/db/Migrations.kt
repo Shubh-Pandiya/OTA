@@ -1,20 +1,29 @@
 package com.ota.desktop.db
 
-/** Runs the bundled SQL migrations in order, once each, inside a transaction. */
+/**
+ * Runs the bundled SQL migrations in order, once each. All pending ones run in a single
+ * transaction (PostgreSQL DDL is transactional): either the database reaches the new version or it
+ * stays exactly as it was. A database already beyond this app's migrations is refused untouched.
+ */
 object Migrations {
     private val files = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql")
 
-    fun run(db: Db) {
+    class SchemaTooNew(val found: Int, val supported: Int) : IllegalStateException("Database version $found is newer than this app ($supported)")
+
+    fun run(db: Db) = run(db, files.map { name -> name to { Migrations::class.java.getResource("/db/$name")?.readText() ?: error("Missing migration $name") } })
+
+    /** [steps]: (name, SQL) in version order; version = position + 1. */
+    internal fun run(db: Db, steps: List<Pair<String, () -> String>>) {
         db.tx { c ->
             c.exec("create table if not exists schema_version (version integer primary key, applied_at timestamptz not null default now())")
             // Two windows starting at once must not both migrate.
             c.exec("lock table schema_version in exclusive mode")
             val done = c.query("select version from schema_version") { it.getInt(1) }.toSet()
-            files.forEachIndexed { i, name ->
+            done.maxOrNull()?.let { if (it > steps.size) throw SchemaTooNew(it, steps.size) }
+            steps.forEachIndexed { i, (_, sql) ->
                 val version = i + 1
                 if (version in done) return@forEachIndexed
-                val sql = Migrations::class.java.getResource("/db/$name")?.readText() ?: error("Missing migration $name")
-                c.exec(sql)
+                c.exec(sql())
                 c.update("insert into schema_version (version) values (?)", version)
             }
         }

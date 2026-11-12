@@ -21,6 +21,12 @@ import com.ota.desktop.ui.LocalApp
 import com.ota.desktop.ui.OtaTheme
 import com.ota.desktop.ui.SignInScreen
 import com.ota.desktop.ui.Splash
+import com.ota.desktop.ui.UpdateDialog
+import com.ota.desktop.ui.UpdatingScreen
+import com.ota.desktop.ui.takesOver
+import com.ota.desktop.update.Backups
+import com.ota.desktop.update.StartupBlocked
+import com.ota.desktop.update.UpdateManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -32,6 +38,10 @@ fun main(args: Array<String>) {
         val report = File(args.getOrNull(selfTest + 1) ?: File(AppPaths.logs, "self-test.txt").path)
         exitProcess(SelfTest.run(report))
     }
+    val restore = args.indexOf("--restore-backup")
+    if (restore >= 0) exitProcess(restoreBackup(args.getOrNull(restore + 1)))
+    val updateRun = args.indexOf("--update-e2e")
+    if (updateRun >= 0) exitProcess(updateUnattended(File(args.getOrNull(updateRun + 1) ?: File(AppPaths.logs, "update-e2e.txt").path)))
     var context: AppContext? = null
     Runtime.getRuntime().addShutdownHook(Thread { context?.close() })
     application {
@@ -46,6 +56,9 @@ fun main(args: Array<String>) {
                 opened.start()
                 app = opened
             } catch (e: EmbeddedDb.AlreadyRunning) {
+                error = e.message
+            } catch (e: StartupBlocked) {
+                File(AppPaths.logs, "startup-error.txt").writeText(e.stackTraceToString())
                 error = e.message
             } catch (e: Throwable) {
                 File(AppPaths.logs, "startup-error.txt").writeText(e.stackTraceToString())
@@ -74,13 +87,70 @@ fun main(args: Array<String>) {
                 } else {
                     CompositionLocalProvider(LocalApp provides current) {
                         val session by current.auth.session.collectAsState()
-                        Crossfade(session != null) { signedIn ->
-                            if (signedIn) AppShell(current) else SignInScreen(current)
+                        val update by current.updates.state.collectAsState()
+                        val quit = { context = null; exitProcess(0) }
+                        if (update.takesOver()) {
+                            // The local database is being closed for the update: no screen may read it.
+                            UpdatingScreen(update, quit)
+                        } else {
+                            Crossfade(session != null) { signedIn ->
+                                if (signedIn) AppShell(current) else SignInScreen(current)
+                            }
+                            UpdateDialog(current, quit)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * `--update-e2e <report>`: the in-app update without the window (CI's update test). Opens the data
+ * like a normal start, looks for a newer release (OTA_UPDATE_FEED), then runs exactly the steps
+ * "Update now" runs; the installer restarts the new version with `--self-test <report>`.
+ */
+private fun updateUnattended(report: File): Int {
+    val log = File(report.absolutePath + ".updater.txt").apply { absoluteFile.parentFile?.mkdirs() }
+    fun note(line: String) = log.appendText("${java.time.Instant.now()} $line\n")
+    return try {
+        val app = AppContext.open()
+        val updates = UpdateManager(UpdateManager.RUNNING, relaunchArgs = listOf("--self-test", report.absolutePath))
+        note("running ${updates.current}")
+        val release = kotlinx.coroutines.runBlocking { updates.check(manual = true) }
+        if (release == null) {
+            note("no newer release: ${updates.state.value}")
+            app.close()
+            return 2
+        }
+        note("found ${release.version} (${release.installer?.name}, sha256 ${release.installer?.sha256})")
+        kotlinx.coroutines.runBlocking {
+            updates.install(release, app.updateHost { note("exiting for the installer"); exitProcess(0) })
+        }
+        note("not installed: ${updates.state.value}")
+        app.close()
+        1
+    } catch (e: Throwable) {
+        note("FAILED ${e.stackTraceToString()}")
+        1
+    }
+}
+
+/** `--restore-backup <zip>`: puts a backup from the backups folder back (the app must be closed). */
+private fun restoreBackup(path: String?): Int {
+    val zip = path?.let(::File)?.takeIf { it.isFile } ?: run {
+        System.err.println("Usage: --restore-backup <backup .zip from ${File(AppPaths.home, "backups")}>")
+        return 2
+    }
+    return try {
+        val aside = EmbeddedDb.locked { Backups.restore(zip, AppPaths.pgData) }
+        // The restored data may come from an older version: let the next start check its schema.
+        File(AppPaths.home, "app-version.properties").delete()
+        println("Restored ${zip.name}." + (aside?.let { " The previous database was kept at $it." } ?: ""))
+        0
+    } catch (e: Throwable) {
+        System.err.println("Restore failed: ${e.message}")
+        1
     }
 }
 
