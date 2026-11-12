@@ -174,7 +174,7 @@ a few seconds after start and every 6 hours, and asks *Update now / Later* with 
 3. stops the local PostgreSQL cleanly and zips the whole `pgdata` folder to `%LOCALAPPDATA%\OTA Business Data\backups` (verified, the last 5 kept);
 4. runs the installer and restarts on the new version, which reports the result.
 
-On every start the app also refuses data last opened by a newer version (no downgrades), takes a backup
+On every start the app also refuses data last opened by a newer version (no downgrades: the installer itself cannot block an older MSI, so the app does), takes a backup
 whenever the version changed (if the updater has not just made one), and applies database migrations in
 one transaction, so a failed migration leaves the database exactly as it was and says which backup to use.
 To put a backup back (with the app closed): `"OTA Business.exe" --restore-backup "<backup .zip>"`; the
@@ -205,6 +205,6 @@ Windows installers are built by [`.github/workflows/desktop.yml`](.github/workfl
 update test ([`desktop/ci/update-e2e.ps1`](desktop/ci/update-e2e.ps1)): it installs the previous public release
 and fills it with realistic and unsynced data. Next it installs this build over it, then updates in-app to a
 newer build served from a local feed. Every table's row count and checksum must be unchanged, with no
-duplicate ids or numbers and two backups taken. A downgrade must be refused, and uninstalling must keep the data. Pushing a
+duplicate ids or numbers and two backups taken. An older 1.3.0 app installed over it must refuse to open the data, and uninstalling must keep it. Pushing a
 tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers and `SHA256SUMS.txt`
 as a GitHub Release, using `desktop/release-notes/<version>.md` as the notes (shown in the app's update prompt).

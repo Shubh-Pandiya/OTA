@@ -8,7 +8,8 @@
 #     app's own in-app update (--update-e2e): download, verify, last sync, stop, backup, msiexec,
 #     restart. The restarted app's self-test must show the new version, "update ok" and identical
 #     row counts and checksums, with no duplicates.
-#  4. An MSI downgrade is refused, and uninstalling keeps the data folder and its backups.
+#  4. An older app refuses data last opened by a newer one (start-up guard); reinstalling the newer
+#     version finds every row intact. Uninstalling keeps the data folder and its backups.
 param(
     [Parameter(Mandatory)] [string] $NewMsi,
     [Parameter(Mandatory)] [string] $NextMsi,
@@ -123,12 +124,23 @@ $backups | Format-Table Name, Length | Out-String | Write-Host
 if ($backups.Count -ne 2) { Fail "Expected 2 backups (manual install + in-app update), found $($backups.Count)" }
 E2eData "duplicates"
 
-# ---- 4. Downgrades are refused; uninstalling keeps the data.
-$p = Start-Process msiexec.exe -ArgumentList "/i `"$prev`" /qn /norestart" -Wait -PassThru
-$after = SelfTest "after-downgrade-attempt"
-if (-not (Select-String -Path $after -Pattern "^app $([regex]::Escape($NextVersion))$" -Quiet)) { Fail "Installing $PrevVersion over $NextVersion replaced the app (msiexec $($p.ExitCode))" }
-else { Write-Host "Downgrade refused by the installer (msiexec $($p.ExitCode)); $NextVersion is still installed." }
-SameData $after "After the downgrade attempt"
+# ---- 4. Downgrades. jpackage MSIs let an older installer replace a newer app, so the protection is the
+#      app's start-up guard (1.3.0+): it refuses data last opened by a newer version before starting
+#      PostgreSQL. 1.2.1 predates the guard; with the same schema it must still leave the data intact.
+Install $NewMsi "downgrade"
+$refused = "$t\self-test-downgrade.txt"
+$run = Start-Process (AppExe) -ArgumentList "--self-test", "`"$refused`"" -Wait -PassThru
+Write-Host "---- older 1.3.0 started on $NextVersion data (exit $($run.ExitCode))"; Get-Content $refused | Select-Object -First 8 | Out-String | Write-Host
+if ($run.ExitCode -eq 0 -or -not (Select-String -Path $refused -Pattern 'newer than this version' -Quiet)) { Fail "An older app opened data last used by $NextVersion" }
+else { Write-Host "Downgrade refused: the older app did not open the data." }
+Install $prev "prev-again"
+$run = Start-Process (AppExe) -ArgumentList "--self-test", "`"$t\self-test-prev-again.txt`"" -Wait -PassThru
+Write-Host "---- $PrevVersion (no guard) started on $NextVersion data (exit $($run.ExitCode))"
+Install "$feed\$name" "reinstall"
+$again = SelfTest "reinstalled"
+if (-not (Select-String -Path $again -Pattern "^app $([regex]::Escape($NextVersion))$" -Quiet)) { Fail "Reinstalling $NextVersion did not bring it back" }
+SameData $again "After the downgrade attempts"
+if (@(Get-ChildItem "$data\backups" -Filter "ota-backup-*.zip").Count -ne 2) { Fail "A refused downgrade should not add backups" }
 Start-Process msiexec.exe -ArgumentList "/x `"$feed\$name`" /qn" -Wait | Out-Null
 if (-not (Test-Path "$data\pgdata\PG_VERSION")) { Fail "Uninstall removed the database" }
 if (@(Get-ChildItem "$data\backups" -Filter "*.zip").Count -lt 2) { Fail "Uninstall removed the backups" }
