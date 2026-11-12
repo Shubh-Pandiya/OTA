@@ -154,7 +154,7 @@ jobs:
           $parts[-1] = [string]([int]$parts[-1] + 1)
           $next = $parts -join '.'
           "NEXT_VERSION=$next" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          ./gradlew.bat packageMsi -PpgPlatform=windows-amd64 -PotaDesktopVersion=$next --console=plain
+          ./gradlew.bat packageMsi -PpgPlatform=windows-amd64 "-PotaDesktopVersion=$next" --console=plain
           if ($LASTEXITCODE -ne 0) { throw "Building $next failed" }
 
       - name: Update test (previous release -> this build -> in-app update)
