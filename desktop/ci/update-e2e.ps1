@@ -2,8 +2,9 @@
 #
 #  1. Install the previous public release and fill its database with realistic work, part of it
 #     still waiting to upload (plus an order without its number). Snapshot every table.
-#  2. Install this build by hand over it (what v1.2.1 users do once): the data must be identical
-#     and a backup must have been taken on the first start.
+#  2. Install this build by hand over it: every table the previous release had must be identical,
+#     a backup must have been taken on the first start and the new local migrations (e.g. V4
+#     accounts) must have run. Then add accounts work (commission, vouchers) and snapshot again.
 #  3. Publish a newer build of this commit on a local feed in GitHub's release format and run the
 #     app's own in-app update (--update-e2e): download, verify, last sync, stop, backup, msiexec,
 #     restart. The restarted app's self-test must show the new version, "update ok" and identical
@@ -14,8 +15,8 @@ param(
     [Parameter(Mandatory)] [string] $NewMsi,
     [Parameter(Mandatory)] [string] $NextMsi,
     [Parameter(Mandatory)] [string] $NextVersion,
-    [string] $PrevVersion = "1.2.1",
-    [string] $PrevSha256 = "2a40e78f65bb8629d6f4126d35f6a6d1d279efe199244f035b2625ab8250b66f"
+    [string] $PrevVersion = "1.3.0",
+    [string] $PrevSha256 = "54efc40911fc09b83f4ca65d13be3ce3e8680921329fcb5271759e422aa2b4f6"
 )
 $ErrorActionPreference = "Stop"
 $t = Join-Path $env:RUNNER_TEMP "update-e2e"
@@ -40,11 +41,15 @@ function SelfTest($label) {
     $report
 }
 
-function Tables($file) { @(Get-Content $file | Where-Object { $_ -match '^table ' -and $_ -notmatch '^table kv ' }) }
+# kv holds timestamps and schema_version gains a row per new migration; every other table must match.
+function Tables($file) { @(Get-Content $file | Where-Object { $_ -match '^table ' -and $_ -notmatch '^table (kv|schema_version) ' }) }
 
-function SameData($report, $label) {
-    $before = Tables "$t\before.txt"
-    $diff = Compare-Object $before (Tables $report)
+# Compares the tables in the baseline; a newer version may add tables of its own.
+function SameData($report, $label, $baseline = "$t\installed.txt") {
+    $before = Tables $baseline
+    $names = @($before | ForEach-Object { ($_ -split ' ')[1] })
+    $after = @(Tables $report | Where-Object { $names -contains ($_ -split ' ')[1] })
+    $diff = Compare-Object $before $after
     if ($diff -or $before.Count -lt 5) { $diff | Format-Table | Out-String | Write-Host; Fail "$label`: data differs from before the update" }
     else { Write-Host "$label`: all $($before.Count) tables identical (row counts and checksums)" }
 }
@@ -71,8 +76,14 @@ Write-Host "---- data written by $PrevVersion"; Get-Content "$t\before.txt"
 # ---- 2. One manual install of this version over it.
 Install $NewMsi "new"
 $r = SelfTest "manual"
-SameData $r "Manual install"
+SameData $r "Manual install" "$t\before.txt"
 if (-not (Select-String -Path $r -Pattern '^backup .+before-' -Quiet)) { Fail "No backup was taken on the first start of the new version" }
+if (-not (Select-String -Path $r -Pattern '^table acc_accounts ' -Quiet)) { Fail "The accounts tables were not created" }
+# Books on top: supplier commission auto-posted from the bills plus manual vouchers. From here on every
+# table, accounts included, must survive the in-app update and the downgrade attempts.
+E2eData "seed-accounts"
+E2eData "snapshot $slash/installed.txt"
+Write-Host "---- data after the manual install and accounts work"; Get-Content "$t\installed.txt"
 
 # ---- 3. The in-app update to the next version from a local feed.
 $feed = "$t\feed"
@@ -126,16 +137,17 @@ E2eData "duplicates"
 
 # ---- 4. Downgrades. jpackage MSIs let an older installer replace a newer app, so the protection is the
 #      app's start-up guard (1.3.0+): it refuses data last opened by a newer version before starting
-#      PostgreSQL. 1.2.1 predates the guard; with the same schema it must still leave the data intact.
+#      PostgreSQL, so the previous release must leave the data intact too.
 Install $NewMsi "downgrade"
 $refused = "$t\self-test-downgrade.txt"
 $run = Start-Process (AppExe) -ArgumentList "--self-test", "`"$refused`"" -Wait -PassThru
-Write-Host "---- older 1.3.0 started on $NextVersion data (exit $($run.ExitCode))"; Get-Content $refused | Select-Object -First 8 | Out-String | Write-Host
+Write-Host "---- older build started on $NextVersion data (exit $($run.ExitCode))"; Get-Content $refused | Select-Object -First 8 | Out-String | Write-Host
 if ($run.ExitCode -eq 0 -or -not (Select-String -Path $refused -Pattern 'newer than this version' -Quiet)) { Fail "An older app opened data last used by $NextVersion" }
 else { Write-Host "Downgrade refused: the older app did not open the data." }
 Install $prev "prev-again"
 $run = Start-Process (AppExe) -ArgumentList "--self-test", "`"$t\self-test-prev-again.txt`"" -Wait -PassThru
-Write-Host "---- $PrevVersion (no guard) started on $NextVersion data (exit $($run.ExitCode))"
+Write-Host "---- $PrevVersion started on $NextVersion data (exit $($run.ExitCode))"
+if ($run.ExitCode -eq 0) { Fail "$PrevVersion opened data last used by $NextVersion" }
 Install "$feed\$name" "reinstall"
 $again = SelfTest "reinstalled"
 if (-not (Select-String -Path $again -Pattern "^app $([regex]::Escape($NextVersion))$" -Quiet)) { Fail "Reinstalling $NextVersion did not bring it back" }

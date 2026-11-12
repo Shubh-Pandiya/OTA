@@ -4,6 +4,8 @@ import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.SessionStore
 import com.example.otaapplication.cloud.SupabaseAuth
 import com.example.otaapplication.cloud.SupabaseConfig
+import com.ota.desktop.accounts.AccountReports
+import com.ota.desktop.accounts.AccountsStore
 import com.ota.desktop.dash.Analytics
 import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.Numbers
@@ -28,12 +30,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.launch
 
 /** Everything the screens use: the local database, stores, cloud sign-in and background sync. */
+@OptIn(FlowPreview::class)
 class AppContext internal constructor(private val server: EmbeddedDb, val db: Db) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val kv = Kv(db)
@@ -51,6 +56,10 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val payments = PaymentStore(db, ::changed)
     val analytics = Analytics(db, orders, payments)
     val export = DataExport(orders, payments, catalog, analytics)
+
+    /** The agency's own books: local only, so edits refresh the screens without waking sync. */
+    val accounts = AccountsStore(db, ::localChanged)
+    val accountReports = AccountReports(db, accounts, payments)
     val engine = SyncEngine(
         db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers,
         onAdviceNumbered = { com.ota.desktop.pdf.AdvicePdf.write(it) }
@@ -70,6 +79,10 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
         if (started) scheduler.poke()
     }
 
+    private fun localChanged() {
+        _revision.update { it + 1 }
+    }
+
     fun start() {
         started = true
         engine.refreshPending()
@@ -84,6 +97,10 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
                     _staff.value = engine.cachedStaff()
                 }
             }
+        }
+        scope.launch(Dispatchers.IO) {
+            // Commission follows the bills: re-post after edits settle (idempotent; a no-op when nothing changed).
+            revision.debounce(1500).collect { runCatching { accounts.reconcileCommission() } }
         }
     }
 

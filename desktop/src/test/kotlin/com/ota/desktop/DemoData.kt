@@ -11,6 +11,12 @@ import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.Party
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentMode
+import com.ota.desktop.accounts.AccountsStore
+import com.ota.desktop.accounts.PartyKind
+import com.ota.desktop.accounts.Paise
+import com.ota.desktop.accounts.VType
+import com.ota.desktop.accounts.VoucherDraft
+import com.ota.desktop.accounts.VoucherLine
 import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.Numbers
 import com.ota.desktop.data.OrderStore
@@ -163,5 +169,45 @@ class DemoData(val db: Db, val today: LocalDate = LocalDate.of(2026, 11, 8)) {
         }
         clock = today
         return this
+    }
+
+    /** Books on top of [seed]: supplier commission rates, opening balances and a few months of vouchers. */
+    fun seedAccounts(): AccountsStore {
+        val books = AccountsStore(db)
+        books.reconcileCommission(today)
+        val rates = listOf(2.0, 1.5, 2.5, 1.0)
+        suppliers.forEachIndexed { i, (n, _) -> books.partyAccount(PartyKind.SUPPLIER, n)?.let { books.setCommission(it.id, rates[i]) } }
+        fun sys(key: String) = books.accountBySystemKey(key)!!
+        val cash = sys("cash"); val bank = sys("bank"); val capital = sys("capital")
+        books.saveAccount(cash.copy(opening = Paise.of(35_000.0)))
+        books.saveAccount(bank.copy(opening = Paise.of(4_15_000.0)))
+        books.saveAccount(capital.copy(opening = -Paise.of(4_50_000.0)))
+        fun v(type: VType, date: LocalDate, narration: String, vararg lines: Triple<String, Double, Double>) = books.saveVoucher(
+            VoucherDraft(null, type, date, narration, lines.map { (a, dr, cr) -> VoucherLine(a, Paise.of(dr), Paise.of(cr)) })
+        )
+        val fy = LocalDate.of(2026, 4, 1)
+        for (m in 0 until 8) {
+            val first = fy.plusMonths(m.toLong())
+            if (first.isAfter(today)) break
+            v(VType.PAYMENT, first.plusDays(4), "Shop rent for ${first.month.name.lowercase().replaceFirstChar { it.uppercase() }}",
+                Triple(sys("rent").id, 8_000.0, 0.0), Triple(bank.id, 0.0, 8_000.0))
+            v(VType.PAYMENT, first.plusDays(6), "Staff salaries",
+                Triple(sys("salaries").id, 11_500.0, 0.0), Triple(bank.id, 0.0, 11_500.0))
+            v(VType.PAYMENT, first.plusDays(9), "Electricity and phone bills",
+                Triple(sys("electricity").id, 1_840.0, 0.0), Triple(sys("telephone").id, 699.0, 0.0), Triple(cash.id, 0.0, 2_539.0))
+            if (m % 2 == 1) v(VType.CONTRA, first.plusDays(12), "Cash withdrawn for petty expenses",
+                Triple(cash.id, 10_000.0, 0.0), Triple(bank.id, 0.0, 10_000.0))
+        }
+        // Suppliers settle part of the commission they owe.
+        books.parties(PartyKind.SUPPLIER).filter { it.balance > 0 }.forEachIndexed { i, p ->
+            val paid = (p.balance * (if (i % 2 == 0) 0.6 else 0.35)).toLong() / 100 * 100
+            if (paid > 0) books.saveVoucher(VoucherDraft(null, VType.RECEIPT, today.minusDays(9L + i * 5), "Commission received by NEFT · ${p.account.name}",
+                listOf(VoucherLine(bank.id, paid, 0), VoucherLine(p.account.id, 0, paid))))
+        }
+        v(VType.JOURNAL, today.minusDays(3), "Travel to Ahmedabad mill visit, paid by partner",
+            Triple(sys("travel").id, 6_250.0, 0.0), Triple(capital.id, 0.0, 6_250.0))
+        v(VType.PAYMENT, today.minusDays(1), "Diwali sweets and stationery",
+            Triple(sys("office").id, 3_120.0, 0.0), Triple(sys("printing").id, 860.0, 0.0), Triple(cash.id, 0.0, 3_980.0))
+        return books
     }
 }

@@ -6,7 +6,7 @@ package com.ota.desktop.db
  * stays exactly as it was. A database already beyond this app's migrations is refused untouched.
  */
 object Migrations {
-    private val files = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql")
+    private val files = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql", "V4__accounts.sql")
 
     class SchemaTooNew(val found: Int, val supported: Int) : IllegalStateException("Database version $found is newer than this app ($supported)")
 

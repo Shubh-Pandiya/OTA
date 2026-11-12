@@ -185,6 +185,14 @@ current database is kept beside it as `pgdata-before-restore-<time>`.
 - A Home screen: today's orders, bills still to receive, outstanding and this month's receipts, dues by age, the oldest dues, recent orders and advices, and quick actions.
 - Everything the phone does: orders with units and PDFs, bills (with their own item lines, added from an order or on their own), payment advices with claim / defect deductions and PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. Order numbers come from the shared financial-year counter (`26270001`, …); an order saved offline waits for its number until the next sync. Advice numbers use the signed-in staff digit. Advice images stay on the phone.
 - Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D./claims), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
+- **Accounts** (admin laptop only): the agency's own double-entry books.
+  - A default chart of accounts you can edit, and a ledger for every catalog buyer and supplier.
+  - Journal, payment, receipt and contra vouchers with balanced Dr/Cr lines, and an audit log of every add, edit and delete.
+  - Commission is set as a % per supplier and posted automatically from every bill (Dr supplier, Cr Commission income), at most one voucher per bill. It is re-posted when a bill is edited and removed when the bill is deleted.
+  - Changing a supplier's % re-posts all of that supplier's bills, because the rate has no effective date.
+  - Ledgers with a date range, opening and running balance, and drill-down to the voucher or bill. For a party there is also a bills & advices statement.
+  - Reports in tables: day book, trial balance, profit & loss, balance sheet, commission by supplier and month (earned vs received), party ageing, trade outstanding (bills) and cash/bank book. Export them to XLSX or PDF (₹ headers, 2 decimals).
+  - Accounts never sync and are never archived or purged. They live in the local database, so they are in every update backup.
 - Excel export (`.xlsx`): all data (one sheet per table), the dashboard numbers, the current filtered view of any list, and per-area workbooks.
 - Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges archived rows older than the retention period, on connect and every 6 hours. The admin can change the retention days and storage limit under *Sync & Cloud*. Nothing is purged until this laptop holds it.
 
@@ -205,6 +213,6 @@ Windows installers are built by [`.github/workflows/desktop.yml`](.github/workfl
 update test ([`desktop/ci/update-e2e.ps1`](desktop/ci/update-e2e.ps1)): it installs the previous public release
 and fills it with realistic and unsynced data. Next it installs this build over it, then updates in-app to a
 newer build served from a local feed. Every table's row count and checksum must be unchanged, with no
-duplicate ids or numbers and two backups taken. An older 1.3.0 app installed over it must refuse to open the data, and uninstalling must keep it. Pushing a
+duplicate ids or numbers and two backups taken. The accounts books seeded after the first install must come through the in-app update unchanged too. An older 1.3.0 app installed over it must refuse to open the data, and uninstalling must keep it. Pushing a
 tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers and `SHA256SUMS.txt`
 as a GitHub Release, using `desktop/release-notes/<version>.md` as the notes (shown in the app's update prompt).

@@ -262,6 +262,17 @@ that matter for data safety are:
 - `app-version.properties` in the data folder records the last version and schema that opened
   the data. An older app refuses to open it.
 
+## Local-only accounts (desktop 1.4.0)
+
+The Accounts section's tables are on the admin laptop only. They have no cloud tables, columns or migrations, and neither app pushes or pulls them.
+
+- `V4__accounts.sql` adds `acc_accounts`, `acc_vouchers`, `acc_voucher_lines` and `acc_audit` to the local database.
+- Archive/purge never touches them. They are inside `pgdata`, so every update backup includes them.
+- Commission vouchers come from bills. Each one has its bill's id in `source_bill_id`, which a unique index limits to one voucher per bill, ever.
+  - Reconciling after every sync and bill edit is idempotent. It rewrites a voucher only when the bill's amount, date, supplier or the supplier's % changed, and it deletes the voucher when the bill is deleted.
+  - A pulled bill (phone or desktop) is posted the same way as one entered here.
+- A party ledger is matched to bills by its normalised name (case and spacing ignored).
+
 ## Local-only Home features
 
 Weather, the roaming cat, and to-dos/reminders never sync, and they have no cloud tables or columns.

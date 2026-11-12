@@ -1,5 +1,11 @@
 package com.ota.desktop
 
+import com.ota.desktop.accounts.AccountsExport
+import com.ota.desktop.accounts.PartyKind
+import com.ota.desktop.accounts.ReportKind
+import com.ota.desktop.accounts.VType
+import com.ota.desktop.ui.AccTab
+import java.time.LocalDate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ImageComposeScene
@@ -37,6 +43,7 @@ fun main(args: Array<String>) {
     val out = File(args.firstOrNull() ?: "build/screenshots").apply { mkdirs() }
     val db = TestDb.fresh()
     val demo = DemoData(db).seed()
+    val books = demo.seedAccounts()
     Kv(db).apply {
         this["staff.code"] = "1"
         this["staff.name"] = "Shubham"
@@ -99,6 +106,30 @@ fun main(args: Array<String>) {
     shot("08-buyers-suppliers", at(Section.CATALOG))
     shot("09-sync-cloud", at(Section.SYNC))
     shot("10-export", at(Section.EXPORT))
+
+    fun acc(tab: AccTab, accountId: String? = null, report: ReportKind? = null, voucherId: String? = null) =
+        at(Section.ACCOUNTS, Target.Accounts(tab, accountId, report, voucherId))
+    val vouchers = books.vouchers()
+    val payment = vouchers.first { it.type == VType.PAYMENT && it.narration.startsWith("Electricity") }
+    val commission = vouchers.first { it.type == VType.COMMISSION }
+    val raymond = books.partyAccount(PartyKind.SUPPLIER, "Raymond Ltd")!!
+    shot("20-accounts-vouchers", acc(AccTab.VOUCHERS))
+    shot("20b-accounts-payment-voucher", acc(AccTab.VOUCHERS, voucherId = payment.id))
+    shot("20d-accounts-commission-voucher", acc(AccTab.VOUCHERS, voucherId = commission.id))
+    shot("21-accounts-supplier-ledger", acc(AccTab.LEDGERS, raymond.id))
+    shot("21b-accounts-bank-ledger", acc(AccTab.LEDGERS, books.accountBySystemKey("bank")!!.id))
+    shot("21c-accounts-ledger-picker", acc(AccTab.LEDGERS))
+    ReportKind.entries.forEachIndexed { i, k ->
+        shot("22${'a' + i}-report-${k.name.lowercase().replace('_', '-')}", acc(AccTab.REPORTS, report = k), height = 1150)
+    }
+    shot("23-accounts-parties-commission", acc(AccTab.PARTIES))
+    shot("24-accounts-chart", acc(AccTab.CHART))
+    shot("25-accounts-audit", acc(AccTab.AUDIT))
+    File(out, "exports").mkdirs()
+    val reports = ReportKind.entries.map { k -> if (k.asOf) app.accountReports.report(k, null, LocalDate.now()) else app.accountReports.report(k, LocalDate.of(2026, 4, 1), LocalDate.of(2027, 3, 31)) }
+    AccountsExport.xlsx(File(out, "exports/OTA accounts.xlsx"), reports)
+    reports.forEach { AccountsExport.pdf(File(out, "exports/${it.title.replace(Regex("[^A-Za-z0-9 &]"), "").trim()}.pdf"), it) }
+    AccountsExport.pdf(File(out, "exports/Ledger Raymond Ltd.pdf"), app.accountReports.ledger(raymond.id, LocalDate.of(2026, 4, 1), LocalDate.of(2027, 3, 31)))
 
     val notes = """
         ## What's new

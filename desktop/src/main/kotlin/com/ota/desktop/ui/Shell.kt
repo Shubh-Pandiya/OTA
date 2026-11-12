@@ -88,6 +88,7 @@ enum class Section(val title: String, val icon: ImageVector) {
     BILLS("Bills", Icons.Default.List),
     ADVICES("Payment Advices", Icons.Default.Send),
     CATALOG("Buyers & Suppliers", Icons.Default.AccountBox),
+    ACCOUNTS("Accounts", AccountsIcon),
     SYNC("Sync & Cloud", Icons.Default.Refresh),
     EXPORT("Export", Icons.Default.Share)
 }
@@ -100,6 +101,13 @@ sealed interface Target {
     data class NewAdvice(val billId: String?) : Target
     data object NewOrder : Target
     data object NewBill : Target
+    /** Accounts opened on a tab, optionally with a ledger, a report or a voucher showing. */
+    data class Accounts(
+        val tab: AccTab,
+        val accountId: String? = null,
+        val report: com.ota.desktop.accounts.ReportKind? = null,
+        val voucherId: String? = null
+    ) : Target
 }
 
 class Navigator {
@@ -174,6 +182,7 @@ fun AppShell(app: AppContext, nav: Navigator = remember { Navigator() }) {
                             Section.BILLS -> BillsScreen()
                             Section.ADVICES -> AdvicesScreen()
                             Section.CATALOG -> CatalogScreen()
+                            Section.ACCOUNTS -> AccountsScreen()
                             Section.SYNC -> SyncScreen()
                             Section.EXPORT -> ExportScreen()
                         }

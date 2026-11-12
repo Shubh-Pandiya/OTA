@@ -9,11 +9,12 @@ import java.nio.file.Files
 import kotlin.system.exitProcess
 
 /**
- * CI's update test: `gradlew e2eData --args="seed|snapshot <out>|duplicates"` over the installed
+ * CI's update test: `gradlew e2eData --args="seed|seed-accounts|snapshot <out>|duplicates"` over the installed
  * app's data folder (or `OTA_E2E_HOME`). `seed` fills it with realistic work, part synced and part
  * still waiting to upload, including an order without its number; `snapshot` writes every table's
  * row count and checksum in the self-test's `table <name> <count> <md5>` format; `duplicates` fails
- * on any repeated id or number. Uses the schema the installed version created (no migrations).
+ * on any repeated id or number. `seed-accounts` (1.4.0+ schema) adds supplier commission and vouchers.
+ * Uses the schema the installed version created (no migrations).
  */
 fun main(args: Array<String>) {
     val mode = args.getOrNull(0)
@@ -40,17 +41,17 @@ fun main(args: Array<String>) {
                     }
                     println("seeded: " + DataSnapshot.take(db).filterKeys { it != "kv" })
                 }
+                "seed-accounts" -> {
+                    val books = DemoData(db).seedAccounts()
+                    println("accounts: ${books.accounts().size}, vouchers: ${books.vouchers().size}")
+                }
                 "snapshot" -> {
                     val text = DataSnapshot.take(db).entries.joinToString("") { (t, s) -> "table $t $s\n" }
                     File(args.getOrNull(1) ?: error("snapshot needs an output file")).writeText(text)
                     print(text)
                 }
                 "duplicates" -> {
-                    val n = db.read { c ->
-                        listOf("orders" to "order_no", "payment_advices" to "advice_no", "orders" to "id", "bills" to "id", "payment_advices" to "id").sumOf { (t, col) ->
-                            c.one("select count(*) from (select $col from $t where $col::text <> '' group by $col having count(*) > 1) d") { it.getInt(1) } ?: 0
-                        }
-                    }
+                    val n = duplicates(db)
                     println("duplicates $n")
                     if (n > 0) code = 1
                 }
@@ -60,4 +61,17 @@ fun main(args: Array<String>) {
     }
     bin.deleteRecursively()
     exitProcess(code)
+}
+
+/** Repeated ids or numbers across the synced tables and, on 1.4.0+ data, the local books. */
+fun duplicates(db: Db): Int {
+    return db.read { c ->
+        val books = c.one("select count(*) from information_schema.tables where table_name = 'acc_vouchers'") { it.getInt(1) } == 1
+        val keys = listOf("orders" to "order_no", "payment_advices" to "advice_no", "orders" to "id", "bills" to "id", "payment_advices" to "id") +
+            // One commission voucher per bill, and voucher numbers never repeat.
+            (if (books) listOf("acc_vouchers" to "voucher_no", "acc_vouchers" to "source_bill_id", "acc_accounts" to "party_type || ':' || party_key") else emptyList())
+        keys.sumOf { (t, col) ->
+            c.one("select count(*) from (select $col from $t where ($col) is not null and ($col)::text <> '' group by $col having count(*) > 1) d") { it.getInt(1) } ?: 0
+        }
+    }
 }

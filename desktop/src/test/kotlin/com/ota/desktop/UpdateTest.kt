@@ -190,13 +190,13 @@ class UpdateTest {
     fun aFailedMigrationChangesNothing() {
         val db = TestDb.fresh()
         db.read { c -> c.createStatement().use { it.execute("insert into kv (key, value) values ('k', 'v')") } }
-        val steps = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql").map { n ->
+        val steps = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql", "V4__accounts.sql").map { n ->
             n to { Migrations::class.java.getResource("/db/$n")!!.readText() }
         }
-        val bad = "V4__bad.sql" to { "create table new_stuff (x int); update kv set value = 'changed'; select no_such_column from kv;" }
+        val bad = "V5__bad.sql" to { "create table new_stuff (x int); update kv set value = 'changed'; select no_such_column from kv;" }
         assertFailsWith<Exception> { Migrations.run(db, steps + bad) }
         db.read { c ->
-            assertEquals(3, c.one("select max(version) from schema_version") { it.getInt(1) })
+            assertEquals(4, c.one("select max(version) from schema_version") { it.getInt(1) })
             assertEquals("v", c.one("select value from kv where key = 'k'") { it.getString(1) })
             assertEquals(0, c.one("select count(*) from information_schema.tables where table_name = 'new_stuff'") { it.getInt(1) })
         }
