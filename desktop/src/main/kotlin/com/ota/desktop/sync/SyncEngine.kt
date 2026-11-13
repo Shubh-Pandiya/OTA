@@ -12,9 +12,11 @@ import com.example.otaapplication.cloud.PostgrestCatalogApi
 import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.PostgrestOrderApi
 import com.example.otaapplication.cloud.SupabaseAuth
+import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PendingRow
+import com.example.otaapplication.data.SyncIds
 import com.example.otaapplication.data.SyncTime
 import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.LocalSyncTable
@@ -23,6 +25,8 @@ import com.ota.desktop.data.OrderStore
 import com.ota.desktop.data.PaymentStore
 import com.ota.desktop.db.Db
 import com.ota.desktop.db.Kv
+import com.ota.desktop.db.one
+import com.ota.desktop.db.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +61,9 @@ data class SyncStatus(
  *   asks the cloud to purge archived rows older than the retention window. A row is never archived
  *   unless its current cloud version is committed in the local database.
  */
+/** A sign-in that would mix test and real data on this laptop. */
+class DataModeConflict(message: String) : Exception(message)
+
 class SyncEngine(
     private val db: Db,
     private val kv: Kv,
@@ -85,7 +92,84 @@ class SyncEngine(
 
     fun cachedStaff(): StaffProfile? {
         val code = kv.int(KEY_STAFF_CODE) ?: return null
-        return StaffProfile(code, kv[KEY_STAFF_NAME].orEmpty(), kv.bool(KEY_STAFF_ADMIN))
+        return StaffProfile(code, kv[KEY_STAFF_NAME].orEmpty(), isAdmin())
+    }
+
+    /** Admins (archive, purge, retention, Accounts) are fixed by sign-in email, the same rule the cloud enforces. */
+    fun isAdmin(): Boolean = OtaAccounts.isAdmin(auth.session.value?.email)
+
+    /** Which data set this laptop holds; installs from before 1.5.0 hold real data. */
+    fun dataMode(): String = kv[KEY_DATA_MODE] ?: OtaAccounts.MODE_PRODUCTION
+
+    /** Commission is posted into the books from real bills only, never from test data. */
+    fun postingAllowed(): Boolean = dataMode() == OtaAccounts.MODE_PRODUCTION
+
+    /** On start: picks up the stored data set, so ids and PDF folders follow it. */
+    fun loadDataMode() {
+        if (kv[KEY_DATA_MODE] == null) auth.session.value?.let { kv[KEY_DATA_MODE] = OtaAccounts.dataMode(it.email) }
+        SyncIds.testMode = dataMode() == OtaAccounts.MODE_TEST
+    }
+
+    /**
+     * After a sign-in: test and real data never share a laptop. Moving to the test account needs a
+     * laptop without real data (the cloud keeps orders only for the retention days, so the laptop
+     * may hold the only copy, and the Accounts books are local only). Moving back to real data
+     * first drops the test copy. Throws [DataModeConflict] when the switch isn't safe.
+     */
+    suspend fun adoptDataMode(email: String) = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            val mode = OtaAccounts.dataMode(email)
+            val held = dataMode()
+            if (held != mode) {
+                checkDataMode(email)
+                wipeSynced(deleteTestFiles = held == OtaAccounts.MODE_TEST)
+            }
+            kv[KEY_DATA_MODE] = mode
+            SyncIds.testMode = mode == OtaAccounts.MODE_TEST
+        }
+        refreshPending()
+    }
+
+    /** Throws [DataModeConflict] when [email]'s data set can't replace this laptop's (checked before signing in too). */
+    fun checkDataMode(email: String) {
+        val mode = OtaAccounts.dataMode(email)
+        val held = dataMode()
+        if (held == mode) return
+        if (mode == OtaAccounts.MODE_TEST && liveRows() > 0) throw DataModeConflict(
+            "This laptop holds real business data, so the test account can't be used on it. " +
+                "Use the test account on a computer without real orders, bills, advices or accounts."
+        )
+        val pending = pendingCount()
+        if (pending > 0) throw DataModeConflict(
+            "This laptop has $pending unsynced change${if (pending == 1) "" else "s"} from " +
+                (if (held == OtaAccounts.MODE_TEST) "the test account" else "a staff account") + ". Sign in with that account and let it sync first."
+        )
+    }
+
+    /** Test account only: deletes its rows in the cloud, then this laptop's copy and its PDFs. */
+    suspend fun clearTestData(): Map<String, Int> = mutex.withLock {
+        check(OtaAccounts.isTest(auth.session.value?.email) && dataMode() == OtaAccounts.MODE_TEST) { "Only the test account can clear test data" }
+        val counts = orderApi.clearTestData()
+        withContext(Dispatchers.IO) { wipeSynced(deleteTestFiles = true) }
+        _status.update { it.copy(lastSyncAt = null, error = null, notices = emptyList(), pending = pendingCount()) }
+        counts
+    }
+
+    /** Live orders, bills, advices, catalog entries and journal vouchers on this laptop. */
+    internal fun liveRows(): Int = db.read { c ->
+        listOf("orders", "bills", "payment_advices", "buyers", "suppliers").sumOf { t ->
+            c.one("select count(*) from $t where not deleted") { it.getInt(1) } ?: 0
+        } + (c.one("select count(*) from acc_vouchers where not deleted") { it.getInt(1) } ?: 0)
+    }
+
+    /** Empties the synced tables and their sync cursors (never the Accounts books). */
+    private fun wipeSynced(deleteTestFiles: Boolean) {
+        db.tx { c ->
+            for (t in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", "buyers", "suppliers")) c.update("delete from $t")
+            c.update("delete from kv where key like 'cursor.%'")
+        }
+        kv.remove(KEY_LAST_SYNC, KEY_USAGE)
+        if (deleteTestFiles) com.ota.desktop.AppPaths.testDocuments.deleteRecursively()
     }
 
     /** Reads the staff row for the signed-in user and caches it, so numbering works offline. */
@@ -94,7 +178,7 @@ class SyncEngine(
         val body = client.call("GET", "staff?select=code,name,is_admin&user_id=eq.$userId")
         val array = JSONArray(body)
         val profile = if (array.length() == 0) null else array.getJSONObject(0).let {
-            StaffProfile(it.getInt("code"), if (it.isNull("name")) "" else it.optString("name"), it.optBoolean("is_admin"))
+            StaffProfile(it.getInt("code"), if (it.isNull("name")) "" else it.optString("name"), isAdmin())
         }
         withContext(Dispatchers.IO) {
             if (profile == null) clearStaff()
@@ -134,7 +218,7 @@ class SyncEngine(
             }
             syncCatalog()
             syncOrders(notices)
-            if (maintenance && staff?.admin == true) maintain()
+            if (maintenance && isAdmin()) maintain()
         } catch (e: CloudException) {
             full = e.storageFull
             error = when {
@@ -432,5 +516,6 @@ class SyncEngine(
         private const val KEY_LAST_MAINTENANCE = "maintenance.last"
         private const val KEY_LAST_PURGE = "maintenance.summary"
         private const val KEY_USAGE = "cloud.usage"
+        private const val KEY_DATA_MODE = "data.mode"
     }
 }

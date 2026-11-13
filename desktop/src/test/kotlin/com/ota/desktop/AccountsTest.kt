@@ -300,4 +300,12 @@ class AccountsTest {
         assertEquals(total[3], total[4], "trial balance totals agree")
         assertTrue(demoBooks.vouchers(type = VType.COMMISSION).size > 100)
     }
+
+    @Test
+    fun noCommissionIsPostedFromTestData() {
+        val testBooks = AccountsStore(db, postingAllowed = { false }) { changes++ }
+        bill("TB-1", 10_000.0)
+        assertFalse(testBooks.reconcileCommission(day).changed)
+        assertEquals(0, allCommissionRows())
+    }
 }

@@ -28,8 +28,13 @@ object AppPaths {
     val logs: File get() = File(home, "logs").apply { mkdirs() }
 
     /** PDFs go to Documents\OTA Orders, the same layout as on the phones. */
-    val documents: File by lazy {
+    private val realDocuments: File by lazy {
         System.getProperty("ota.documents")?.let { return@lazy File(it) }
         File(File(System.getProperty("user.home"), "Documents"), "OTA Orders")
     }
+
+    /** The test account's PDFs, kept apart so they never sit next to (or replace) real ones. */
+    val testDocuments: File get() = File(realDocuments, "Test data")
+
+    val documents: File get() = if (com.example.otaapplication.data.SyncIds.testMode) testDocuments else realDocuments
 }

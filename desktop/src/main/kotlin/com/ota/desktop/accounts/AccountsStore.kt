@@ -30,7 +30,12 @@ internal data class BookBill(val id: String, val no: String, val date: LocalDate
  * only (never synced). Commission is posted from bills by [reconcileCommission], which is idempotent:
  * one voucher per bill at most, rewritten only when the bill, its supplier or the supplier's % changed.
  */
-class AccountsStore(private val db: Db, private val onChange: () -> Unit = {}) {
+class AccountsStore(
+    private val db: Db,
+    /** False while the laptop holds the test account's data: test bills never reach the books. */
+    private val postingAllowed: () -> Boolean = { true },
+    private val onChange: () -> Unit = {}
+) {
     private val reconcileLock = Any()
 
     // ------------------------------------------------------------------------------ accounts
@@ -246,6 +251,7 @@ class AccountsStore(private val db: Db, private val onChange: () -> Unit = {}) {
      * buyer and supplier and every party named on a bill.
      */
     fun reconcileCommission(today: LocalDate = LocalDate.now()): ReconcileResult {
+        if (!postingAllowed()) return ReconcileResult()
         val result = synchronized(reconcileLock) {
             db.tx { c ->
                 c.exec("lock table acc_vouchers in share row exclusive mode")

@@ -15,7 +15,9 @@ import com.ota.desktop.db.Db
 import com.ota.desktop.db.EmbeddedDb
 import com.ota.desktop.db.Kv
 import com.ota.desktop.export.DataExport
+import com.example.otaapplication.data.OtaAccounts
 import com.ota.desktop.sync.CloudSettings
+import com.ota.desktop.sync.DataModeConflict
 import com.ota.desktop.sync.StaffProfile
 import com.ota.desktop.sync.SyncEngine
 import com.ota.desktop.sync.SyncScheduler
@@ -33,6 +35,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.launch
@@ -57,13 +62,22 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val analytics = Analytics(db, orders, payments)
     val export = DataExport(orders, payments, catalog, analytics)
 
-    /** The agency's own books: local only, so edits refresh the screens without waking sync. */
-    val accounts = AccountsStore(db, ::localChanged)
-    val accountReports = AccountReports(db, accounts, payments)
     val engine = SyncEngine(
         db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, numbers,
         onAdviceNumbered = { com.ota.desktop.pdf.AdvicePdf.write(it) }
-    )
+    ).also { it.loadDataMode() }
+
+    /** The agency's own books: local only, so edits refresh the screens without waking sync. */
+    val accounts = AccountsStore(db, postingAllowed = engine::postingAllowed, onChange = ::localChanged)
+    val accountReports = AccountReports(db, accounts, payments)
+
+    /** Admin (cloud clean-up, retention, Accounts): varun@ / shubham@, by sign-in email like the cloud's check. */
+    val admin: StateFlow<Boolean> = auth.session.map { OtaAccounts.isAdmin(it?.email) }
+        .stateIn(scope, SharingStarted.Eagerly, OtaAccounts.isAdmin(auth.session.value?.email))
+
+    /** The test account: its data is kept apart in the cloud and it can clear it. */
+    val testAccount: StateFlow<Boolean> = auth.session.map { OtaAccounts.isTest(it?.email) }
+        .stateIn(scope, SharingStarted.Eagerly, OtaAccounts.isTest(auth.session.value?.email))
     val scheduler = SyncScheduler(engine)
     val cloudSettings = CloudSettings(config, auth)
     val weather = DesktopWeather(kv)
@@ -105,10 +119,26 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     }
 
     suspend fun signIn(email: String, password: String) {
-        auth.signIn(email, password)
+        // Refuse before the network call, so a refused login never shows this laptop's data.
+        kotlinx.coroutines.withContext(Dispatchers.IO) { engine.checkDataMode(email) }
+        val session = auth.signIn(email, password)
+        try {
+            engine.adoptDataMode(session.email)
+        } catch (e: DataModeConflict) {
+            auth.signOut()
+            throw e
+        }
+        _revision.update { it + 1 }
         runCatching { engine.refreshStaff() }
         _staff.value = engine.cachedStaff()
         scheduler.poke()
+    }
+
+    /** Test account only: deletes everything it made, in the cloud and on this laptop. */
+    suspend fun clearTestData(): Map<String, Int> {
+        val counts = engine.clearTestData()
+        _revision.update { it + 1 }
+        return counts
     }
 
     suspend fun signOut() {

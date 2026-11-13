@@ -54,6 +54,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import com.example.otaapplication.data.OtaAccounts
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -182,7 +184,7 @@ fun AppShell(app: AppContext, nav: Navigator = remember { Navigator() }) {
                             Section.BILLS -> BillsScreen()
                             Section.ADVICES -> AdvicesScreen()
                             Section.CATALOG -> CatalogScreen()
-                            Section.ACCOUNTS -> AccountsScreen()
+                            Section.ACCOUNTS -> if (app.admin.collectAsState().value) AccountsScreen() else HomeScreen()
                             Section.SYNC -> SyncScreen()
                             Section.EXPORT -> ExportScreen()
                         }
@@ -210,7 +212,10 @@ private fun Sidebar(app: AppContext, nav: Navigator) {
             }
         }
         Spacer(Modifier.height(22.dp))
-        Section.entries.forEach { s -> NavItem(s, nav.section == s) { nav.go(s) } }
+        val admin by app.admin.collectAsState()
+        // Accounts (the agency's own books) is for the admins only.
+        LaunchedEffect(admin) { if (!admin && nav.section == Section.ACCOUNTS) nav.go(Section.HOME) }
+        Section.entries.filter { admin || it != Section.ACCOUNTS }.forEach { s -> NavItem(s, nav.section == s) { nav.go(s) } }
         Spacer(Modifier.weight(1f))
 
         // Sync status
@@ -251,7 +256,7 @@ private fun Sidebar(app: AppContext, nav: Navigator) {
             Column(Modifier.weight(1f)) {
                 Text(staff?.name?.ifBlank { null } ?: session?.email.orEmpty(), color = Color.White, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    staff?.let { "Staff ${it.code}" + if (it.admin) " · Admin" else "" } ?: "No staff code",
+                    staff?.let { "Staff ${it.code}" + if (admin) " · Admin" else if (OtaAccounts.isTest(session?.email)) " · Test" else "" } ?: "No staff code",
                     color = Brand.SidebarText.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall
                 )
             }

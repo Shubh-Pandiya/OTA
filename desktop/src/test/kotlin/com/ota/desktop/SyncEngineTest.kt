@@ -17,8 +17,12 @@ import com.ota.desktop.data.OrderStore
 import com.ota.desktop.data.PaymentStore
 import com.ota.desktop.db.Db
 import com.ota.desktop.db.Kv
+import com.ota.desktop.db.one
 import com.ota.desktop.sync.CloudSettings
 import com.ota.desktop.sync.SyncEngine
+import com.ota.desktop.sync.DataModeConflict
+import com.example.otaapplication.data.OtaAccounts
+import com.example.otaapplication.data.SyncIds
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -52,7 +56,7 @@ class SyncEngineTest {
         kv = Kv(db)
         config = SupabaseConfig(cloud.url, "publishable")
         auth = SupabaseAuth(config, SessionStore(kv))
-        auth.signIn("test@ota.com", "x")
+        auth.signIn("shubham@ota.com", "x")
         val numbers = Numbers(db, kv) { day }
         catalog = CatalogStore(db)
         orders = OrderStore(db)
@@ -61,7 +65,9 @@ class SyncEngineTest {
     }
 
     @AfterTest
-    fun tearDown() = cloud.close()
+    fun tearDown() { SyncIds.testMode = false; cloud.close() }
+
+    private fun count(sql: String) = db.read { c -> c.one(sql) { it.getInt(1) } }!!
 
     private fun order(buyer: String = "Ram Traders") = OrderFormData(
         date = "10-11-2026", buyer = buyer, supplier = "Shiv Mills", items = listOf(OrderItem("1", "Shirting", "100", "120", "M"))
@@ -203,7 +209,9 @@ class SyncEngineTest {
 
     @Test
     fun nonAdminNeverArchivesOrPurges() = runBlocking {
-        cloud.staff = JSONObject().put("code", 4).put("name", "Test").put("is_admin", false)
+        // Admin is decided by the sign-in email; a staff row flagged is_admin doesn't make someone admin.
+        auth.signIn("staff@ota.com", "x")
+        assertEquals(false, engine.isAdmin())
         numbered(order())
         engine.sync(maintenance = true)
         assertTrue(cloud.requests.none { it.contains("ota_mark_archived") || it.contains("ota_purge") })
@@ -235,5 +243,72 @@ class SyncEngineTest {
         cloud.staff = JSONObject().put("code", 4).put("is_admin", false)
         assertFailsWith<CloudException> { settings.update(7, 500, 80) }
         assertEquals(15, cloud.settings.getInt("retention_days"))
+    }
+
+    @Test
+    fun adminFollowsTheSignInEmail() = runBlocking {
+        assertTrue(engine.isAdmin())
+        auth.signIn("varun@ota.com", "x"); assertTrue(engine.isAdmin())
+        auth.signIn("testuser1@ota.com", "x"); assertEquals(false, engine.isAdmin())
+    }
+
+    @Test
+    fun testLoginIsRefusedOnALaptopWithRealData() = runBlocking {
+        numbered(order())
+        engine.sync()
+        assertFailsWith<DataModeConflict> { engine.checkDataMode("testuser1@ota.com") }
+        assertFailsWith<DataModeConflict> { engine.adoptDataMode("testuser1@ota.com") }
+        assertEquals(OtaAccounts.MODE_PRODUCTION, engine.dataMode())
+        assertEquals(false, SyncIds.testMode)
+        assertEquals(1, orders.list().size, "real data is never wiped for a test login")
+        assertTrue(engine.postingAllowed())
+    }
+
+    @Test
+    fun switchingBackToRealDataDropsTheTestCopyButKeepsTheBooks() = runBlocking {
+        val chart = count("select count(*) from acc_accounts")
+        assertTrue(chart > 0, "chart $chart")
+        auth.signIn("testuser1@ota.com", "x")
+        engine.adoptDataMode("testuser1@ota.com")
+        assertEquals(OtaAccounts.MODE_TEST, engine.dataMode())
+        assertTrue(SyncIds.testMode, "test mode")
+        assertEquals(false, engine.postingAllowed(), "test bills never reach the books")
+        numbered(order())
+        // Unsynced test changes block the switch, so nothing is lost silently.
+        assertFailsWith<DataModeConflict> { engine.checkDataMode("shubham@ota.com") }
+        cloud.put("orders", cloudOrder("33333333-3333-4333-8333-333333333333", "26270002"))
+        engine.sync()
+        assertEquals(2, orders.list().size)
+        assertTrue(count("select count(*) from kv where key like 'cursor.%'") > 0, "cursors")
+
+        auth.signIn("shubham@ota.com", "x")
+        engine.adoptDataMode("shubham@ota.com")
+        assertEquals(OtaAccounts.MODE_PRODUCTION, engine.dataMode())
+        assertEquals(false, SyncIds.testMode)
+        assertTrue(orders.list().isEmpty())
+        assertEquals(0, count("select count(*) from kv where key like 'cursor.%'"), "the next sync pulls real data from scratch")
+        assertEquals(chart, count("select count(*) from acc_accounts"), "Accounts are never wiped")
+    }
+
+    @Test
+    fun onlyTheTestAccountCanClearAndItEmptiesCloudAndLaptop() = runBlocking {
+        assertFailsWith<IllegalStateException> { engine.clearTestData() }
+        assertEquals(0, cloud.clearCalls)
+
+        auth.signIn("testuser1@ota.com", "x")
+        engine.adoptDataMode("testuser1@ota.com")
+        val o = numbered(order())
+        orders.attachBill(listOf(o.id), "T-1", BillDetails(amount = 100.0))
+        engine.sync()
+        assertEquals(1, cloud.table("orders").size)
+
+        val counts = engine.clearTestData()
+        assertEquals(1, cloud.clearCalls)
+        assertEquals(1, counts["orders"])
+        assertTrue(cloud.table("orders").isEmpty() && cloud.table("bills").isEmpty())
+        assertTrue(orders.list().isEmpty())
+        assertEquals(0, count("select count(*) from bills"))
+        assertEquals(0, engine.status.value.pending)
+        assertEquals(OtaAccounts.MODE_TEST, engine.dataMode(), "still the test laptop")
     }
 }

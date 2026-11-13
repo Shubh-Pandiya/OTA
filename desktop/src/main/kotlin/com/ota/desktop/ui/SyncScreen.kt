@@ -52,8 +52,11 @@ fun SyncScreen() {
     val status by app.engine.status.collectAsState()
     val staff by app.staff.collectAsState()
     val session by app.auth.session.collectAsState()
-    val admin = staff?.admin == true
+    val admin by app.admin.collectAsState()
+    val testAccount by app.testAccount.collectAsState()
     val u = status.usage
+    var confirmClear by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         PageHeader("Sync & Cloud", "This laptop keeps every record. The cloud only carries recent data between the phones and this laptop.") {
@@ -64,6 +67,19 @@ fun SyncScreen() {
                 if (status.running) CircularProgressIndicator(Modifier.padding(end = 8.dp).width(16.dp).height(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                 IconText(Icons.Default.Refresh, if (status.running) "Syncing…" else "Sync now")
             }
+        }
+        if (testAccount) {
+            Banner(
+                "Test account. Everything made here is test data: only this login sees it, it has its own order and advice numbers, " +
+                    "and it never counts in real totals, Insights or Accounts. Its PDFs go to ${AppPaths.testDocuments.path}.",
+                Brand.Blue
+            ) {
+                OutlinedButton(enabled = !clearing && !status.running, onClick = { confirmClear = true }) {
+                    if (clearing) CircularProgressIndicator(Modifier.padding(end = 8.dp).width(16.dp).height(16.dp), strokeWidth = 2.dp, color = Brand.Red)
+                    Text("Clear all my test data", color = Brand.Red)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
         }
         if (status.storageFull) {
             Banner("The cloud database is full or read-only. Changes stay safely on this laptop and are uploaded once space is freed. Run clean-up or lower the retention days.", Brand.Red)
@@ -92,7 +108,7 @@ fun SyncScreen() {
             }
             Panel(Modifier.weight(1f), title = "Account") {
                 LabelValue("Signed in as", session?.email.orEmpty())
-                LabelValue("Staff", staff?.let { "${it.name.ifBlank { "Staff" }} · code ${it.code}" + if (it.admin) " · Admin" else "" } ?: "Unknown until the first sync")
+                LabelValue("Staff", staff?.let { "${it.name.ifBlank { "Staff" }} · code ${it.code}" + if (admin) " · Admin" else if (testAccount) " · Test account" else "" } ?: "Unknown until the first sync")
                 LabelValue("Last clean-up result", status.lastPurge.orEmpty())
                 LabelValue("Local data folder", AppPaths.home.path)
                 LabelValue("PDF folder", AppPaths.documents.path)
@@ -112,7 +128,7 @@ fun SyncScreen() {
         Spacer(Modifier.height(14.dp))
         if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent)
         else Panel(Modifier.fillMaxWidth(), title = "Cloud settings") {
-            Text("Only the admin can change the retention days and run the cloud clean-up.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Cloud clean-up and the retention days are managed by the admins (Varun and Shubham).", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (status.notices.isNotEmpty()) {
             Spacer(Modifier.height(14.dp))
@@ -122,7 +138,33 @@ fun SyncScreen() {
         }
         Spacer(Modifier.height(24.dp))
     }
+
+    if (confirmClear) ClearTestDataDialog(onDismiss = { confirmClear = false }) {
+        confirmClear = false
+        clearing = true
+        scope.launch {
+            try {
+                val removed = app.clearTestData().values.sum()
+                toast("Cleared $removed test row${if (removed == 1) "" else "s"} from the cloud and emptied this laptop")
+            } catch (e: Exception) {
+                toast("Couldn't clear test data: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                clearing = false
+            }
+        }
+    }
 }
+
+@Composable
+internal fun ClearTestDataDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmDialog(
+    title = "Clear all test data?",
+    text = "Deletes every order, bill, payment advice and catalog entry made with the test account, in the cloud and on this laptop, " +
+        "including the test PDFs. Real business data and the Accounts books are not touched. This can't be undone.",
+    confirm = "Clear",
+    danger = true,
+    onDismiss = onDismiss,
+    onConfirm = onConfirm
+)
 
 @Composable
 private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?) {

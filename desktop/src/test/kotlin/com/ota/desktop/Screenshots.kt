@@ -17,6 +17,7 @@ import com.ota.desktop.data.BillFilter
 import com.ota.desktop.data.AdviceFilter
 import com.ota.desktop.db.Kv
 import com.ota.desktop.ui.AppShell
+import com.ota.desktop.ui.ClearTestDataDialog
 import com.ota.desktop.ui.LocalApp
 import com.ota.desktop.ui.Navigator
 import com.ota.desktop.ui.OtaTheme
@@ -48,6 +49,7 @@ fun main(args: Array<String>) {
         this["staff.code"] = "1"
         this["staff.name"] = "Shubham"
         this["staff.admin"] = "true"
+        this["auth.session"] = session("shubham@ota.com")
         this["sync.last"] = System.currentTimeMillis().minus(4 * 60_000).toString()
         this["maintenance.last"] = System.currentTimeMillis().minus(3 * 3_600_000).toString()
         this["maintenance.summary"] = "Archived 38 rows, purged 21 orders and 9 advices older than 30 days"
@@ -69,11 +71,11 @@ fun main(args: Array<String>) {
     // One order saved while offline, waiting for its number.
     val pending = demo.orders.create(demo.orders.list().first().data.copy(remarks = "Saved offline"), "")
 
-    fun shot(name: String, nav: Navigator? = null, height: Int = 1000, content: (@Composable () -> Unit)? = null) {
+    fun shot(name: String, nav: Navigator? = null, height: Int = 1000, ctx: AppContext = app, content: (@Composable () -> Unit)? = null) {
         val scene = ImageComposeScene(1600, height, Density(1.25f)) {
             OtaTheme {
-                CompositionLocalProvider(LocalApp provides app) {
-                    if (content != null) content() else AppShell(app, nav!!)
+                CompositionLocalProvider(LocalApp provides ctx) {
+                    if (content != null) content() else AppShell(ctx, nav!!)
                 }
             }
         }
@@ -147,6 +149,32 @@ fun main(args: Array<String>) {
     shot("11b-updating") { UpdatingScreen(app.updates.state.value) {} }
     app.updates.preview(UpdateState.Idle)
     shot("11c-sync-updates-panel", at(Section.SYNC), height = 1350)
+
+    // A staff laptop (not an admin): no Accounts, no clean-up or retention controls.
+    Kv(db)["auth.session"] = session("staff@ota.com")
+    val staffApp = AppContext(TestDb.server, db)
+    shot("30-non-admin-home", at(Section.HOME), ctx = staffApp)
+    shot("31-non-admin-sync", at(Section.SYNC), ctx = staffApp, height = 1350)
+
+    // The test account's laptop: test data only, with the clear button.
+    val testDb = TestDb.fresh()
+    DemoData(testDb).seed()
+    Kv(testDb).apply {
+        this["staff.code"] = "9"
+        this["staff.name"] = "Test user"
+        this["data.mode"] = "test"
+        this["auth.session"] = session("testuser1@ota.com")
+        this["sync.last"] = System.currentTimeMillis().minus(2 * 60_000).toString()
+        this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 30, 12.2).toJson()
+    }
+    val testApp = AppContext(TestDb.server, testDb)
+    shot("32-test-user-sync", at(Section.SYNC), ctx = testApp, height = 1350)
+    shot("33-test-user-clear-confirm", ctx = testApp) { AppShell(testApp, at(Section.SYNC)); ClearTestDataDialog({}) {} }
+    shot("34-test-user-home", at(Section.HOME), ctx = testApp)
+    com.example.otaapplication.data.SyncIds.testMode = false
     app.close()
     exitProcess(0)
 }
+
+private fun session(email: String) = org.json.JSONObject().put("access", "a").put("refresh", "r")
+    .put("expires", System.currentTimeMillis() + 3_600_000).put("user", "00000000-0000-0000-0000-000000000001").put("email", email).toString()

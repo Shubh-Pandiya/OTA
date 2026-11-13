@@ -30,6 +30,10 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     val adviceSerials = HashMap<String, Int>()
     /** When true, ota_allocate_order_no answers like the database at 9999 orders. */
     var orderLimitReached = false
+    /** The email the token endpoint answers with (follows the last password sign-in). */
+    var lastEmail = "test@ota.com"
+    /** Times ota_clear_test_data was called. */
+    var clearCalls = 0
     private var tick = 0L
     private val base = Instant.parse("2026-11-10T04:30:00Z")
     private val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSxxx").withZone(ZoneOffset.UTC)
@@ -68,7 +72,9 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     private fun handle(method: String, path: String, query: String, body: String): Pair<Int, String> {
         if (path.startsWith("/auth/v1/token")) {
             return 200 to JSONObject().put("access_token", "token").put("refresh_token", "refresh").put("expires_in", 3600)
-                .put("user", JSONObject().put("id", "00000000-0000-0000-0000-000000000003").put("email", "test@ota.com")).toString()
+                .put("user", JSONObject().put("id", "00000000-0000-0000-0000-000000000003")
+                    .put("email", body.takeIf { it.isNotBlank() }?.let { JSONObject(it).optString("email") }?.ifBlank { null } ?: lastEmail)).toString()
+                .also { body.takeIf { it.isNotBlank() }?.let { JSONObject(it).optString("email") }?.ifBlank { null }?.let { lastEmail = it } }
         }
         if (path == "/auth/v1/logout") return 204 to ""
         val name = path.removePrefix("/rest/v1/")
@@ -97,6 +103,12 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
             }
             name == "rpc/ota_mark_archived" -> markArchived(JSONObject(body))
             name == "rpc/ota_purge_archived_orders" -> purge()
+            name == "rpc/ota_clear_test_data" -> {
+                clearCalls++
+                val counts = JSONObject()
+                for ((t, rows) in tables) { counts.put(t, rows.size); rows.clear() }
+                200 to counts.toString()
+            }
             name == "app_settings" && method == "PATCH" -> {
                 if (staff?.optBoolean("is_admin") != true) 200 to "[]"
                 else { JSONObject(body).let { b -> b.keys().forEach { settings.put(it, b.get(it)) } }; 200 to JSONArray().put(settings).toString() }
