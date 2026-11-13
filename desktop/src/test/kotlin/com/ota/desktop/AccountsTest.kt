@@ -390,6 +390,8 @@ class AccountsTest {
         val all = exporter.export(req(*ExportSheet.entries.toTypedArray()), File(out, "OTA accounts export.xlsx")).single()
         ZipFile(all).use { z ->
             assertEquals(everything.size, z.entries().toList().count { it.name.startsWith("xl/worksheets/sheet") })
+            for (e in z.entries().toList().filter { it.name.endsWith(".xml") })
+                javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(z.getInputStream(e))
             assertTrue("₹" in z.getInputStream(z.getEntry("xl/styles.xml")).reader().readText())
             val sheet = z.getInputStream(z.getEntry("xl/worksheets/sheet1.xml")).reader().readText()
             assertTrue("<autoFilter ref=\"A4:" in sheet, sheet.take(600))

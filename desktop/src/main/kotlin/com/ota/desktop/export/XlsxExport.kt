@@ -23,7 +23,8 @@ data class SheetTable(
 /** Writes [SheetTable]s to an .xlsx with styled, frozen, filterable headers. Streams, so big exports stay light. */
 object XlsxExport {
     private const val MONEY_FORMAT = "[>=10000000]##\\,##\\,##\\,##0.00;[>=100000]##\\,##\\,##0.00;##,##0.00"
-    private const val RUPEE_FORMAT = "[>=10000000]\"₹\"##\\,##\\,##\\,##0.00;[>=100000]\"₹\"##\\,##\\,##0.00;\"₹\"##,##0.00"
+    // fastexcel writes the format code into an XML attribute unescaped, so it must not contain '"' or '<'.
+    private const val RUPEE_FORMAT = "[>=10000000]\\₹##\\,##\\,##\\,##0.00;[>=100000]\\₹##\\,##\\,##0.00;\\₹##,##0.00"
     private const val DATE_FORMAT = "dd-mm-yyyy"
 
     fun write(file: File, tables: List<SheetTable>): File {
