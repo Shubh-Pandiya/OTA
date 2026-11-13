@@ -350,10 +350,11 @@ revoke all on function public.ota_clear_test_data() from public, anon;
 grant execute on function public.ota_clear_test_data() to authenticated;
 
 -- ---------------------------------------------------------------- earlier test rows
--- Every row below was made by the test login or by emulator/CI runs before this migration, and all
--- of them are already soft-deleted (order_bills 0818a894… is an orphan link of a purge test). They
--- are removed rather than retagged, so a real bill numbered e.g. "46" or "SB-901" never clashes with
--- an old test bill's content-derived id. Matched by exact id; re-running removes nothing more.
+-- Every row below was made by the test login or by emulator/CI runs before this migration and is
+-- already soft-deleted (order_bills 0818a894… is an orphan link of a purge test). They are removed
+-- rather than retagged, so a real bill numbered e.g. "46" or "SB-901" never clashes with an old test
+-- bill's content-derived id. Two real catalog parties are kept and restored (see the end). Matched
+-- by exact id; re-running removes nothing more.
 do $$
 declare
   gone integer := 0;
@@ -430,18 +431,25 @@ begin
     'c60d1ef8-e2c9-4bee-853d-ab8288622902',
     'd7c25a7e-1218-4c7b-8244-a0598384c426',
     '03ea49ed-0d46-4843-bbab-899af6d3a603',
-    '73c0b3fe-7810-4a66-8308-e39cd21cec70',
-    '5f86a631-cc49-4c08-8453-42dd2abbbadc'
+    '73c0b3fe-7810-4a66-8308-e39cd21cec70'
   );
   get diagnostics c = row_count; gone := gone + c;
 
   delete from public.suppliers where deleted and id in (
     '09448e38-b959-4ae5-b3ed-0055830afc4f',
     'a1959831-7179-47c0-8658-1d1072d3850d',
-    'a2d32c2e-eca1-44ee-9f46-5fd84f59f205',
-    '45fe80a9-c6be-47d0-97f2-4aa797ba1c3e'
+    'a2d32c2e-eca1-44ee-9f46-5fd84f59f205'
   );
   get diagnostics c = row_count; gone := gone + c;
+
+  -- Real parties (kept as production rows): brought back for type-ahead if they were deleted. The
+  -- newer client_updated_at makes every device take the restore.
+  update public.buyers
+     set deleted = false, client_updated_at = (extract(epoch from clock_timestamp()) * 1000)::bigint
+   where id = '5f86a631-cc49-4c08-8453-42dd2abbbadc' and deleted and not is_test;
+  update public.suppliers
+     set deleted = false, client_updated_at = (extract(epoch from clock_timestamp()) * 1000)::bigint
+   where id = '45fe80a9-c6be-47d0-97f2-4aa797ba1c3e' and deleted and not is_test;
 
   -- Only on the run that removed them: put each production counter back to the highest real
   -- serial still in use (0 when none), so the first real order of 2026-27 is 26270001.
