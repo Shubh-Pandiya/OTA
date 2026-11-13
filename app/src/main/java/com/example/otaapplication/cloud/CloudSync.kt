@@ -9,10 +9,13 @@ import com.example.otaapplication.AdvicePdf
 import com.example.otaapplication.OrderFiles
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.LocalOrders
+import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentRepository
+import com.example.otaapplication.data.SyncIds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -120,6 +123,7 @@ class CloudSync private constructor(private val context: Context) {
     val staff: StateFlow<StaffInfo?> = _staff.asStateFlow()
 
     init {
+        adoptDataMode()
         // Order edits (new, changed, deleted, bills) upload shortly after they are made.
         orders.index.onLocalChange = { requestSync(delayMillis = 1_500) }
         payments.onLocalChange = { requestSync(delayMillis = 1_500) }
@@ -138,7 +142,38 @@ class CloudSync private constructor(private val context: Context) {
 
     suspend fun signIn(email: String, password: String) {
         check(config.isConfigured) { "Cloud is not set up in this build" }
-        val session = auth.signIn(email, password)
+        val session = syncLock.withLock {
+            val session = auth.signIn(email, password)
+            val mode = OtaAccounts.dataMode(session.email)
+            // Earlier versions held production data only (the test account is new in this version).
+            val held = prefs.getString(KEY_DATA_MODE, null) ?: OtaAccounts.MODE_PRODUCTION
+            if (held != mode) {
+                val pending = pendingCount()
+                // Real orders older than the cloud's retention live only on the phones, so real data
+                // is never wiped for the test account: it needs a phone without real data.
+                if (mode == OtaAccounts.MODE_TEST && hasRealData()) {
+                    auth.signOut()
+                    throw CloudException(
+                        "This phone holds real business data, so the test account can't be used on it. " +
+                            "Use the test account on a phone without real orders, bills or advices."
+                    )
+                }
+                if (pending > 0) {
+                    auth.signOut()
+                    throw CloudException(
+                        "This phone has $pending unsynced change${if (pending == 1) "" else "s"} from " +
+                            (if (held == OtaAccounts.MODE_TEST) "the test account" else "a staff account") +
+                            ". Sign in with that account and let it sync first."
+                    )
+                }
+                // Test and real data never share a phone: start this login from a clean copy (only
+                // test data, or tombstones, reach here). PDFs go only when they were test PDFs.
+                wipeLocalData(deleteFiles = held == OtaAccounts.MODE_TEST)
+            }
+            prefs.edit { putString(KEY_DATA_MODE, mode) }
+            SyncIds.testMode = mode == OtaAccounts.MODE_TEST
+            session
+        }
         _status.update { it.copy(email = session.email, lastError = null) }
         CatalogSyncWorker.schedule(context)
         requestSync()
@@ -159,6 +194,60 @@ class CloudSync private constructor(private val context: Context) {
         _status.update {
             it.copy(email = null, lastSyncAt = null, lastError = null, offline = false, notice = null, usage = null, storageFull = false)
         }
+    }
+
+    /**
+     * Test account only: deletes everything it made in the cloud, then empties this phone's copy
+     * (orders and their PDFs, bills, advices, catalog). Returns the cloud's per-table counts.
+     */
+    suspend fun clearTestData(): Map<String, Int> {
+        check(OtaAccounts.isTest(auth.session.value?.email)) { "Only the test account can clear test data" }
+        scheduled?.cancel()
+        val counts = syncLock.withLock {
+            val counts = orderApi.clearTestData()
+            wipeLocalData(deleteFiles = true)
+            counts
+        }
+        _catalogChanges.update { it + 1 }
+        _orderChanges.update { it + 1 }
+        _status.update { it.copy(lastSyncAt = null, lastError = null, notice = null, pending = pendingCount()) }
+        return counts
+    }
+
+    private fun hasRealData(): Boolean =
+        OtaDatabase.get(context).liveSyncedRows() > 0 || orders.history.locked { orders.history.readArray().length() } > 0
+
+    /** First run of this version: record which data set the phone already holds. */
+    private fun adoptDataMode() {
+        val email = auth.session.value?.email
+        if (email != null && !prefs.contains(KEY_DATA_MODE)) prefs.edit { putString(KEY_DATA_MODE, OtaAccounts.dataMode(email)) }
+        SyncIds.testMode = prefs.getString(KEY_DATA_MODE, null) == OtaAccounts.MODE_TEST
+    }
+
+    /**
+     * Empties every synced table and the order history on this phone and forgets the sync cursors,
+     * so the next round pulls the signed-in login's data from scratch. With [deleteFiles] the order
+     * and advice PDFs made from that data go too. Reminders and settings stay. Runs under [syncLock].
+     */
+    private fun wipeLocalData(deleteFiles: Boolean) {
+        if (deleteFiles) for (id in payments.allAdviceIds()) {
+            payments.advice(id)?.let { runCatching { AdvicePdf.fileFor(it).delete() } }
+        }
+        orders.history.locked {
+            val array = orders.history.readArray()
+            if (deleteFiles) for (i in 0 until array.length()) {
+                val entry = array.optJSONObject(i) ?: continue
+                LocalOrders.deleteFiles(entry.optString("filePath"), entry.optString("pdfFileName").ifBlank { null })
+            }
+            orders.history.write(org.json.JSONArray())
+            OtaDatabase.get(context).clearSyncedData()
+        }
+        if (deleteFiles) AdviceImageFiles.forContext(context).clear()
+        PartyType.entries.forEach { cursors.set(it, null) }
+        ORDER_TABLES.forEach { orderCursors.set(it, null) }
+        prefs.edit { remove(KEY_LAST_SYNC) }
+        _catalogChanges.update { it + 1 }
+        _orderChanges.update { it + 1 }
     }
 
     /** Schedules a sync; repeated requests within [delayMillis] collapse into one. */
@@ -356,6 +445,8 @@ class CloudSync private constructor(private val context: Context) {
         private const val KEY_STAFF_CHECKED = "staff_checked_at"
         private const val KEY_USAGE = "cloud_usage"
         private const val KEY_STORAGE_FULL = "cloud_storage_full"
+        /** "production" or "test": whose data this phone holds ([OtaAccounts.dataMode]). */
+        private const val KEY_DATA_MODE = "data_mode"
         /** How often a known staff code is checked again (codes rarely change). */
         private const val ALLOCATE_TIMEOUT_MS = 10_000L
         private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L

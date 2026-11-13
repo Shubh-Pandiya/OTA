@@ -107,11 +107,38 @@ data class LinkValue(val orderId: String, val billId: String)
  * two phones ends up as one cloud row instead of a duplicate.
  */
 object SyncIds {
-    fun bill(billKey: String): String = UUID.nameUUIDFromBytes("ota-bill:$billKey".toByteArray()).toString()
+    /**
+     * True while the test account's data is on this device. Test bills get their own ids so a
+     * test bill never shares an id (and so a cloud row) with a real bill of the same number.
+     */
+    @Volatile var testMode: Boolean = false
+
+    fun bill(billKey: String): String =
+        UUID.nameUUIDFromBytes((if (testMode) "ota-test-bill:$billKey" else "ota-bill:$billKey").toByteArray()).toString()
 
     fun link(orderId: String, billId: String): String = UUID.nameUUIDFromBytes("ota-link:$orderId:$billId".toByteArray()).toString()
 
     /** A bill appears at most once on an advice. */
     fun adviceLine(adviceId: String, billId: String): String =
         UUID.nameUUIDFromBytes("ota-advice-line:$adviceId:$billId".toByteArray()).toString()
+}
+
+/**
+ * Who may do what, by sign-in email. The cloud applies the same rules (ota_is_admin / ota_is_test in
+ * supabase/migrations/20261117000000_admins_and_test_isolation.sql), so these only decide what to show.
+ */
+object OtaAccounts {
+    val ADMIN_EMAILS = setOf("varun@ota.com", "shubham@ota.com")
+    const val TEST_EMAIL = "testuser1@ota.com"
+
+    fun isAdmin(email: String?): Boolean = email?.trim()?.lowercase() in ADMIN_EMAILS
+
+    /** The test account's rows are kept apart in the cloud: only it sees them, and it sees nothing else. */
+    fun isTest(email: String?): Boolean = email?.trim()?.lowercase() == TEST_EMAIL
+
+    /** Which data set a login works on; a device holds one at a time. */
+    fun dataMode(email: String?): String = if (isTest(email)) MODE_TEST else MODE_PRODUCTION
+
+    const val MODE_PRODUCTION = "production"
+    const val MODE_TEST = "test"
 }

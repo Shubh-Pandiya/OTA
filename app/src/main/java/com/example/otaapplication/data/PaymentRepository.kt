@@ -352,6 +352,11 @@ class PaymentRepository(
         }
     }
 
+    /** Every advice id on this phone, deleted ones included. */
+    fun allAdviceIds(): List<String> =
+        helper.readableDatabase.rawQuery("SELECT id FROM payment_advices", null)
+            .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
     /** All advice numbers starting with [prefix], deleted ones included (they stay used). */
     fun adviceNosWithPrefix(prefix: String): List<String> =
         helper.readableDatabase.rawQuery(

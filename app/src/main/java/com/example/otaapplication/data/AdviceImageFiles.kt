@@ -14,6 +14,11 @@ class AdviceImageFiles(private val root: File) {
 
     fun file(adviceId: String, imageId: String): File = file(path(adviceId, imageId))
 
+    /** Removes every stored image (used when this phone's data is cleared). */
+    fun clear() {
+        root.deleteRecursively()
+    }
+
     fun exists(path: String): Boolean = file(path).isFile
 
     fun read(path: String): ByteArray? = file(path).takeIf { it.isFile }?.readBytes()

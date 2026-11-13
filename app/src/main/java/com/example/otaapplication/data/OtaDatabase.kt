@@ -216,6 +216,30 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         }
     }
 
+    /** Live (not deleted) orders, bills, advices and catalog entries on this phone. */
+    fun liveSyncedRows(): Int {
+        val db = readableDatabase
+        return (listOf("orders", "bills", "payment_advices") + PartyType.entries.map { it.table }).sumOf { table ->
+            db.rawQuery("SELECT COUNT(*) FROM $table WHERE is_deleted = 0", null).use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
+        }
+    }
+
+    /**
+     * Empties every synced table (catalog, order index, bills, advices) in one transaction, for a
+     * switch between the test account and real data. Tables that never sync are left alone.
+     */
+    fun clearSyncedData() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (table in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders")) db.delete(table, null, null)
+            for (party in PartyType.entries) db.delete(party.table, null, null)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     companion object {
         const val DB_NAME = "ota_local.db"
         const val VERSION = 7

@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -178,11 +179,35 @@ internal fun SignInForm(
 }
 
 @Composable
+private fun TestAccountBanner() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Default.Badge, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(
+            "Test account. Everything you make here is test data: only this login sees it, and it never counts in real totals or numbers.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onTertiaryContainer
+        )
+    }
+}
+
+@Composable
 private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
     val scope = rememberCoroutineScope()
     val staff by cloud.staff.collectAsState()
     val now = rememberNow()
     var confirmSignOut by remember { mutableStateOf(false) }
+    val isTest = com.example.otaapplication.data.OtaAccounts.isTest(status.email)
+    var confirmClear by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf(false) }
+    var clearResult by remember { mutableStateOf<String?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -204,6 +229,8 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             }
         }
 
+        if (isTest) TestAccountBanner()
+
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
         val storageAlert = status.storageFull || status.usage?.warning == true
@@ -213,7 +240,10 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
 
         val code = staff?.code
         if (code != null) {
-            StatusLine(Icons.Default.Tag, "Your advice numbers: PA${code}YYYYMMDD + serial, e.g. PA${code}${java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)}001")
+            StatusLine(
+                Icons.Default.Tag,
+                "Staff code $code. The cloud numbers orders and advices by financial year, e.g. ${OrderNumber.fyPrefix(java.time.LocalDate.now())}0001"
+            )
         } else {
             StatusLine(
                 Icons.Default.Tag,
@@ -281,6 +311,57 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
                 Text("Sign out")
             }
         }
+
+        if (isTest) {
+            OutlinedButton(
+                onClick = { confirmClear = true },
+                enabled = !clearing && !status.syncing,
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+                shape = MaterialTheme.shapes.medium,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f))
+            ) {
+                if (clearing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.error)
+                } else {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("Clear all my test data")
+            }
+            clearResult?.let { StatusLine(Icons.Default.Info, it, isError = it.startsWith("Couldn't")) }
+        }
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Clear all test data?") },
+            text = {
+                Text(
+                    "Deletes every order, bill, payment advice and catalog entry made with the test account, " +
+                        "in the cloud and on this phone, including their PDFs. Real business data is not touched. This can't be undone."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    clearing = true
+                    clearResult = null
+                    scope.launch {
+                        clearResult = try {
+                            val removed = cloud.clearTestData().values.sum()
+                            "Cleared $removed test row${if (removed == 1) "" else "s"} from the cloud and emptied this phone."
+                        } catch (e: Exception) {
+                            "Couldn't clear test data: ${e.message ?: "unknown error"}"
+                        }
+                        clearing = false
+                    }
+                }) { Text("Clear", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+        )
     }
 
     if (confirmSignOut) {

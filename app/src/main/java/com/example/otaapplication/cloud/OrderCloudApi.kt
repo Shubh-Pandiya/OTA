@@ -278,6 +278,9 @@ interface OrderCloudApi {
      * from the advices' own counter. Throws [AdviceLimitReached] once the year's 9999 are used.
      */
     suspend fun allocateAdviceNo(payDate: LocalDate): String = throw UnsupportedOperationException("allocateAdviceNo")
+
+    /** Test account only: deletes all its cloud rows (ota_clear_test_data); returns rows removed per table. */
+    suspend fun clearTestData(): Map<String, Int> = throw UnsupportedOperationException("clearTestData")
 }
 
 /** All 9999 payment advice numbers of a financial year are used. */
@@ -352,6 +355,11 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
         val number = JSONTokener(body.trim()).nextValue() as? String
         if (number == null || !AdviceNumber.isFy(number)) throw CloudException("Unexpected advice number from the cloud: $body", 200)
         return number
+    }
+
+    override suspend fun clearTestData(): Map<String, Int> {
+        val json = JSONObject(client.call("POST", "rpc/ota_clear_test_data", body = "{}").trim())
+        return json.keys().asSequence().associateWith { json.optInt(it) }
     }
 
     private companion object {
