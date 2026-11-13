@@ -1,6 +1,7 @@
 package com.ota.desktop.accounts
 
 import com.example.otaapplication.AdviceNumber
+import com.example.otaapplication.data.PaymentStatus
 import com.example.otaapplication.data.SearchText
 import com.ota.desktop.data.BillFilter
 import com.ota.desktop.data.PaymentStore
@@ -36,8 +37,73 @@ sealed interface RLink {
 data class RRow(val cells: List<Any?>, val style: RowStyle = RowStyle.NORMAL, val link: RLink? = null)
 
 /** One table: shown on screen, and exported as an XLSX sheet or a PDF page set. */
-data class ReportTable(val title: String, val subtitle: String, val columns: List<RCol>, val rows: List<RRow>) {
+data class ReportTable(
+    val title: String,
+    val subtitle: String,
+    val columns: List<RCol>,
+    val rows: List<RRow>,
+    /** The ledger's or statement's account: exports can write one file per party. */
+    val accountId: String? = null
+) {
     val moneyColumns: Set<Int> get() = columns.indices.filter { columns[it].kind == ColKind.MONEY }.toSet()
+
+    /** The table without the columns at [drop]; folds into a dropped column are cleared. */
+    fun withoutColumns(drop: Set<Int>): ReportTable {
+        if (drop.isEmpty()) return this
+        val keep = columns.indices.filter { it !in drop }
+        val index = keep.withIndex().associate { (new, old) -> old to new }
+        return copy(
+            columns = keep.map { i -> columns[i].let { c -> c.copy(foldInto = c.foldInto?.let(index::get)) } },
+            rows = rows.map { r -> r.copy(cells = keep.map { r.cells.getOrNull(it) }) }
+        )
+    }
+
+    /** Drops the columns whose title (without " (₹)") is in [titles]. */
+    fun withoutTitles(titles: Set<String>): ReportTable =
+        withoutColumns(columns.indices.filter { columnName(columns[it].title) in titles }.toSet())
+
+    companion object {
+        fun columnName(title: String) = title.substringBefore(" (₹)")
+    }
+}
+
+enum class Side(val label: String) { ANY("Dr and Cr"), DR("Dr only"), CR("Cr only") }
+
+/**
+ * Narrows the Accounts reports for an export. The defaults show what the screens show.
+ * Entry filters (types, amount, side, text) pick ledger and day-book entries; running balances and
+ * closing balances still count every entry, so they stay the account's true balance.
+ */
+data class ReportFilter(
+    /** Party or books accounts to include; empty = all. */
+    val accounts: Set<String> = emptySet(),
+    val groups: Set<AccGroup> = emptySet(),
+    val types: Set<VType> = emptySet(),
+    /** On an entry's or voucher's amount, in paise. */
+    val minAmount: Long? = null,
+    val maxAmount: Long? = null,
+    val side: Side = Side.ANY,
+    /** Words that must all appear in the voucher no, narration, note or accounts. */
+    val text: String = "",
+    /** Bills on trade statements and trade outstanding; empty = the report's own (outstanding: unpaid and part paid). */
+    val billStatus: Set<PaymentStatus> = emptySet(),
+    val hideZero: Boolean = true,
+    val openingClosing: Boolean = true,
+    /** null = each report's own default (only commission has supplier subtotals). */
+    val subtotals: Boolean? = null,
+    val runningBalance: Boolean = true
+) {
+    private val tokens = SearchText.tokens(text)
+
+    fun allows(a: Account) = (accounts.isEmpty() || a.id in accounts) && (groups.isEmpty() || a.group in groups)
+    fun allowsType(t: VType) = types.isEmpty() || t in types
+    fun allowsAmount(paise: Long) = (minAmount == null || paise >= minAmount) && (maxAmount == null || paise <= maxAmount)
+    fun allowsSide(dr: Long, cr: Long) = when (side) { Side.ANY -> true; Side.DR -> dr > 0; Side.CR -> cr > 0 }
+    fun allowsText(vararg parts: String): Boolean =
+        tokens.isEmpty() || SearchText.normalize(parts.joinToString(" ")).let { hay -> tokens.all { it in hay } }
+    fun allowsEntry(type: VType, dr: Long, cr: Long, vararg text: String) =
+        allowsType(type) && allowsAmount(dr + cr) && allowsSide(dr, cr) && allowsText(*text)
+    val narrowsAccounts: Boolean get() = accounts.isNotEmpty() || groups.isNotEmpty()
 }
 
 enum class ReportKind(val label: String, val asOf: Boolean) {
@@ -83,30 +149,59 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
     // ------------------------------------------------------------------------------ ledgers
 
     /** An account's ledger: opening balance, every entry with its running balance, closing balance. */
-    fun ledger(accountId: String, from: LocalDate?, to: LocalDate?, cashBook: Boolean = false): ReportTable = db.read { c ->
-        val account = store.account(accountId) ?: error("No such account")
-        val names = c.query("select id, name from acc_accounts") { it.id() to it.str("name") }.toMap()
+    fun ledger(accountId: String, from: LocalDate?, to: LocalDate?, cashBook: Boolean = false, f: ReportFilter = ReportFilter()): ReportTable =
+        ledgers(listOf(accountId), from, to, cashBook, f).single()
+
+    /** Several ledgers from one read of the books. With [ReportFilter.hideZero], untouched zero ledgers are skipped. */
+    fun ledgers(accountIds: List<String>, from: LocalDate?, to: LocalDate?, cashBook: Boolean = false, f: ReportFilter = ReportFilter()): List<ReportTable> = db.read { c ->
+        val accounts = store.accounts().associateBy { it.id }
+        val names = accounts.mapValues { it.value.name }
         val all = postings(c, to)
         val byVoucher = all.groupBy { it.voucherId }
-        val mine = all.filter { it.accountId == accountId }
+        val byAccount = all.groupBy { it.accountId }
+        accountIds.mapNotNull { id ->
+            val account = accounts[id] ?: error("No such account")
+            val mine = byAccount[id].orEmpty()
+            if (accountIds.size > 1 && f.hideZero && account.opening == 0L && mine.isEmpty()) null
+            else ledgerTable(account, mine, byVoucher, names, from, to, cashBook, f)
+        }
+    }
+
+    private fun ledgerTable(
+        account: Account, mine: List<Posting>, byVoucher: Map<String, List<Posting>>, names: Map<String, String>,
+        from: LocalDate?, to: LocalDate?, cashBook: Boolean, f: ReportFilter
+    ): ReportTable {
+        val accountId = account.id
         var balance = account.opening + mine.filter { from != null && it.date < from }.sumOf { it.signed }
         val rows = ArrayList<RRow>()
         val inRange = mine.filter { from == null || it.date >= from }
-        rows += RRow(listOf(from, "", "", "Opening balance", "", if (balance > 0) Paise.rupees(balance) else null, if (balance < 0) Paise.rupees(-balance) else null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.HEADING)
+        if (f.openingClosing) rows += RRow(listOf(from, "", "", "Opening balance", "", if (balance > 0) Paise.rupees(balance) else null, if (balance < 0) Paise.rupees(-balance) else null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.HEADING)
+        var shownDr = 0L; var shownCr = 0L
+        var month: YearMonth? = null; var monthDr = 0L; var monthCr = 0L
+        fun monthTotal() {
+            if (f.subtotals == true && month != null) rows += RRow(listOf(null, "", "", "Total ${month!!.format(MONTH)}", "", Paise.rupees(monthDr), Paise.rupees(monthCr), null, ""), RowStyle.TOTAL)
+        }
         for (p in inRange) {
             balance += p.signed
             val others = byVoucher[p.voucherId].orEmpty().filter { it.accountId != accountId && (it.dr > 0) != (p.dr > 0) }.map { names[it.accountId].orEmpty() }.distinct()
+            val particulars = others.joinToString(", ").ifEmpty { "—" }
+            val narration = listOf(p.narration, p.note).filter { it.isNotBlank() }.joinToString(" · ")
+            if (!f.allowsEntry(p.type, p.dr, p.cr, p.no, particulars, narration)) continue
+            val m = YearMonth.from(p.date)
+            if (m != month) { monthTotal(); month = m; monthDr = 0; monthCr = 0 }
+            monthDr += p.dr; monthCr += p.cr; shownDr += p.dr; shownCr += p.cr
             rows += RRow(
                 listOf(
-                    p.date, p.no, p.type.label, others.joinToString(", ").ifEmpty { "—" }, listOf(p.narration, p.note).filter { it.isNotBlank() }.joinToString(" · "),
+                    p.date, p.no, p.type.label, particulars, narration,
                     p.dr.takeIf { it > 0 }?.let(Paise::rupees), p.cr.takeIf { it > 0 }?.let(Paise::rupees), Paise.rupees(kotlin.math.abs(balance)), side(balance)
                 ),
                 link = RLink.Voucher(p.voucherId)
             )
         }
-        rows += RRow(listOf(null, "", "", "Total for the period", "", Paise.rupees(inRange.sumOf { it.dr }), Paise.rupees(inRange.sumOf { it.cr }), null, ""), RowStyle.TOTAL)
-        rows += RRow(listOf(to, "", "", "Closing balance", "", if (balance > 0) Paise.rupees(balance) else null, if (balance < 0) Paise.rupees(-balance) else null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.TOTAL)
-        ReportTable(
+        monthTotal()
+        rows += RRow(listOf(null, "", "", "Total for the period", "", Paise.rupees(shownDr), Paise.rupees(shownCr), null, ""), RowStyle.TOTAL)
+        if (f.openingClosing) rows += RRow(listOf(to, "", "", "Closing balance", "", if (balance > 0) Paise.rupees(balance) else null, if (balance < 0) Paise.rupees(-balance) else null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.TOTAL)
+        return ReportTable(
             if (cashBook) "Cash / bank book — ${account.name}" else "Ledger — ${account.name}",
             listOfNotNull(account.party?.label ?: account.group.label, account.subgroup.ifBlank { null }, period(from, to)).joinToString(" · "),
             listOf(
@@ -114,19 +209,21 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
                 RCol("Narration", weight = 2f, foldInto = 3), RCol(if (cashBook) "Receipts (₹)" else "Debit (₹)", ColKind.MONEY), RCol(if (cashBook) "Payments (₹)" else "Credit (₹)", ColKind.MONEY),
                 RCol("Balance (₹)", ColKind.MONEY), RCol("Dr/Cr", weight = 0.4f)
             ),
-            rows
-        )
+            rows,
+            accountId
+        ).let { if (f.runningBalance) it else it.withoutColumns(setOf(7, 8)) }
     }
 
     /**
      * Trade statement of a buyer or supplier (memorandum, outside the books): their bills against
      * what payment advices settled — paid, cash discount, goods return, rate difference and claims.
      */
-    fun partyStatement(accountId: String, from: LocalDate?, to: LocalDate?): ReportTable {
+    fun partyStatement(accountId: String, from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable {
         val account = store.account(accountId) ?: error("No such account")
         val kind = account.party ?: error("Not a party account")
         val key = account.partyKey.orEmpty()
-        val bills = payments.bills(BillFilter()).filter { SearchText.partyKey(if (kind == PartyKind.BUYER) it.buyer else it.supplier) == key }
+        val bills = payments.bills(BillFilter())
+            .filter { SearchText.partyKey(if (kind == PartyKind.BUYER) it.buyer else it.supplier) == key && (f.billStatus.isEmpty() || it.bill.status in f.billStatus) }
         data class Entry(val date: LocalDate?, val ref: String, val text: String, val dr: Long, val cr: Long, val link: RLink)
         val entries = ArrayList<Entry>()
         bills.forEach { b ->
@@ -151,18 +248,21 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
         }.let(entries::addAll)
         val sorted = entries.sortedWith(compareBy<Entry>({ it.date ?: LocalDate.MIN }, { it.cr > 0 }, { it.ref }))
         var balance = sorted.filter { from != null && (it.date ?: LocalDate.MIN) < from }.sumOf { it.dr - it.cr }
-        val shown = sorted.filter { (from == null || (it.date ?: LocalDate.MIN) >= from) && (to == null || (it.date ?: LocalDate.MIN) <= to) }
+        val inRange = sorted.filter { (from == null || (it.date ?: LocalDate.MIN) >= from) && (to == null || (it.date ?: LocalDate.MIN) <= to) }
+        val shown = inRange.filter { f.allowsAmount(it.dr + it.cr) && f.allowsSide(it.dr, it.cr) && f.allowsText(it.ref, it.text) }
+        val visible = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Entry, Boolean>()).apply { addAll(shown) }
         val rows = ArrayList<RRow>()
-        rows += RRow(listOf(from, "", "Opening balance", null, null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.HEADING)
-        shown.forEach { e ->
+        if (f.openingClosing) rows += RRow(listOf(from, "", "Opening balance", null, null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.HEADING)
+        inRange.forEach { e ->
             balance += e.dr - e.cr
+            if (e !in visible) return@forEach
             rows += RRow(
                 listOf(e.date, e.ref, e.text, e.dr.takeIf { it > 0 }?.let(Paise::rupees), e.cr.takeIf { it > 0 }?.let(Paise::rupees), Paise.rupees(kotlin.math.abs(balance)), side(balance)),
                 link = e.link
             )
         }
         rows += RRow(listOf(null, "", "Total for the period", Paise.rupees(shown.sumOf { it.dr }), Paise.rupees(shown.sumOf { it.cr }), null, ""), RowStyle.TOTAL)
-        rows += RRow(listOf(to, "", "Balance due", null, null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.TOTAL)
+        if (f.openingClosing) rows += RRow(listOf(to, "", "Balance due", null, null, Paise.rupees(kotlin.math.abs(balance)), side(balance)), RowStyle.TOTAL)
         return ReportTable(
             "Trade statement — ${account.name}",
             "${kind.label} · bills and payment advices (memorandum, not part of the books) · ${period(from, to)}",
@@ -170,33 +270,48 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
                 RCol("Date", ColKind.DATE, 0.8f), RCol("Reference", weight = 1.2f), RCol(if (kind == PartyKind.BUYER) "Supplier / details" else "Buyer / details", weight = 2.6f),
                 RCol("Billed (₹)", ColKind.MONEY), RCol("Settled (₹)", ColKind.MONEY), RCol("Balance (₹)", ColKind.MONEY), RCol("Dr/Cr", weight = 0.4f)
             ),
-            rows
-        )
+            rows,
+            accountId
+        ).let { if (f.runningBalance) it else it.withoutColumns(setOf(5, 6)) }
     }
 
     // ------------------------------------------------------------------------------ reports
 
-    fun report(kind: ReportKind, from: LocalDate?, to: LocalDate?, cashAccountId: String? = null): ReportTable = when (kind) {
-        ReportKind.DAY_BOOK -> dayBook(from, to)
-        ReportKind.TRIAL_BALANCE -> trialBalance(to)
-        ReportKind.PROFIT_LOSS -> profitAndLoss(from, to)
+    fun report(kind: ReportKind, from: LocalDate?, to: LocalDate?, cashAccountId: String? = null, f: ReportFilter = ReportFilter()): ReportTable = when (kind) {
+        ReportKind.DAY_BOOK -> dayBook(from, to, f)
+        ReportKind.TRIAL_BALANCE -> trialBalance(to, f)
+        ReportKind.PROFIT_LOSS -> profitAndLoss(from, to, f)
         ReportKind.BALANCE_SHEET -> balanceSheet(to)
-        ReportKind.COMMISSION -> commission(from, to)
-        ReportKind.AGEING -> ageing(to ?: LocalDate.now())
-        ReportKind.TRADE_OUTSTANDING -> tradeOutstanding(to ?: LocalDate.now())
+        ReportKind.COMMISSION -> commission(from, to, f)
+        ReportKind.AGEING -> ageing(to ?: LocalDate.now(), f)
+        ReportKind.TRADE_OUTSTANDING -> tradeOutstanding(to ?: LocalDate.now(), f)
         ReportKind.CASH_BOOK -> ledger(
-            cashAccountId ?: store.accountBySystemKey("cash")?.id ?: store.accounts().first { it.cashBank }.id, from, to, cashBook = true
+            cashAccountId ?: store.accountBySystemKey("cash")?.id ?: store.accounts().first { it.cashBank }.id, from, to, cashBook = true, f = f
         )
     }
 
-    fun dayBook(from: LocalDate?, to: LocalDate?): ReportTable = db.read { c ->
-        val names = c.query("select id, name from acc_accounts") { it.id() to it.str("name") }.toMap()
-        val list = postings(c, to).filter { from == null || it.date >= from }
+    fun dayBook(from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable = db.read { c ->
+        val accounts = store.accounts().associateBy { it.id }
+        val names = accounts.mapValues { it.value.name }
+        val list = postings(c, to).filter { from == null || it.date >= from }.groupBy { it.voucherId }.values
+            .filter { v ->
+                val p = v.first()
+                f.allowsType(p.type) && f.allowsAmount(v.sumOf { it.dr }) &&
+                    f.allowsText(p.no, p.narration, *v.map { names[it.accountId].orEmpty() + " " + it.note }.toTypedArray()) &&
+                    (!f.narrowsAccounts || v.any { l -> accounts[l.accountId]?.let(f::allows) == true })
+            }
+            .flatMap { v -> v.filter { f.allowsSide(it.dr, it.cr) } }
         val rows = ArrayList<RRow>()
         var last: String? = null
+        var day: LocalDate? = null; var dayDr = 0L; var dayCr = 0L
+        fun dayTotal() {
+            if (f.subtotals == true && day != null) rows += RRow(listOf(null, "", "", "Total ${day.dmy()}", "", Paise.rupees(dayDr), Paise.rupees(dayCr)), RowStyle.TOTAL)
+        }
         for (p in list) {
             val first = p.voucherId != last
             last = p.voucherId
+            if (p.date != day) { dayTotal(); day = p.date; dayDr = 0; dayCr = 0 }
+            dayDr += p.dr; dayCr += p.cr
             rows += RRow(
                 listOf(
                     if (first) p.date else null, if (first) p.no else "", if (first) p.type.label else "", names[p.accountId].orEmpty(),
@@ -205,6 +320,7 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
                 link = RLink.Voucher(p.voucherId)
             )
         }
+        dayTotal()
         rows += RRow(listOf(null, "", "", "Total (${list.map { it.voucherId }.distinct().size} vouchers)", "", Paise.rupees(list.sumOf { it.dr }), Paise.rupees(list.sumOf { it.cr })), RowStyle.TOTAL)
         ReportTable(
             "Day book", period(from, to),
@@ -221,8 +337,9 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
         return store.accounts().map { it to it.opening + (moves[it.id] ?: 0L) }
     }
 
-    fun trialBalance(asOf: LocalDate?): ReportTable = db.read { c ->
-        val list = closing(c, asOf).filter { it.second != 0L }
+    fun trialBalance(asOf: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable = db.read { c ->
+        val all = closing(c, asOf)
+        val list = all.filter { (a, bal) -> f.allows(a) && (!f.hideZero || bal != 0L) }
         val rows = ArrayList<RRow>()
         AccGroup.entries.forEach { g ->
             val inGroup = list.filter { it.first.group == g }
@@ -231,8 +348,12 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
             inGroup.forEach { (a, bal) ->
                 rows += RRow(listOf(a.code, a.name, a.party?.label ?: a.subgroup, if (bal > 0) Paise.rupees(bal) else null, if (bal < 0) Paise.rupees(-bal) else null), link = RLink.Account(a.id))
             }
+            if (f.subtotals == true) rows += RRow(
+                listOf("", "Total ${g.label.lowercase()}", "", Paise.rupees(inGroup.sumOf { maxOf(it.second, 0) }), Paise.rupees(inGroup.sumOf { maxOf(-it.second, 0) })), RowStyle.TOTAL
+            )
         }
-        val diff = list.sumOf { it.second }
+        // A difference only means something across the whole books.
+        val diff = if (f.narrowsAccounts) 0L else all.sumOf { it.second }
         if (diff != 0L) rows += RRow(listOf("", "Difference in opening balances", "", if (diff < 0) Paise.rupees(-diff) else null, if (diff > 0) Paise.rupees(diff) else null))
         val dr = list.sumOf { maxOf(it.second, 0) } + maxOf(-diff, 0)
         val cr = list.sumOf { maxOf(-it.second, 0) } + maxOf(diff, 0)
@@ -244,11 +365,12 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
         )
     }
 
-    fun profitAndLoss(from: LocalDate?, to: LocalDate?): ReportTable = db.read { c ->
+    fun profitAndLoss(from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable = db.read { c ->
         val accounts = store.accounts().associateBy { it.id }
         val moves = postings(c, to).filter { from == null || it.date >= from }.groupBy { it.accountId }.mapValues { (_, l) -> l.sumOf { it.signed } }
         fun section(group: AccGroup, sign: Int): Pair<List<RRow>, Long> {
-            val list = accounts.values.filter { it.group == group }.mapNotNull { a -> moves[a.id]?.takeIf { it != 0L }?.let { a to it * sign } }
+            val list = accounts.values.filter { it.group == group && f.allows(it) }
+                .mapNotNull { a -> (moves[a.id] ?: 0L).takeIf { it != 0L || !f.hideZero }?.let { a to it * sign } }
             return list.map { (a, v) -> RRow(listOf(a.name, a.subgroup, Paise.rupees(v)), link = RLink.Account(a.id)) } to list.sumOf { it.second }
         }
         val (income, totalIncome) = section(AccGroup.INCOME, -1)
@@ -302,9 +424,9 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
     }
 
     /** Commission earned (posted from bills) against commission received, per supplier and month. */
-    fun commission(from: LocalDate?, to: LocalDate?): ReportTable = db.read { c ->
+    fun commission(from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable = db.read { c ->
         val end = to ?: LocalDate.now()
-        val suppliers = store.accounts().filter { it.party == PartyKind.SUPPLIER }.associateBy { it.id }
+        val suppliers = store.accounts().filter { it.party == PartyKind.SUPPLIER && f.allows(it) }.associateBy { it.id }
         val billAmounts = store.loadBills(c).associate { it.id to (it.amount ?: 0L) }
         val all = postings(c, end).filter { it.accountId in suppliers }
         val start = from ?: all.minOfOrNull { it.date } ?: end
@@ -330,7 +452,7 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
                 sBills += bills.size; sBilled += billed; sEarned += e; sReceived += r
             }
             val due = a.opening + list.sumOf { it.signed }
-            rows += RRow(listOf("${a.name} — total", "", "", sBills, Paise.rupees(sBilled), Paise.rupees(sEarned), Paise.rupees(sReceived), Paise.rupees(due)), RowStyle.TOTAL, RLink.Account(a.id))
+            if (f.subtotals != false) rows += RRow(listOf("${a.name} — total", "", "", sBills, Paise.rupees(sBilled), Paise.rupees(sEarned), Paise.rupees(sReceived), Paise.rupees(due)), RowStyle.TOTAL, RLink.Account(a.id))
             gBills += sBills; gBilled += sBilled; gEarned += sEarned; gReceived += sReceived; gDue += due
         }
         rows += RRow(listOf("All suppliers", "", "", gBills, Paise.rupees(gBilled), Paise.rupees(gEarned), Paise.rupees(gReceived), Paise.rupees(gDue)), RowStyle.TOTAL)
@@ -345,15 +467,15 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
     }
 
     /** Party balances in the books, aged first-in first-out: payments clear the oldest debits first. */
-    fun ageing(asOf: LocalDate): ReportTable = db.read { c ->
-        val parties = store.accounts().filter { it.isParty }.associateBy { it.id }
+    fun ageing(asOf: LocalDate, f: ReportFilter = ReportFilter()): ReportTable = db.read { c ->
+        val parties = store.accounts().filter { it.isParty && f.allows(it) }.associateBy { it.id }
         val byAccount = postings(c, asOf).filter { it.accountId in parties }.groupBy { it.accountId }
         val rows = ArrayList<RRow>()
         val totals = LongArray(BUCKETS.size + 1)
         for (a in parties.values.sortedWith(compareBy({ it.party }, { it.name.lowercase() }))) {
             val list = byAccount[a.id].orEmpty()
             val balance = a.opening + list.sumOf { it.signed }
-            if (balance == 0L) continue
+            if (balance == 0L && f.hideZero) continue
             val buckets = LongArray(BUCKETS.size)
             if (balance > 0) {
                 // Credits clear the oldest debits first, so the balance is made of the newest debits.
@@ -385,15 +507,31 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
     }
 
     /** Unpaid and part-paid bills per buyer and supplier, aged by bill date. */
-    fun tradeOutstanding(asOf: LocalDate): ReportTable {
-        val due = payments.bills(BillFilter()).filter { (it.bill.balance ?: 0.0) > 0.0 }
+    fun tradeOutstanding(asOf: LocalDate, f: ReportFilter = ReportFilter()): ReportTable {
+        val picked = if (f.accounts.isEmpty()) null else store.accounts().filter { it.id in f.accounts && it.isParty }.takeIf { it.isNotEmpty() }
+        val buyers = picked?.filter { it.party == PartyKind.BUYER }?.mapNotNull { it.partyKey }?.toSet()
+        val sellers = picked?.filter { it.party == PartyKind.SUPPLIER }?.mapNotNull { it.partyKey }?.toSet()
+        val due = payments.bills(BillFilter())
+            .filter { if (f.billStatus.isEmpty()) (it.bill.balance ?: 0.0) > 0.0 else it.bill.status in f.billStatus }
+            .filter { buyers == null || SearchText.partyKey(it.buyer) in buyers || SearchText.partyKey(it.supplier) in sellers.orEmpty() }
+            .filter { f.allowsText(it.bill.billNo, it.buyer, it.supplier) && f.allowsAmount(Paise.of(it.bill.balance ?: 0.0)) }
         data class Key(val buyer: String, val supplier: String)
         val rows = ArrayList<RRow>()
         val totals = LongArray(BUCKETS.size + 2)
         var count = 0
+        var buyerKey: String? = null
+        val sub = LongArray(totals.size); var subCount = 0; var subName = ""
+        fun buyerTotal() {
+            if (f.subtotals == true && buyerKey != null) rows += RRow(
+                listOf("$subName — total", "", subCount, Paise.rupees(sub[0]), Paise.rupees(sub[1])) + (2 until sub.size).map { Paise.rupees(sub[it]) }, RowStyle.TOTAL
+            )
+            sub.fill(0); subCount = 0
+        }
         due.groupBy { Key(SearchText.partyKey(it.buyer), SearchText.partyKey(it.supplier)) }.values
             .sortedWith(compareBy({ it.first().buyer.lowercase() }, { it.first().supplier.lowercase() }))
             .forEach { bills ->
+                val key = SearchText.partyKey(bills.first().buyer)
+                if (key != buyerKey) { buyerTotal(); buyerKey = key; subName = bills.first().buyer.ifBlank { "—" } }
                 val buckets = LongArray(BUCKETS.size)
                 bills.forEach { b -> buckets[bill(b.bill.billDate, asOf)] += Paise.of(b.bill.balance ?: 0.0) }
                 val billed = bills.sumOf { Paise.of(it.bill.amount ?: 0.0) }
@@ -404,13 +542,117 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
                 )
                 count += bills.size; totals[0] += billed; totals[1] += balance
                 buckets.forEachIndexed { i, v -> totals[i + 2] += v }
+                subCount += bills.size; sub[0] += billed; sub[1] += balance
+                buckets.forEachIndexed { i, v -> sub[i + 2] += v }
             }
+        buyerTotal()
         rows += RRow(listOf("Total", "", count, Paise.rupees(totals[0]), Paise.rupees(totals[1])) + (2 until totals.size).map { Paise.rupees(totals[it]) }, RowStyle.TOTAL)
         return ReportTable(
             "Trade outstanding", "Bills still due after payment advices · aged by bill date as on ${asOf.dmy()} (undated bills count as oldest)",
             listOf(RCol("Buyer", weight = 1.8f), RCol("Supplier", weight = 1.8f), RCol("Bills", ColKind.NUMBER, 0.5f), RCol("Billed (₹)", ColKind.MONEY), RCol("Due (₹)", ColKind.MONEY)) +
                 BUCKETS.map { RCol("$it (₹)", ColKind.MONEY, 0.9f) },
             rows
+        )
+    }
+
+    // ------------------------------------------------------------------------------ lists
+
+    /** The voucher register: one row per voucher, with optional per-type subtotals. */
+    fun voucherList(from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable {
+        val accounts = store.accounts()
+        val chosen = accounts.filter(f::allows).map { it.name }.toSet()
+        val list = store.vouchers(from, to).filter { v ->
+            f.allowsType(v.type) && f.allowsAmount(v.total) && f.allowsText(v.no, v.narration, v.debits, v.credits) &&
+                (!f.narrowsAccounts || (v.debits.split(", ") + v.credits.split(", ")).any { it in chosen }) &&
+                when (f.side) { Side.ANY -> true; Side.DR -> v.debits.split(", ").any { it in chosen }; Side.CR -> v.credits.split(", ").any { it in chosen } }
+        }.sortedWith(compareBy({ it.date }, { it.no }))
+        val rows = ArrayList<RRow>()
+        fun row(v: VoucherSummary) = RRow(listOf(v.date, v.no, v.type.label, v.debits, v.credits, v.narration, Paise.rupees(v.total)), link = RLink.Voucher(v.id))
+        if (f.subtotals == true) {
+            list.groupBy { it.type }.toSortedMap().forEach { (type, vs) ->
+                rows += RRow(listOf(null, "", type.label, "", "", "", null), RowStyle.HEADING)
+                vs.forEach { rows += row(it) }
+                rows += RRow(listOf(null, "", "Total ${type.label.lowercase()} (${vs.size})", "", "", "", Paise.rupees(vs.sumOf { it.total })), RowStyle.TOTAL)
+            }
+        } else list.forEach { rows += row(it) }
+        rows += RRow(listOf(null, "", "Total (${list.size} vouchers)", "", "", "", Paise.rupees(list.sumOf { it.total })), RowStyle.TOTAL)
+        return ReportTable(
+            "Vouchers", period(from, to),
+            listOf(
+                RCol("Date", ColKind.DATE, 0.8f), RCol("Voucher", weight = 0.8f), RCol("Type", weight = 0.8f), RCol("Debit", weight = 1.6f),
+                RCol("Credit", weight = 1.6f), RCol("Narration", weight = 2f), RCol("Amount (₹)", ColKind.MONEY)
+            ),
+            rows
+        )
+    }
+
+    /** Buyers or suppliers with their books balance today, bills and commission %. */
+    fun partyList(kind: PartyKind, f: ReportFilter = ReportFilter()): ReportTable {
+        val list = store.parties(kind).filter { f.allows(it.account) && (!f.hideZero || it.balance != 0L || it.bills > 0) }
+        val supplier = kind == PartyKind.SUPPLIER
+        val rows = list.map { p ->
+            RRow(
+                listOf(p.account.code, p.account.name, p.bills, Paise.rupees(p.billed)) +
+                    (if (supplier) listOf(AccountsStore.pct(p.account.commissionPercent) + "%") else emptyList()) +
+                    listOf(Paise.rupees(kotlin.math.abs(p.account.opening)), side(p.account.opening), Paise.rupees(kotlin.math.abs(p.balance)), side(p.balance)),
+                link = RLink.Account(p.account.id)
+            )
+        } + RRow(
+            listOf("", "Total (${list.size})", list.sumOf { it.bills }, Paise.rupees(list.sumOf { it.billed })) +
+                (if (supplier) listOf("") else emptyList()) + listOf(null, "", null, ""),
+            RowStyle.TOTAL
+        )
+        return ReportTable(
+            if (supplier) "Suppliers" else "Buyers", "Books balance as on ${LocalDate.now().dmy()}",
+            listOf(RCol("Code", weight = 0.6f), RCol("Name", weight = 2f), RCol("Bills", ColKind.NUMBER, 0.5f), RCol("Billed (₹)", ColKind.MONEY)) +
+                (if (supplier) listOf(RCol("Commission", weight = 0.6f)) else emptyList()) +
+                listOf(RCol("Opening (₹)", ColKind.MONEY), RCol("Op. Dr/Cr", weight = 0.4f), RCol("Balance (₹)", ColKind.MONEY), RCol("Dr/Cr", weight = 0.4f)),
+            rows
+        )
+    }
+
+    /** The chart of accounts with opening and closing balances. */
+    fun chart(asOf: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable {
+        val closing = store.closingBalances(asOf)
+        val list = store.accounts().filter { a -> f.allows(a) && (!f.hideZero || a.opening != 0L || (closing[a.id] ?: 0L) != 0L || !a.isParty) }
+        val rows = ArrayList<RRow>()
+        AccGroup.entries.forEach { g ->
+            val inGroup = list.filter { it.group == g }
+            if (inGroup.isEmpty()) return@forEach
+            rows += RRow(listOf("", g.label, "", "", null, "", null, ""), RowStyle.HEADING)
+            inGroup.forEach { a ->
+                val bal = closing[a.id] ?: 0L
+                rows += RRow(
+                    listOf(a.code, a.name, a.kindLabel, a.subgroup, Paise.rupees(kotlin.math.abs(a.opening)), side(a.opening), Paise.rupees(kotlin.math.abs(bal)), side(bal)),
+                    link = RLink.Account(a.id)
+                )
+            }
+        }
+        return ReportTable(
+            "Chart of accounts", "Balances as on ${(asOf ?: LocalDate.now()).dmy()}",
+            listOf(
+                RCol("Code", weight = 0.6f), RCol("Account", weight = 2f), RCol("Kind"), RCol("Subgroup"),
+                RCol("Opening (₹)", ColKind.MONEY), RCol("Op. Dr/Cr", weight = 0.4f), RCol("Balance (₹)", ColKind.MONEY), RCol("Dr/Cr", weight = 0.4f)
+            ),
+            rows
+        )
+    }
+
+    /** Who created, edited or deleted which voucher and when. */
+    fun auditLog(from: LocalDate?, to: LocalDate?, f: ReportFilter = ReportFilter()): ReportTable {
+        val list = store.audit(100_000).filter { e ->
+            val day = e.at.atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate()
+            (from == null || day >= from) && (to == null || day <= to) && f.allowsText(e.action, e.voucherNo, e.summary)
+        }
+        return ReportTable(
+            "Audit log", period(from, to),
+            listOf(RCol("When", weight = 1.2f), RCol("Action", weight = 0.7f), RCol("Voucher", weight = 0.8f), RCol("Details", weight = 4f)),
+            list.map { e ->
+                RRow(
+                    listOf(e.at.atZoneSameInstant(java.time.ZoneId.systemDefault()).format(WHEN), e.action, e.voucherNo, e.summary),
+                    link = e.voucherId?.let(RLink::Voucher)
+                )
+            }
         )
     }
 
@@ -432,6 +674,7 @@ class AccountReports(private val db: Db, private val store: AccountsStore, priva
         val BUCKETS = listOf("0–30 days", "31–60", "61–90", "91–180", "Over 180")
         private val MONTH: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM yyyy")
         private val DMY: DateTimeFormatter = DateTimeFormatter.ofPattern("dd-MM-yyyy")
+        private val WHEN: DateTimeFormatter = DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm")
 
         fun side(signed: Long) = when { signed > 0 -> "Dr"; signed < 0 -> "Cr"; else -> "" }
         private fun LocalDate?.dmy(): String = this?.format(DMY).orEmpty()

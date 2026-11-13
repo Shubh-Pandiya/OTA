@@ -11,18 +11,60 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-/** Accounts reports to XLSX (one sheet per table) and PDF (letterhead, ₹ headers, 2 decimals). */
+/** Accounts reports to XLSX (one sheet per table), CSV and PDF (letterhead, ₹ headers, 2 decimals). */
 object AccountsExport {
     private val DMY = DateTimeFormatter.ofPattern("dd-MM-yyyy")
 
+    /** One sheet per table: title rows, a frozen filterable header, real ₹ number cells, bold totals. */
     fun xlsx(file: File, tables: List<ReportTable>): File = XlsxExport.write(file, tables.map { t ->
         SheetTable(
             t.title.take(31).replace(Regex("[\\[\\]*?/\\\\:]"), " "),
             t.columns.map { it.title },
             t.rows.map { r -> r.cells.map { if (it is Long) it.toDouble() else it } },
-            t.moneyColumns
+            t.moneyColumns,
+            title = t.title,
+            subtitle = t.subtitle,
+            currency = true,
+            boldRows = t.rows.indices.filter { t.rows[it].style != RowStyle.NORMAL }.toSet()
         )
     })
+
+    /**
+     * UTF-8 CSV (with a BOM so Excel reads ₹), amounts as plain numbers with 2 decimals, dates dd-MM-yyyy.
+     * Several tables are stacked, each under its title.
+     */
+    fun csv(file: File, tables: List<ReportTable>): File {
+        require(tables.isNotEmpty()) { "Nothing to export" }
+        file.absoluteFile.parentFile?.mkdirs()
+        val tmp = File(file.absoluteFile.parentFile, file.name + ".part")
+        tmp.bufferedWriter(Charsets.UTF_8).use { w ->
+            w.write("\uFEFF")
+            tables.forEachIndexed { n, t ->
+                if (tables.size > 1) {
+                    if (n > 0) w.write("\r\n")
+                    w.write(csvLine(listOf(t.title))); w.write(csvLine(listOf(t.subtitle)))
+                }
+                w.write(csvLine(t.columns.map { it.title }))
+                t.rows.forEach { r -> w.write(csvLine(t.columns.indices.map { i -> csvCell(r.cells.getOrNull(i), t.columns[i].kind) })) }
+            }
+        }
+        if (!tmp.renameTo(file)) {
+            file.delete()
+            check(tmp.renameTo(file)) { "Could not write ${file.path}. Close it and try again." }
+        }
+        return file
+    }
+
+    private fun csvCell(v: Any?, kind: ColKind): String = when (v) {
+        null -> ""
+        is LocalDate -> v.format(DMY)
+        is Double -> if (kind == ColKind.MONEY) "%.2f".format(java.util.Locale.ROOT, v) else v.toString()
+        else -> v.toString()
+    }
+
+    private fun csvLine(cells: List<String>): String = cells.joinToString(",", postfix = "\r\n") { c ->
+        if (c.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + c.replace("\"", "\"\"") + "\"" else c
+    }
 
     /** Text of a cell as shown on screen and in the PDF. */
     fun cellText(value: Any?, kind: ColKind): String = when (value) {
@@ -33,7 +75,18 @@ object AccountsExport {
         else -> value.toString()
     }
 
-    fun pdf(file: File, table: ReportTable): File = PdfKit.create { pdf ->
+    fun pdf(file: File, table: ReportTable): File = pdf(file, listOf(table))
+
+    /** Each table starts on a new page under the letterhead; pages are numbered through the file. */
+    fun pdf(file: File, tables: List<ReportTable>): File = PdfKit.create { pdf ->
+        require(tables.isNotEmpty()) { "Nothing to export" }
+        var page = 0
+        for (table in tables) page = pdfTable(pdf, table, page)
+        pdf.save(file)
+        file
+    }
+
+    private fun pdfTable(pdf: PdfKit, table: ReportTable, pagesBefore: Int): Int {
         val left = 40f
         val right = 555f
         val size = if (table.columns.size > 8) 6.8f else 7.8f
@@ -55,7 +108,8 @@ object AccountsExport {
         val xs = FloatArray(widths.size + 1).also { x -> x[0] = left; for (i in widths.indices) x[i + 1] = x[i] + widths[i] }
 
         var y = 0f
-        var page = 0
+        var page = pagesBefore
+        var first = true
         fun footer() {
             pdf.text("Onkar Textile Agency · ${table.title} · printed ${LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm"))}", left, 822f, 7f, color = Color.GRAY)
             pdf.text("Page $page", right, 822f, 7f, color = Color.GRAY, align = PdfKit.Align.RIGHT)
@@ -77,7 +131,8 @@ object AccountsExport {
         }
         fun newPage() {
             pdf.newPage(); page++
-            if (page == 1) {
+            if (first) {
+                first = false
                 pdf.letterhead(table.title.uppercase())
                 y = 122f
                 pdf.block(table.subtitle, right - left, 8.5f, color = Color.DARK_GRAY).let { it.draw(left, y); y += it.height + 8f }
@@ -110,7 +165,6 @@ object AccountsExport {
             y += h
             pdf.line(left, y, right, y, 0.3f, if (row.style == RowStyle.TOTAL) Color.GRAY else Color(0xE0, 0xD8, 0xD0))
         }
-        pdf.save(file)
-        file
+        return page
     }
 }

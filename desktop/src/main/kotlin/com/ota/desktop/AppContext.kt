@@ -72,6 +72,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
      */
     val accounts = AccountsStore(db, actor = { auth.session.value?.email.orEmpty() }, onChange = ::localChanged)
     val accountReports = AccountReports(db, accounts, payments)
+    val accountsExporter = com.ota.desktop.accounts.AccountsExporter(accountReports, accounts)
 
     /** Admin (cloud clean-up, retention): varun@ / shubham@, by sign-in email like the cloud's check. */
     val admin: StateFlow<Boolean> = auth.session.map { OtaAccounts.isAdmin(it?.email) }

@@ -1,6 +1,11 @@
 package com.ota.desktop
 
 import com.ota.desktop.accounts.AccountsExport
+import com.ota.desktop.accounts.ExportRequest
+import com.ota.desktop.accounts.ExportSheet
+import com.ota.desktop.accounts.ReportFilter
+import com.ota.desktop.ui.AccountsExportDialog
+import com.ota.desktop.ui.ExportPreset
 import com.ota.desktop.accounts.PartyKind
 import com.ota.desktop.accounts.ReportKind
 import com.ota.desktop.ui.AccTab
@@ -137,6 +142,10 @@ fun main(args: Array<String>) {
     shot("23-accounts-parties-commission", acc(AccTab.PARTIES))
     shot("24-accounts-chart", acc(AccTab.CHART))
     shot("25-accounts-audit", acc(AccTab.AUDIT))
+    shot("26-accounts-export-dialog", height = 2150) {
+        AppShell(app, acc(AccTab.REPORTS, report = ReportKind.COMMISSION))
+        AccountsExportDialog(ExportPreset(setOf(ExportSheet.LEDGERS, ExportSheet.TRADE_STATEMENTS, ExportSheet.COMMISSION, ExportSheet.TRADE_OUTSTANDING), setOf(raymond.id))) {}
+    }
     shot("45-confirm-delete-voucher") {
         AppShell(app, acc(AccTab.VOUCHERS, voucherId = payment.id))
         ConfirmDeleteDialog("voucher ${payment.no}", "The voucher and all its lines are deleted completely and stop counting in every ledger and report. " +
@@ -149,6 +158,10 @@ fun main(args: Array<String>) {
     AccountsExport.xlsx(File(out, "exports/OTA accounts.xlsx"), reports)
     reports.forEach { AccountsExport.pdf(File(out, "exports/${it.title.replace(Regex("[^A-Za-z0-9 &]"), "").trim()}.pdf"), it) }
     AccountsExport.pdf(File(out, "exports/Ledger Raymond Ltd.pdf"), app.accountReports.ledger(raymond.id, LocalDate.of(2026, 4, 1), LocalDate.of(2027, 3, 31)))
+    app.accountsExporter.export(
+        ExportRequest(ExportSheet.entries.toSet(), LocalDate.of(2026, 4, 1), LocalDate.of(2027, 3, 31), ReportFilter(subtotals = true)),
+        File(out, "exports/OTA accounts export (all sheets).xlsx")
+    )
 
     val notes = """
         ## What's new

@@ -84,6 +84,7 @@ import com.ota.desktop.accounts.AccountsError
 import com.ota.desktop.accounts.AccountsExport
 import com.ota.desktop.accounts.AuditEntry
 import com.ota.desktop.accounts.ColKind
+import com.ota.desktop.accounts.ExportSheet
 import com.ota.desktop.accounts.PartyAccount
 import com.ota.desktop.accounts.PartyKind
 import com.ota.desktop.accounts.Paise
@@ -140,6 +141,7 @@ fun AccountsScreen() {
     var ledgerAccount by rememberSaveable { mutableStateOf<String?>(null) }
     var open by remember { mutableStateOf<VoucherOpen?>(null) }
     var reportKind by rememberSaveable { mutableStateOf(ReportKind.TRIAL_BALANCE) }
+    var exporting by remember { mutableStateOf<ExportPreset?>(null) }
     LaunchedEffect(nav.target) {
         (nav.take(Section.ACCOUNTS) as? Target.Accounts)?.let { t ->
             tab = t.tab
@@ -160,6 +162,16 @@ fun AccountsScreen() {
 
     Column(Modifier.fillMaxSize()) {
         PageHeader("Accounts", "The agency's books · kept on this laptop only, never synced to the cloud") {
+            OutlinedButton(onClick = {
+                exporting = when (tab) {
+                    AccTab.VOUCHERS -> ExportPreset(setOf(ExportSheet.VOUCHERS, ExportSheet.DAY_BOOK))
+                    AccTab.LEDGERS -> ExportPreset(setOf(ExportSheet.LEDGERS), setOfNotNull(ledgerAccount))
+                    AccTab.REPORTS -> ExportPreset(setOf(ExportSheet.of(reportKind)))
+                    AccTab.PARTIES -> ExportPreset(setOf(ExportSheet.SUPPLIERS, ExportSheet.BUYERS))
+                    AccTab.CHART -> ExportPreset(setOf(ExportSheet.CHART))
+                    AccTab.AUDIT -> ExportPreset(setOf(ExportSheet.AUDIT))
+                }
+            }) { IconText(Icons.Default.Share, "Export…") }
             VType.manual.forEach { t ->
                 if (t == VType.JOURNAL) Button(onClick = { open = VoucherOpen.New(t) }) { IconText(Icons.Default.Add, "Journal") }
                 else OutlinedButton(onClick = { open = VoucherOpen.New(t) }) { Text(t.label) }
@@ -178,6 +190,7 @@ fun AccountsScreen() {
             }
         }
     }
+    exporting?.let { AccountsExportDialog(it) { exporting = null } }
     open?.let { o ->
         VoucherDialog(
             id = (o as? VoucherOpen.Existing)?.id,
@@ -333,7 +346,7 @@ private fun ReportRows(table: ReportTable, onLink: (RLink) -> Unit) {
 
 /** A dialog wider than Material's 560dp limit, for the voucher's line grid. */
 @Composable
-private fun WideDialog(
+internal fun WideDialog(
     onDismissRequest: () -> Unit,
     title: @Composable () -> Unit,
     text: @Composable () -> Unit,

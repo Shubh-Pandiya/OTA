@@ -9,7 +9,14 @@ import com.ota.desktop.accounts.Account
 import com.ota.desktop.accounts.AccountReports
 import com.ota.desktop.accounts.AccountsError
 import com.ota.desktop.accounts.AccountsExport
+import com.ota.desktop.accounts.AccountsExporter
 import com.ota.desktop.accounts.AccountsStore
+import com.ota.desktop.accounts.ExportFormat
+import com.ota.desktop.accounts.ExportLayout
+import com.ota.desktop.accounts.ExportRequest
+import com.ota.desktop.accounts.ExportSheet
+import com.ota.desktop.accounts.ReportFilter
+import com.ota.desktop.accounts.Side
 import com.ota.desktop.accounts.ColKind
 import com.ota.desktop.accounts.PartyKind
 import com.ota.desktop.accounts.Paise
@@ -25,6 +32,9 @@ import com.ota.desktop.db.Migrations
 import com.ota.desktop.db.exec
 import com.ota.desktop.db.one
 import com.ota.desktop.db.query
+import com.example.otaapplication.data.PaymentStatus
+import org.dhatim.fastexcel.reader.CellType
+import org.dhatim.fastexcel.reader.ReadableWorkbook
 import org.apache.pdfbox.Loader
 import org.apache.pdfbox.text.PDFTextStripper
 import java.io.File
@@ -328,5 +338,94 @@ class AccountsTest {
         assertEquals(1, allCommissionRows(), "test commission never reaches the real books")
         assertNull(books.partyAccount(PartyKind.SUPPLIER, "Test Mills"))
         assertEquals(listOf("RB-1"), payments.bills().map { it.bill.billNo })
+    }
+
+    @Test
+    fun accountsExportFiltersLayoutsAndFormats() {
+        val cash = sys("cash").id
+        books.saveAccount(sys("capital").copy(opening = -10_000_000))
+        books.saveAccount(sys("cash").copy(opening = 10_000_000))
+        bill("SB-1", 100_000.0, date = LocalDate.of(2026, 10, 5))
+        bill("GF-1", 20_000.0, supplier = "Ganga Fabrics")
+        books.reconcileCommission(day)
+        val shiv = supplier("Shiv Mills")
+        val ganga = supplier("Ganga Fabrics")
+        books.setCommission(shiv.id, 2.0)
+        books.setCommission(ganga.id, 1.0)
+        books.saveVoucher(VoucherDraft(null, VType.RECEIPT, day, "Commission received", listOf(VoucherLine(cash, 200_000, 0), VoucherLine(shiv.id, 0, 200_000))))
+        books.saveVoucher(VoucherDraft(null, VType.PAYMENT, day, "Office rent", listOf(VoucherLine(sys("rent").id, 50_000, 0), VoucherLine(cash, 0, 50_000))))
+        val exporter = AccountsExporter(reports, books)
+        fun req(vararg sheets: ExportSheet, f: ReportFilter = ReportFilter()) = ExportRequest(sheets.toSet(), null, day, f)
+        fun tables(vararg sheets: ExportSheet, f: ReportFilter = ReportFilter()) = exporter.tables(req(*sheets, f = f)).map { it.second }
+        fun normal(t: com.ota.desktop.accounts.ReportTable) = t.rows.filter { it.style == RowStyle.NORMAL }
+
+        // Every Accounts table exports.
+        val everything = tables(*ExportSheet.entries.toTypedArray())
+        ExportSheet.entries.forEach { s -> assertTrue(exporter.tables(req(s)).isNotEmpty(), s.label) }
+        assertTrue(everything.any { it.title == "Ledger — Shiv Mills" } && everything.any { it.title == "Trade statement — Ganga Fabrics" })
+
+        // Filters: voucher type, amount, narration text, side, parties, bill status, zero balances.
+        assertEquals(listOf("Office rent"), normal(tables(ExportSheet.VOUCHERS, f = ReportFilter(types = setOf(VType.PAYMENT))).single()).map { it.cells[5] })
+        assertEquals(2, normal(tables(ExportSheet.VOUCHERS, f = ReportFilter(minAmount = 100_000)).single()).size)
+        assertEquals(setOf("Office rent"), normal(tables(ExportSheet.DAY_BOOK, f = ReportFilter(text = "rent")).single()).map { it.cells[4] }.filter { it != "" }.toSet())
+        val cashCr = tables(ExportSheet.CASH_BOOK, f = ReportFilter(side = Side.CR)).single()
+        assertEquals(listOf(500.0), normal(cashCr).map { it.cells[6] })
+        assertEquals(100_000 + 2_000 - 500.0, cashCr.rows.last().cells[7], "running balance counts every entry")
+        val shivOnly = ReportFilter(accounts = setOf(shiv.id))
+        assertEquals(listOf("Ledger — Shiv Mills"), tables(ExportSheet.LEDGERS, f = shivOnly).map { it.title })
+        assertEquals(listOf("Shiv Mills"), normal(tables(ExportSheet.TRADE_OUTSTANDING, f = shivOnly).single()).map { it.cells[1] })
+        assertTrue(normal(tables(ExportSheet.TRADE_OUTSTANDING, f = ReportFilter(billStatus = setOf(PaymentStatus.PAID))).single()).isEmpty())
+        assertTrue(
+            tables(ExportSheet.TRIAL_BALANCE, f = ReportFilter(hideZero = false)).single().rows.size > tables(ExportSheet.TRIAL_BALANCE).single().rows.size
+        )
+        // Extras: subtotals, running balance and opening/closing can be switched; columns can be left out.
+        assertTrue(tables(ExportSheet.TRIAL_BALANCE, f = ReportFilter(subtotals = true)).single().rows.any { it.cells[1] == "Total assets" })
+        assertFalse(tables(ExportSheet.COMMISSION, f = ReportFilter(subtotals = false)).single().rows.any { (it.cells[0] as String).endsWith("— total") })
+        val bare = exporter.tables(req(ExportSheet.LEDGERS, f = shivOnly.copy(runningBalance = false, openingClosing = false)).copy(excludedColumns = setOf("Narration"))).single().second
+        assertEquals(listOf("Date", "Voucher", "Type", "Particulars", "Debit (₹)", "Credit (₹)"), bare.columns.map { it.title })
+        assertFalse(bare.rows.any { it.cells.contains("Opening balance") || it.cells.contains("Closing balance") })
+
+        // XLSX: title rows, frozen filterable header, real number cells with a ₹ Indian format, a sheet per table.
+        val out = File("build/accounts-samples").apply { deleteRecursively(); mkdirs() }
+        val all = exporter.export(req(*ExportSheet.entries.toTypedArray()), File(out, "OTA accounts export.xlsx")).single()
+        ZipFile(all).use { z ->
+            assertEquals(everything.size, z.entries().toList().count { it.name.startsWith("xl/worksheets/sheet") })
+            assertTrue("₹" in z.getInputStream(z.getEntry("xl/styles.xml")).reader().readText())
+            val sheet = z.getInputStream(z.getEntry("xl/worksheets/sheet1.xml")).reader().readText()
+            assertTrue("<autoFilter ref=\"A4:" in sheet, sheet.take(600))
+            assertTrue("ySplit=\"4\"" in sheet, sheet.take(600))
+        }
+        ReadableWorkbook(all).use { wb ->
+            val rows = wb.sheets.toList().first { it.name == "Trial balance" }.read()
+            assertEquals("Trial balance", rows[0].getCellText(0))
+            assertEquals("Debit (₹)", rows.first { it.rowNum == 4 }.getCellText(3))
+            assertEquals(CellType.NUMBER, rows.last().getCell(3).type)
+        }
+
+        // Layouts: a file per party (plus one for the other reports) and a file per report; CSV and PDF.
+        val parties = ReportFilter(accounts = setOf(shiv.id, ganga.id))
+        val perParty = exporter.export(req(ExportSheet.LEDGERS, ExportSheet.TRADE_STATEMENTS, ExportSheet.TRIAL_BALANCE, f = parties).copy(layout = ExportLayout.PER_PARTY), File(out, "per-party"))
+        assertEquals(setOf("Shiv Mills.xlsx", "Ganga Fabrics.xlsx", "Reports.xlsx"), perParty.map { it.name }.toSet())
+        ZipFile(perParty.first { it.name == "Shiv Mills.xlsx" }).use { z -> assertEquals(2, z.entries().toList().count { it.name.startsWith("xl/worksheets/sheet") }) }
+        val csv = exporter.export(req(ExportSheet.VOUCHERS, ExportSheet.DAY_BOOK).copy(layout = ExportLayout.PER_REPORT, format = ExportFormat.CSV), File(out, "per-report"))
+        assertEquals(listOf("Vouchers.csv", "Day book.csv"), csv.map { it.name })
+        val vouchersCsv = csv.first().readText()
+        assertTrue(vouchersCsv.startsWith("\uFEFFDate,Voucher,Type,Debit,Credit,Narration,Amount (₹)"), vouchersCsv.take(80))
+        assertTrue(",Office rent,500.00\r\n" in vouchersCsv, vouchersCsv)
+        val pdf = exporter.export(req(ExportSheet.TRIAL_BALANCE, ExportSheet.COMMISSION).copy(format = ExportFormat.PDF), File(out, "reports.pdf")).single()
+        Loader.loadPDF(pdf).use { d ->
+            val text = PDFTextStripper().getText(d)
+            assertTrue("TRIAL BALANCE" in text && "COMMISSION BY SUPPLIER" in text.uppercase() && "(₹)" in text, text)
+            assertTrue(d.numberOfPages >= 2)
+        }
+
+        // The test login exports only the test books.
+        db.schema = Db.TEST
+        try {
+            val texts = tables(*ExportSheet.entries.toTypedArray()).flatMap { t -> t.rows.flatMap { r -> r.cells.map { it.toString() } } + t.title }
+            assertFalse(texts.any { "Shiv Mills" in it || "Ganga" in it || "Office rent" in it }, texts.filter { "Shiv" in it || "Ganga" in it }.toString())
+        } finally {
+            db.schema = Db.PRODUCTION
+        }
     }
 }

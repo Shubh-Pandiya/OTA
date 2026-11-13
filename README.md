@@ -267,6 +267,12 @@ On a Mac the update downloads the DMG and verifies it the same way. After the ap
   - Changing a supplier's % re-posts all of that supplier's bills, because the rate has no effective date.
   - Ledgers with a date range, opening and running balance, and drill-down to the voucher or bill. For a party there is also a bills & advices statement.
   - Reports in tables: day book, trial balance, profit & loss, balance sheet, commission by supplier and month (earned vs received), party ageing, trade outstanding (bills) and cash/bank book. Export them to XLSX or PDF (₹ headers, 2 decimals).
+  - **Export…** (Accounts header) opens one dialog for every Accounts table: ledgers, bills & advices statements, vouchers, day book, trial balance, P&L, balance sheet, commission, ageing, trade outstanding, cash/bank book, buyers, suppliers, chart of accounts and audit log.
+    - Format: Excel (`.xlsx`), CSV or PDF. Layout: one workbook with a sheet per report, a file per report, or a file per party.
+    - Filters: period (this/last FY, quarter, month, all dates or custom), buyers/suppliers/accounts (multi-select), account groups, voucher types (JV, PV, RV, CV, CM), amount range, Dr or Cr side, narration text, bill status (due, partly paid, paid) and hide zero balances.
+    - Pick the columns to include, and whether to add opening/closing balances, subtotals and the running balance.
+    - Excel files have a frozen header with a filter row, and amounts are real numbers shown as ₹ with 2 decimals and Indian grouping.
+    - The test login exports only its test books; real exports never include test data.
   - Accounts never sync and are never archived or purged. They live in the local database, so they are in every update backup.
 - Excel export (`.xlsx`): all data (one sheet per table), the dashboard numbers, the current filtered view of any list, and per-area workbooks.
 - Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges archived rows older than the retention period, on connect and every 6 hours. The admin can change the retention days and storage limit under *Sync & Cloud*. Nothing is purged until this laptop holds it.
