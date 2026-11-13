@@ -59,12 +59,14 @@ class UpdateManager(
     private val home: File = AppPaths.home,
     private val pgData: File = AppPaths.pgData,
     private val feed: ReleaseFeed = ReleaseFeed(),
-    private val windows: Boolean = AppPaths.isWindows,
+    /** Whether this computer can install updates by itself (Windows MSI, or a Mac app bundle). */
+    private val selfInstall: Boolean = AppPaths.isWindows || (AppPaths.isMac && MacInstaller.appBundle() != null),
     private val every: Duration = Duration.ofHours(6),
     private val snooze: Duration = Duration.ofHours(24),
     /** Arguments for the restarted app (the CI update run restarts it in self-test mode). */
     private val relaunchArgs: List<String> = emptyList(),
-    private val launcher: (msi: File, log: File, result: File, args: List<String>) -> Unit = WindowsInstaller::launch
+    private val launcher: (installer: File, log: File, result: File, args: List<String>) -> Unit =
+        if (AppPaths.isMac) MacInstaller::launch else WindowsInstaller::launch
 ) {
     companion object {
         /** This build's version (gradle.properties `otaDesktopVersion`). */
@@ -116,7 +118,7 @@ class UpdateManager(
             return@withLock null
         }
         val quiet = snoozed?.let { (v, until) -> !manual && v == found.version && Instant.now() < until } == true
-        if (!quiet || _state.value is UpdateState.Available) _state.value = UpdateState.Available(found, windows && found.installer != null)
+        if (!quiet || _state.value is UpdateState.Available) _state.value = UpdateState.Available(found, selfInstall && found.installer != null)
         found
     }
 
@@ -143,7 +145,7 @@ class UpdateManager(
      */
     suspend fun install(release: Release, host: UpdateHost) = withContext(Dispatchers.IO) {
         val installer = release.installer ?: run {
-            _state.value = UpdateState.Failed("This release has no Windows installer.", release)
+            _state.value = UpdateState.Failed("This release has no installer for this computer.", release)
             return@withContext
         }
         stop()
@@ -200,7 +202,7 @@ class UpdateManager(
         PendingUpdate.clear(home)
         val target = AppVersion.parse(pending.to)
         val outcome = if (target != null && current >= target) {
-            updatesDir.listFiles { f -> f.name.endsWith(".msi", true) || f.name.endsWith(".part") }?.forEach { it.delete() }
+            updatesDir.listFiles { f -> f.name.endsWith(".msi", true) || f.name.endsWith(".dmg", true) || f.name.endsWith(".part") }?.forEach { it.delete() }
             UpdateState.Finished(true, "OTA Business was updated to $current. Your data was backed up first" + (pending.backup?.let { ":\n$it" } ?: "."))
         } else {
             val code = pending.exitCode()
@@ -208,6 +210,7 @@ class UpdateManager(
                 null -> "it did not run"
                 1602 -> "it was cancelled"
                 1618 -> "another installation was in progress"
+                in 2..4 -> if (AppPaths.isMac) MacInstaller.reason(code)!! else "the installer stopped with code $code"
                 else -> "the installer stopped with code $code"
             }
             UpdateState.Finished(false, "The update to ${pending.to} was not installed ($why). You are still on $current and your data is as it was." + (pending.log?.let { "\nInstaller log: $it" } ?: ""))

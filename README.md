@@ -56,8 +56,9 @@ Done once by the owner.
 4. **Add staff accounts.** **Authentication → Users → Add user → Create new user** → email + password,
    tick **Auto Confirm User** → **Create user**. Repeat for each staff member. Deleting a user here
    signs that phone out within the hour (when its sign-in token next refreshes).
-   Then give each person their order-number digit (1–9, unique) in the **SQL Editor**; `is_admin`
-   lets that person change cloud retention and purge archived orders (desktop app):
+   Then give each person their order-number digit (1–9, unique) in the **SQL Editor**. The admins
+   who may change cloud retention and archive/purge (desktop app) are fixed by email in
+   `ota_is_admin()`: varun@ota.com and shubham@ota.com. `is_admin` is kept in step for display only:
 
    ```sql
    insert into public.staff (user_id, code, name, is_admin)
@@ -137,6 +138,21 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 - The advice PDF is saved in `Documents/OTA Orders/{year}/{Month}/Payment Advices/` and shared from
   the advice screen; it is never uploaded.
 
+### Admins and the test account
+
+- **Admins** are varun@ota.com and shubham@ota.com. Only they may archive or purge the cloud or
+  change retention, and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
+  clean-up, the retention settings and **Accounts**.
+- **Test account** testuser1@ota.com uses the same cloud, but its rows are tagged `is_test` and hidden
+  by RLS. Nobody else sees them in any list, search, total, Insights, Accounts or export, and it sees
+  only its own test data. Test orders and advices use their own number series.
+  - Signed in as the test user, *Sync Settings* (phone) and *Sync & Cloud* (desktop) show
+    **Clear all my test data**. It deletes every test row in the cloud and on that device.
+  - A device holding real data refuses the test login, so testing can never wipe real data. Use a
+    fresh install or emulator for the test account.
+
+See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md#test-account) for the details.
+
 ### Cloud retention (desktop app)
 
 The cloud keeps orders and payment advices only for `retention_days` (default 30). The desktop app keeps everything: it
@@ -153,7 +169,7 @@ it is full, changes stay on the phone and upload automatically once there is spa
 See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md) for the tables, cursors and
 archive/purge RPCs the desktop app uses.
 
-## Windows desktop app (`desktop/`)
+## Desktop app (`desktop/`, Windows and Mac)
 
 The laptop is the agency's main store; the cloud only carries recent data between phones and the laptop.
 
@@ -165,6 +181,14 @@ runtime and PostgreSQL 17. On first launch the app creates a private database un
 only while the app is open), applies the schema, and asks for a one-time staff sign-in. After that it opens offline.
 Uninstalling or upgrading never touches the data folder. The installer is not code-signed, so
 Windows SmartScreen may ask for *More info → Run anyway* the first time.
+
+**Install on a Mac (Apple silicon, 1.5.0 and later):** download `OTA-Business-<version>-mac-arm64.dmg`,
+open it and drag **OTA Business** to **Applications**. Start it from Applications, not from the disk
+image: it can only update itself there. The app is not signed by Apple, so macOS blocks the first
+start ("cannot be opened" / "Apple could not verify…"). Choose **Done**, open **System Settings →
+Privacy & Security**, scroll to *Security*, click **Open Anyway** next to OTA Business, and confirm with
+your password. This is needed only once. The data lives in `~/Library/Application Support/OTA Business Data`
+(database, backups and logs), and PDFs go to `~/Documents/OTA Orders`. Intel Macs aren't supported.
 
 **Updates (1.3.0 and later):** the app checks the public GitHub Releases (`desktop-v*` tags, no token)
 a few seconds after start and every 6 hours, and asks *Update now / Later* with the release notes
@@ -180,12 +204,15 @@ one transaction, so a failed migration leaves the database exactly as it was and
 To put a backup back (with the app closed): `"OTA Business.exe" --restore-backup "<backup .zip>"`; the
 current database is kept beside it as `pgdata-before-restore-<time>`.
 **Coming from 1.2.1 or older:** install 1.3.0 once by hand (download and run the MSI); later versions update themselves.
+On a Mac the update downloads the DMG and verifies it the same way. After the app closes, it swaps
+`OTA Business.app` in place and reopens it, and the data folder is never touched. The first Mac version
+(1.5.0) is installed by hand.
 
 **What it does:**
 - A Home screen: today's orders, bills still to receive, outstanding and this month's receipts, dues by age, the oldest dues, recent orders and advices, and quick actions.
 - Everything the phone does: orders with units and PDFs, bills (with their own item lines, added from an order or on their own), payment advices with claim / defect deductions and PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. Order numbers come from the shared financial-year counter (`26270001`, …); an order saved offline waits for its number until the next sync. Advice numbers use the signed-in staff digit. Advice images stay on the phone.
 - Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D./claims), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
-- **Accounts** (admin laptop only): the agency's own double-entry books.
+- **Accounts** (admins only: varun@ota.com, shubham@ota.com): the agency's own double-entry books.
   - A default chart of accounts you can edit, and a ledger for every catalog buyer and supplier.
   - Journal, payment, receipt and contra vouchers with balanced Dr/Cr lines, and an audit log of every add, edit and delete.
   - Commission is set as a % per supplier and posted automatically from every bill (Dr supplier, Cr Commission income), at most one voucher per bill. It is re-posted when a bill is edited and removed when the bill is deleted.
@@ -198,7 +225,7 @@ current database is kept beside it as `pgdata-before-restore-<time>`.
 
 PDFs are saved to `Documents\OTA Orders`. Logs are in `%LOCALAPPDATA%\OTA Business Data\logs`.
 
-**Build / test** (JDK 21; on macOS this builds a `.app` for local testing only):
+**Build / test** (JDK 21):
 
 ```bash
 cd desktop
@@ -213,6 +240,10 @@ Windows installers are built by [`.github/workflows/desktop.yml`](.github/workfl
 update test ([`desktop/ci/update-e2e.ps1`](desktop/ci/update-e2e.ps1)): it installs the previous public release
 and fills it with realistic and unsynced data. Next it installs this build over it, then updates in-app to a
 newer build served from a local feed. Every table's row count and checksum must be unchanged, with no
-duplicate ids or numbers and two backups taken. The accounts books seeded after the first install must come through the in-app update unchanged too. An older 1.3.0 app installed over it must refuse to open the data, and uninstalling must keep it. Pushing a
-tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes both installers and `SHA256SUMS.txt`
+duplicate ids or numbers and two backups taken. The accounts books seeded after the first install must come through the in-app update unchanged too. An older 1.3.0 app installed over it must refuse to open the data, and uninstalling must keep it. A `macos-latest` job does the same for the Mac. It runs the tests, builds the DMG,
+installs it into `~/Applications` and self-tests it twice. Then [`desktop/ci/update-e2e-mac.sh`](desktop/ci/update-e2e-mac.sh) seeds
+realistic, unsynced and accounts data and updates in-app to a newer DMG from a local feed. It
+checks that every table is identical, with no duplicates and exactly one new backup, and that an older
+app put back refuses the data. Pushing a
+tag `desktop-v<version>` (version from `desktop/gradle.properties`) publishes the MSI, EXE, Mac DMG and `SHA256SUMS.txt`
 as a GitHub Release, using `desktop/release-notes/<version>.md` as the notes (shown in the app's update prompt).

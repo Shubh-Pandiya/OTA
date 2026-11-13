@@ -33,6 +33,34 @@ class AppVersion private constructor(val parts: List<Int>, val text: String) : C
     }
 }
 
+/** Which installer this computer takes from a release: the MSI on Windows, the DMG for this Mac's CPU. */
+data class Platform(val ext: String, val arch: String? = null) {
+    companion object {
+        val WINDOWS = Platform(".msi")
+        val MAC_ARM = Platform(".dmg", "arm64")
+        val MAC_INTEL = Platform(".dmg", "x64")
+        private val ALL_ARCHES = listOf("arm64", "aarch64", "x64", "x86_64", "intel")
+
+        val current: Platform? by lazy {
+            val os = System.getProperty("os.name").lowercase()
+            val arm = System.getProperty("os.arch").lowercase().let { it == "aarch64" || it.startsWith("arm") }
+            when {
+                os.contains("win") -> WINDOWS
+                os.contains("mac") -> if (arm) MAC_ARM else MAC_INTEL
+                else -> null
+            }
+        }
+    }
+
+    /** DMGs are named per CPU (…-mac-arm64.dmg); one with no CPU in its name is taken only when nothing matches. */
+    fun pick(names: List<String>): String? {
+        val mine = names.filter { it.endsWith(ext, ignoreCase = true) }
+        if (arch == null) return mine.firstOrNull()
+        val tagged = mine.filter { n -> ALL_ARCHES.any { n.contains(it, ignoreCase = true) } }
+        return tagged.firstOrNull { it.contains(arch, ignoreCase = true) } ?: (mine - tagged.toSet()).firstOrNull()
+    }
+}
+
 /** One downloadable installer of a release, with what we know to check it against. */
 data class Installer(val name: String, val url: String, val size: Long, val sha256: String?)
 
@@ -45,10 +73,11 @@ data class Release(val version: AppVersion, val tag: String, val notes: String, 
  */
 class ReleaseFeed(
     private val url: String = System.getProperty("ota.updateFeed") ?: System.getenv("OTA_UPDATE_FEED") ?: DEFAULT,
-    private val http: HttpClient = client
+    private val http: HttpClient = client,
+    private val platform: Platform? = Platform.current
 ) {
     /** The newest published desktop release above [current], or null when [current] is the latest. */
-    fun newer(current: AppVersion): Release? = parse(get(url)).filter { it.version > current }.maxByOrNull { it.version }
+    fun newer(current: AppVersion): Release? = parse(get(url), platform).filter { it.version > current }.maxByOrNull { it.version }
 
     /** SHA-256 of [name] as listed in the release's SHA256SUMS.txt, if it has one. */
     fun publishedChecksum(release: Release, name: String): String? {
@@ -73,30 +102,25 @@ class ReleaseFeed(
 
         val client: HttpClient = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).connectTimeout(Duration.ofSeconds(15)).build()
 
-        /** Published (not draft, not pre-release) desktop releases with a Windows MSI. */
-        fun parse(json: String): List<Release> {
+        /** Published (not draft, not pre-release) desktop releases, with [platform]'s installer when they have one. */
+        fun parse(json: String, platform: Platform? = Platform.WINDOWS): List<Release> {
             val list = JSONArray(json)
             return (0 until list.length()).mapNotNull { i ->
                 val r = list.getJSONObject(i)
                 val tag = r.optString("tag_name")
                 if (!tag.startsWith(TAG_PREFIX) || r.optBoolean("draft") || r.optBoolean("prerelease")) return@mapNotNull null
                 val version = AppVersion.parse(tag.removePrefix(TAG_PREFIX)) ?: return@mapNotNull null
-                val assets = r.optJSONArray("assets") ?: JSONArray()
-                var msi: Installer? = null
-                var sums: String? = null
-                for (j in 0 until assets.length()) {
-                    val a = assets.getJSONObject(j)
-                    val name = a.optString("name")
-                    val url = a.optString("browser_download_url")
-                    when {
-                        name == CHECKSUMS -> sums = url
-                        name.endsWith(".msi", ignoreCase = true) && msi == null -> msi = Installer(
-                            name, url, a.optLong("size", -1),
-                            a.optString("digest").takeIf { it.startsWith("sha256:") }?.removePrefix("sha256:")?.lowercase()
-                        )
-                    }
+                val array = r.optJSONArray("assets") ?: JSONArray()
+                val assets = (0 until array.length()).map { array.getJSONObject(it) }
+                val sums = assets.firstOrNull { it.optString("name") == CHECKSUMS }?.optString("browser_download_url")
+                val chosen = platform?.pick(assets.map { it.optString("name") })
+                val installer = assets.firstOrNull { it.optString("name") == chosen }?.let { a ->
+                    Installer(
+                        a.optString("name"), a.optString("browser_download_url"), a.optLong("size", -1),
+                        a.optString("digest").takeIf { it.startsWith("sha256:") }?.removePrefix("sha256:")?.lowercase()
+                    )
                 }
-                Release(version, tag, r.optString("body").trim(), r.optString("html_url"), msi, sums)
+                Release(version, tag, r.optString("body").trim(), r.optString("html_url"), installer, sums)
             }
         }
 

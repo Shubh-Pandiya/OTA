@@ -6,6 +6,8 @@ import com.ota.desktop.update.AppVersion
 import com.ota.desktop.update.Backups
 import com.ota.desktop.update.Downloader
 import com.ota.desktop.update.Installer
+import com.ota.desktop.update.MacInstaller
+import com.ota.desktop.update.Platform
 import com.ota.desktop.update.ReleaseFeed
 import com.ota.desktop.update.StartupBlocked
 import com.ota.desktop.update.StartupGuard
@@ -89,7 +91,7 @@ class UpdateTest {
             r.publish("1.5.0", byteArrayOf(4), prerelease = true)
             // The phone's release tags are not desktop releases.
             r.releases.put(JSONObject().put("tag_name", "v9.0.0").put("assets", JSONArray()))
-            val feed = ReleaseFeed(r.feed)
+            val feed = ReleaseFeed(r.feed, platform = Platform.WINDOWS)
             val found = assertNotNull(feed.newer(v("1.2.1")))
             assertEquals(v("1.3.0"), found.version)
             assertEquals("OTA-Business-1.3.0.msi", found.installer!!.name)
@@ -118,7 +120,7 @@ class UpdateTest {
             val bytes = ByteArray(300_000) { (it * 31).toByte() }
             r.publish("1.3.0", bytes)
             val dir = Files.createTempDirectory("ota-dl").toFile()
-            val release = ReleaseFeed(r.feed).newer(v("1.2.1"))!!
+            val release = ReleaseFeed(r.feed, platform = Platform.WINDOWS).newer(v("1.2.1"))!!
             var last = 0f
             val file = Downloader.fetch(release.installer!!, dir, null) { last = it }
             assertEquals(1f, last)
@@ -204,5 +206,75 @@ class UpdateTest {
         db.read { c -> c.createStatement().use { it.execute("insert into schema_version (version) values (9)") } }
         val e = assertFailsWith<Migrations.SchemaTooNew> { Migrations.run(db) }
         assertEquals(9, e.found)
+    }
+
+    @Test
+    fun eachComputerPicksItsOwnInstaller() {
+        val names = listOf("OTA-Business-1.5.0.msi", "OTA-Business-Setup-1.5.0.exe", "OTA-Business-1.5.0-mac-arm64.dmg", "SHA256SUMS.txt")
+        assertEquals("OTA-Business-1.5.0.msi", Platform.WINDOWS.pick(names))
+        assertEquals("OTA-Business-1.5.0-mac-arm64.dmg", Platform.MAC_ARM.pick(names))
+        assertNull(Platform.MAC_INTEL.pick(names), "an Apple-silicon build is never offered to an Intel Mac")
+        assertEquals("OTA-Business-1.5.0.dmg", Platform.MAC_INTEL.pick(listOf("OTA-Business-1.5.0.dmg")))
+        // Older releases have only Windows installers: a Mac finds no installer and isn't offered one.
+        val json = """[{"tag_name":"desktop-v1.4.0","assets":[{"name":"OTA-Business-1.4.0.msi","size":1,"browser_download_url":"u"}]},
+            {"tag_name":"desktop-v1.5.0","assets":[{"name":"OTA-Business-1.5.0-mac-arm64.dmg","size":2,"browser_download_url":"d"},{"name":"OTA-Business-1.5.0.msi","size":3,"browser_download_url":"m"}]}]"""
+        val mac = ReleaseFeed.parse(json, Platform.MAC_ARM)
+        assertNull(mac.first { it.tag == "desktop-v1.4.0" }.installer)
+        assertEquals("d", mac.first { it.tag == "desktop-v1.5.0" }.installer!!.url)
+        assertEquals("m", ReleaseFeed.parse(json, Platform.WINDOWS).first { it.tag == "desktop-v1.5.0" }.installer!!.url)
+        assertTrue(ReleaseFeed.parse(json, null).all { it.installer == null })
+    }
+
+    @Test
+    fun macBundlesThatCannotBeReplacedAreNotSelfUpdated() {
+        assertNotNull(MacInstaller.replaceableIssue("/private/var/folders/x/AppTranslocation/ABC/d/OTA Business.app"))
+        assertNotNull(MacInstaller.replaceableIssue("/Volumes/OTA Business/OTA Business.app"))
+        assertNull(MacInstaller.replaceableIssue("/Applications/OTA Business.app"))
+    }
+
+    /** The real helper script on a real DMG: swaps the bundle, keeps data outside it, restores on failure. */
+    @Test
+    fun macScriptSwapsTheBundleFromADmg() {
+        if (!System.getProperty("os.name").lowercase().contains("mac")) return
+        val dir = Files.createTempDirectory("ota-mac-update").toFile()
+        fun bundle(root: File, version: String) = File(root, "OTA Business.app").apply {
+            File(this, "Contents/MacOS").mkdirs()
+            File(this, "Contents/version.txt").writeText(version)
+        }
+        val installed = bundle(File(dir, "Applications").apply { mkdirs() }, "1.5.0")
+        val data = File(dir, "Application Support/OTA Business Data/pgdata/PG_VERSION").apply { parentFile.mkdirs(); writeText("17") }
+        val src = File(dir, "src").apply { mkdirs() }
+        bundle(src, "1.5.1")
+        val dmg = File(dir, "update.dmg")
+        val made = ProcessBuilder("hdiutil", "create", "-quiet", "-fs", "HFS+", "-volname", "OTA Business", "-srcfolder", src.path, "-format", "UDZO", dmg.path)
+            .inheritIO().start().waitFor()
+        assertEquals(0, made, "hdiutil create")
+        // Sandboxed shells may forbid mounting disk images; CI runners must not skip.
+        val probe = Files.createTempDirectory("ota-probe").toFile()
+        val mounted = ProcessBuilder("hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", probe.path, dmg.path)
+            .redirectErrorStream(true).start().apply { inputStream.readBytes() }.waitFor() == 0
+        if (mounted) ProcessBuilder("hdiutil", "detach", probe.path, "-quiet").start().waitFor()
+        if (!mounted && System.getenv("CI") == null) { dir.deleteRecursively(); return }
+
+        fun run(dmgFile: File): Int {
+            val log = File(dir, "install.log"); val result = File(dir, "result.txt").apply { delete() }
+            // A finished process stands in for the app; "true" stands in for `open` by not passing a bundle path to open.
+            val dead = ProcessBuilder("true").start().apply { waitFor() }.pid()
+            val script = File(dir, "install.sh")
+            script.writeText(MacInstaller.script(dmgFile, log, result, dead, installed, emptyList()).replace("open -n", "echo would open"))
+            val code = ProcessBuilder("/bin/bash", script.path).inheritIO().start().waitFor()
+            assertEquals(0, code, log.readText())
+            return result.readText().trim().toInt()
+        }
+        assertEquals(0, run(dmg))
+        assertEquals("1.5.1", File(installed, "Contents/version.txt").readText())
+        assertFalse(File(installed.path + ".old").exists() || File(installed.path + ".new").exists())
+        assertEquals("17", data.readText(), "the data folder is outside the bundle")
+
+        // A broken download leaves the installed app as it was.
+        val bad = File(dir, "bad.dmg").apply { writeText("not a disk image") }
+        assertEquals(2, run(bad))
+        assertEquals("1.5.1", File(installed, "Contents/version.txt").readText())
+        dir.deleteRecursively()
     }
 }

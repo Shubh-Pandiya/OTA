@@ -1,4 +1,4 @@
-name: Desktop (Windows)
+name: Desktop
 
 on:
   push:
@@ -174,8 +174,120 @@ jobs:
             ${{ runner.temp }}/update-e2e/*.log
           if-no-files-found: ignore
 
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 100
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Fetch Gradle distribution
+        run: |
+          props=gradle/wrapper/gradle-wrapper.properties
+          url=$(sed -n 's/^distributionUrl=//p' $props | sed 's#\\:#:#g')
+          sha=$(sed -n 's/^distributionSha256Sum=//p' $props)
+          name=$(basename "$url"); ver=${name#gradle-}; ver=${ver%-bin.zip}
+          zip="$RUNNER_TEMP/$name"
+          ok=
+          for round in 1 2 3 4 5; do
+            for m in "$url" "https://github.com/gradle/gradle-distributions/releases/download/v$ver/$name" "https://mirrors.cloud.tencent.com/gradle/$name"; do
+              echo "Round $round: $m"
+              if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 600 -o "$zip" "$m" && [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" = "$sha" ]; then ok=1; break 2; fi
+            done
+            sleep $((20 * round))
+          done
+          [ -n "$ok" ] || { echo "Could not download $name"; exit 1; }
+          sed -i '' "s#^distributionUrl=.*#distributionUrl=file\\\\://$zip#" $props
+          ./gradlew --version
+
+      - name: Test
+        run: ./gradlew test -PpgPlatform=darwin-arm64v8 --console=plain
+
+      - name: Test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-macos
+          path: desktop/build/test-results/test/*.xml
+          if-no-files-found: ignore
+
+      - name: Build installer (DMG)
+        run: ./gradlew packageDmg -PpgPlatform=darwin-arm64v8 --console=plain
+
+      # Install the DMG like a user would (drag to Applications), self-test twice (first start creates
+      # the cluster, the second re-uses it), then delete the app: the data folder must stay.
+      - name: Install and self-test
+        run: |
+          dmg=$(ls build/compose/binaries/main/dmg/*.dmg | head -n 1)
+          echo "Installing $(basename "$dmg") ($(du -h "$dmg" | cut -f1))"
+          mnt=$(mktemp -d); hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$dmg"
+          mkdir -p ~/Applications; ditto "$mnt/OTA Business.app" ~/Applications/"OTA Business.app"; hdiutil detach "$mnt"
+          app=~/Applications/"OTA Business.app/Contents/MacOS/OTA Business"
+          for run in 1 2; do
+            "$app" --self-test "$RUNNER_TEMP/self-test.txt"; cat "$RUNNER_TEMP/self-test.txt"
+            grep -qx OK "$RUNNER_TEMP/self-test.txt"
+          done
+          # The real app window on macOS, signed in with demo data. An empty hosts file keeps it offline.
+          ./gradlew e2eData --args=showcase -PpgPlatform=darwin-arm64v8 --console=plain -q
+          : > "$RUNNER_TEMP/no-hosts"
+          JAVA_TOOL_OPTIONS="-Djdk.net.hosts.file=$RUNNER_TEMP/no-hosts" "$app" > "$RUNNER_TEMP/gui.log" 2>&1 &
+          gui=$!
+          sleep 40
+          mkdir -p build/release/screens
+          screencapture -x build/release/screens/macos-home.png || echo "::warning::screencapture failed"
+          kill $gui; wait $gui || true
+          rm -rf ~/Applications/"OTA Business.app"
+          test -f ~/Library/"Application Support/OTA Business Data/pgdata/PG_VERSION"
+          echo "Removing the app kept the database folder."
+          mkdir -p build/release/dmg; cp "$dmg" build/release/dmg/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OTA-Business-macOS
+          path: desktop/build/release/dmg/*.dmg
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-screenshot
+          path: desktop/build/release/screens/*.png
+          if-no-files-found: ignore
+
+      - name: Build a newer version for the update test
+        run: |
+          version=$(sed -n 's/^otaDesktopVersion=//p' gradle.properties | tr -d '[:space:]')
+          next="${version%.*}.$(( ${version##*.} + 1 ))"
+          echo "NEXT_VERSION=$next" >> "$GITHUB_ENV"
+          ./gradlew packageDmg -PpgPlatform=darwin-arm64v8 "-PotaDesktopVersion=$next" --console=plain
+
+      - name: Update test (this build -> in-app update)
+        run: |
+          new=$(ls build/release/dmg/*.dmg | head -n 1)
+          next=$(ls build/compose/binaries/main/dmg/*"$NEXT_VERSION"*.dmg | head -n 1)
+          ./ci/update-e2e-mac.sh "$new" "$next" "$NEXT_VERSION"
+
+      - name: Update test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-test-macos
+          path: |
+            ${{ runner.temp }}/update-e2e/*.txt
+            ${{ runner.temp }}/update-e2e/*.log
+          if-no-files-found: ignore
+
   release:
-    needs: windows
+    needs: [windows, macos]
     if: startsWith(github.ref, 'refs/tags/desktop-v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     runs-on: ubuntu-latest
     permissions:
@@ -186,6 +298,10 @@ jobs:
         with:
           name: OTA-Business-Windows
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: OTA-Business-macOS
+          path: dist/dmg
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,6 +312,7 @@ jobs:
           mkdir -p out
           cp dist/msi/*.msi "out/OTA-Business-$version.msi"
           cp dist/exe/*.exe "out/OTA-Business-Setup-$version.exe"
+          cp dist/dmg/*.dmg "out/OTA-Business-$version-mac-arm64.dmg"
           (cd out && sha256sum OTA-Business-* > SHA256SUMS.txt)
           cat out/SHA256SUMS.txt
           files=(out/*)
@@ -203,9 +320,9 @@ jobs:
           notes_file="desktop/release-notes/$version.md"
           if [ ! -f "$notes_file" ]; then
             notes_file=$(mktemp)
-            printf '%s\n' "OTA Business for Windows $version." "" \
-              "Download **OTA-Business-$version.msi** (or **OTA-Business-Setup-$version.exe**) and run it. It installs for the current user without admin rights and keeps your data in its own folder." "" \
-              "Windows may show a SmartScreen warning because the installer is not code-signed: choose *More info* > *Run anyway*." > "$notes_file"
+            printf '%s\n' "OTA Business Desktop $version." "" \
+              "**Windows:** download **OTA-Business-$version.msi** (or **OTA-Business-Setup-$version.exe**) and run it. It installs for the current user without admin rights and keeps your data in its own folder. Windows may show a SmartScreen warning because the installer is not code-signed: choose *More info* > *Run anyway*." "" \
+              "**Mac (Apple silicon):** download **OTA-Business-$version-mac-arm64.dmg**, open it and drag OTA Business to Applications. The app is not signed by Apple, so the first start is blocked: open *System Settings > Privacy & Security* and choose *Open Anyway* next to OTA Business (once only)." > "$notes_file"
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber

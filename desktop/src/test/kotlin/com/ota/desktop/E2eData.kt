@@ -14,7 +14,8 @@ import kotlin.system.exitProcess
  * still waiting to upload, including an order without its number; `snapshot` writes every table's
  * row count and checksum in the self-test's `table <name> <count> <md5>` format; `duplicates` fails
  * on any repeated id or number. `seed-accounts` (1.4.0+ schema) adds supplier commission and vouchers.
- * Uses the schema the installed version created (no migrations).
+ * `showcase` (macOS CI screenshot) seeds a signed-in admin laptop. Uses the schema the installed version
+ * created (no migrations).
  */
 fun main(args: Array<String>) {
     val mode = args.getOrNull(0)
@@ -44,6 +45,18 @@ fun main(args: Array<String>) {
                 "seed-accounts" -> {
                     val books = DemoData(db).seedAccounts()
                     println("accounts: ${books.accounts().size}, vouchers: ${books.vouchers().size}")
+                }
+                // CI's macOS screenshot: a signed-in admin laptop with a working day's data, opened offline.
+                "showcase" -> {
+                    val demo = DemoData(db)
+                    demo.seed(); demo.seedAccounts()
+                    com.ota.desktop.db.Kv(db).apply {
+                        this["auth.session"] = org.json.JSONObject().put("access", "a").put("refresh", "r")
+                            .put("expires", System.currentTimeMillis() + 86_400_000).put("user", "00000000-0000-0000-0000-000000000001")
+                            .put("email", "shubham@ota.com").toString()
+                        this["sync.last"] = System.currentTimeMillis().minus(4 * 60_000).toString()
+                    }
+                    println("showcase ready")
                 }
                 "snapshot" -> {
                     val text = DataSnapshot.take(db).entries.joinToString("") { (t, s) -> "table $t $s\n" }

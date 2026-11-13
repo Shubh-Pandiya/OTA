@@ -1,9 +1,9 @@
 # Desktop sync contract
 
-How the Windows desktop app (`desktop/`) syncs with the Supabase cloud. The phones follow the
+How the desktop app (`desktop/`, Windows and macOS) syncs with the Supabase cloud. The phones follow the
 same rules. Schema: every file in `supabase/migrations/`, run in name order (catalog, orders,
 payment advice, bill lines and claims, the advice-image cleanup, financial-year order numbers,
-bill parties).
+bill parties, bill transport, advice numbers, admins and test isolation).
 
 Only text data syncs. Advice images (cheque photos, transfer screenshots) and the Home to-dos /
 reminders stay on the phone that created them and are never uploaded.
@@ -15,8 +15,39 @@ reminders stay on the phone that created them and are never uploaded.
 | Buyers, suppliers | full copy | **permanent** full copy | full copy |
 | Orders, bills, order_bills, payment_advices, advice_lines | their own rows, plus anything pulled | only the last `retention_days` (by order / payment date) | **every row ever**, the system of record |
 
-The desktop signs in with an **admin** staff login (`staff.is_admin = true`). Only admins can
-archive, purge or change settings.
+### Admins
+
+The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
+(`20261117000000_admins_and_test_isolation.sql`). `ota_is_admin()` checks the signed JWT email, so
+`staff.is_admin` is only kept in step for display and can't grant anything.
+
+- Only an admin may archive (`ota_mark_archived`), purge (`ota_purge_archived_orders`) or change
+  `app_settings` (retention days, storage limit). The cloud refuses everyone else, whatever the app shows.
+- The desktop follows the same rule: cloud clean-up, retention settings and the **Accounts** section
+  appear only when an admin is signed in. Any staff login can still use the rest of the desktop app.
+
+### Test account
+
+`testuser1@ota.com` is the test login. Its data lives in the same tables, tagged and hidden:
+
+- Every synced table (buyers, suppliers, orders, bills, order_bills, payment_advices, advice_lines) has
+  a boolean `is_test`. A trigger sets it on insert from the login (`ota_is_test()`), and it never changes
+  on update. Clients don't send it.
+- A restrictive RLS policy (`is_test = ota_is_test()`) means production logins never read or write test
+  rows, and the test login sees only test rows. Totals, Insights, Accounts and exports therefore never mix them.
+- Test orders and advices number from their own FY counters (`order_counters` / `advice_counters`
+  are keyed by `(fy, is_test)`), so the production series has no gaps from testing.
+- Archive and purge only touch production rows.
+- `ota_clear_test_data()` (test login only) deletes every test row and resets the test counters. It
+  returns the deleted counts as JSON. The phone and the desktop show **Clear all my test data** to the
+  test login only, and then also wipe their local synced copy.
+- A device keeps one kind of data. The desktop stores it as kv `data.mode` (`production` / `test`),
+  the phone as `SyncIds.testMode`.
+  - A test login is refused on a phone or laptop that holds real data, because the device may hold the
+    only copy of old rows (the cloud keeps 30 days and the books are local).
+  - Switching a test device back to a real login drops the synced test copy first. Desktop Accounts
+    (`acc_*`) are never wiped.
+  - Commission is not posted from test data, and test PDFs are saved in a separate `Test data` folder.
 
 ## Tables
 
@@ -253,7 +284,11 @@ that matter for data safety are:
   - Orders and advices still waiting for a FY number keep an empty number.
   - The cloud RPC numbers each one exactly once, on the first sync that reaches it.
   - The update never allocates numbers itself.
-- The app then stops PostgreSQL and backs up `pgdata` as a zip to `%LOCALAPPDATA%\OTA Business Data\backups`.
+- The app then stops PostgreSQL and backs up `pgdata` as a zip to `%LOCALAPPDATA%\OTA Business Data\backups`
+  (`~/Library/Application Support/OTA Business Data/backups` on a Mac).
+- Windows runs the MSI. A Mac (1.5.0+) mounts the DMG read-only after the app exits, copies the new
+  `OTA Business.app` beside the installed one, swaps the two with renames (putting the old one back if
+  that fails), and reopens the app. The data folder is outside the bundle on both systems.
 - On the first start of a new version, local migrations run in a single transaction. A failure rolls
   everything back and blocks startup, and the message names the backup.
 - Migrations that force a re-pull (V2 nulls `server_updated_at` and clears the `cursor.*` keys)

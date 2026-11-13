@@ -18,6 +18,7 @@ import com.ota.desktop.update.AppVersion
 import com.ota.desktop.update.Backups
 import com.ota.desktop.update.DataSnapshot
 import com.ota.desktop.update.PendingUpdate
+import com.ota.desktop.update.Platform
 import com.ota.desktop.update.ReleaseFeed
 import com.ota.desktop.update.StartupGuard
 import com.ota.desktop.update.UpdateHost
@@ -82,7 +83,7 @@ class UpdateFlowTest {
 
     private var launched = mutableListOf<List<String>>()
     private fun manager(version: String) = UpdateManager(
-        AppVersion.parse(version)!!, home, pgData, ReleaseFeed(releases.feed), windows = true,
+        AppVersion.parse(version)!!, home, pgData, ReleaseFeed(releases.feed, platform = Platform.WINDOWS), selfInstall = true,
         relaunchArgs = listOf("--self-test", "report.txt"),
         launcher = { msi, _, result, args -> launched += listOf(msi.name) + args; result.writeText("0") }
     )
@@ -256,7 +257,7 @@ class UpdateFlowTest {
     @Test
     fun aFailedInstallIsReportedAndDataKept() = runBlocking {
         releases.publish("1.3.0", Random(6).nextBytes(100_000))
-        val upd = UpdateManager(AppVersion.parse("1.2.1")!!, home, pgData, ReleaseFeed(releases.feed), windows = true,
+        val upd = UpdateManager(AppVersion.parse("1.2.1")!!, home, pgData, ReleaseFeed(releases.feed, platform = Platform.WINDOWS), selfInstall = true,
             launcher = { _, _, result, _ -> result.writeText("1602") })
         lateinit var before: Map<String, String>
         Run("1.2.1").use { app ->
