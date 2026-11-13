@@ -94,6 +94,15 @@ At most 9999 orders per year.
 - An order saved offline is stored with an **empty** `order_no` and shown as "Pending number".
   It is not uploaded, has no PDF and can't take a bill until the next sync numbers it; then it is
   uploaded with its number. A pending order deleted before it is numbered is simply dropped.
+- **A number is never handed out twice**, even after the order is deleted (deleting 26270001–26270005
+  makes the next order 26270006). The counters in `order_counters` / `advice_counters` only move
+  forward: a trigger keeps the higher `last_serial` on any update and refuses deletes, so a counter is
+  never re-seeded from the rows that are left. Clearing test data keeps the test counters.
+- If an upload of an FY-numbered order hits `orders_fy_order_no_key` (the number is already in the
+  cloud under another id, e.g. from an older build that reused numbers), the app asks
+  `ota_allocate_order_no` for a fresh number, renumbers the local order (new PDF) and uploads it
+  again. It tells the user; it never overwrites the other order. Advices do the same with
+  `ota_allocate_advice_no`.
 - An 8-digit number whose second pair of digits is the year after the first is an FY number; a
   partial unique index (`orders_fy_order_no_key`) backs that up in the cloud.
 - Older orders keep their numbers and are never renumbered:
@@ -109,7 +118,8 @@ New advices follow the order rules with **their own** FY counter: `advice_no` is
 names as `PA-26270001`.
 
 - Get a number with `POST /rest/v1/rpc/ota_allocate_advice_no` and `{"p_date": "yyyy-mm-dd"}` (the
-  payment date). Atomic, seeded from existing FY advice numbers, skips used ones; when the year's
+  payment date). Atomic, seeded from existing FY advice numbers the first time, forward-only like the
+  order counter (a deleted advice's number is never reused), skips used ones; when the year's
   9999 are used it fails with `P0001` / `ADVICE_LIMIT_REACHED`. A partial unique index
   (`payment_advices_fy_advice_no_key`) backs it up.
 - An advice saved offline has an **empty** `advice_no` ("Pending number"). It and its lines are not

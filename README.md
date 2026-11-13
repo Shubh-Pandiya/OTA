@@ -36,6 +36,43 @@ Studio creates it by itself. To point one machine at a different Supabase projec
 `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` in `local.properties`; those win over
 `supabase.properties`.
 
+## Phone updates (1.1.0 and later)
+
+The phone app updates itself from GitHub Releases (`android-v*` tags; the repository is public, so no
+token). It checks on start and every 6 hours, and *Sync Settings → App updates →
+Check* checks at once. When a newer version is out it shows the version and notes with **Update now /
+Later** (*Later* waits a day). *Update now*:
+
+1. the first time, asks to allow *Install unknown apps* for OTA Business (it opens that setting and
+   continues once it is on);
+2. syncs when online; offline, unsynced orders, bills and advices simply stay queued on the phone;
+3. downloads `OTA-Business-<version>.apk` and checks its size and SHA-256 against `SHA256SUMS.txt`;
+4. checks that the APK is the same app, signed with the **same certificate** as the installed app, and
+   newer (a downgrade is refused);
+5. hands it to Android's installer, which asks *Update this app?* once more.
+
+It is an in-place update, so everything on the phone stays: sign-in, orders, bills, advices, to-dos,
+cheque images and settings. Database migrations run on first start as usual.
+
+**Releasing:** set `otaAndroidVersion` in `gradle.properties` (versionCode = major×10000 +
+minor×100 + patch), add `app/release-notes/<version>.md`, and push tag `android-v<version>`. The
+[Android workflow](.github/workflows/android.yml) runs the unit tests, builds the R8-shrunk release
+APK (about 4 MB), signs it, and publishes the APK, `SHA256SUMS.txt` and the signing certificate's
+SHA-256 as a GitHub release.
+
+**Signing:** the release is signed with the key the phones' current app was built with (the Android
+Studio debug key of the computer that built it), so phones update in place without uninstalling.
+That keystore is stored, base64-encoded, in the repository secret `ANDROID_KEYSTORE_BASE64`; never
+commit it. Optional secrets `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`
+default to Android's debug values (`android` / `androiddebugkey` / `android`). To check the key
+matches a phone, compare the release's certificate SHA-256 with
+`keytool -list -v -keystore ~/.android/debug.keystore -storepass android` on that computer. If they
+differ, Android refuses the update and nothing on the phone changes.
+
+**Phones on the first version (1.0, no updater):** install the 1.1.0 APK from the
+[release](https://github.com/Shubh-Pandiya/OTA/releases?q=android-v) once by hand, over the existing
+app (do not uninstall). Later versions update themselves.
+
 ## Cloud (Supabase) setup
 
 Done once by the owner.
@@ -110,7 +147,11 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 
 ### Orders, bills and order numbers
 
-- **Order numbers** are per person, not per phone: `{staff digit}{YYYYMMDD}{serial of the day}`,
+- **New order numbers** come from one agency-wide cloud counter per financial year (e.g. `26270001`,
+  see [the sync contract](docs/desktop-sync-contract.md#order-numbers)). A number is never reused,
+  even after its order is deleted: the counter only moves forward. Orders saved offline wait as
+  "Pending number" until the next sync.
+- **Older order numbers** were per person, not per phone: `{staff digit}{YYYYMMDD}{serial of the day}`,
   e.g. Varun (1) → `120261107001`, `120261107002`, … The serial is 3 digits (001–999, it keeps
   growing past 999 if ever needed) and restarts every day.
   The digit is read at sign-in and remembered, so orders can be made offline afterwards. The day's counter is matched with

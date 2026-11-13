@@ -150,6 +150,17 @@ tasks.register<JavaExec>("e2eData") {
     mainClass.set("com.ota.desktop.E2eDataKt")
 }
 
+// Manual check against the real cloud as the test account (LiveCloudCheck.kt); its own data folder.
+tasks.register<JavaExec>("liveCheck") {
+    dependsOn("testClasses")
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.ota.desktop.LiveCloudCheckKt")
+    val home = providers.environmentVariable("OTA_LIVE_HOME").orElse(layout.buildDirectory.dir("live-check").map { it.asFile.path })
+    jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Dota.home=${home.get()}", "-Dota.documents=${home.get()}/documents") +
+        // Behind a TLS-inspecting proxy, point OTA_LIVE_TRUSTSTORE at a truststore holding its CA.
+        listOfNotNull(System.getenv("OTA_LIVE_TRUSTSTORE")?.let { "-Djavax.net.ssl.trustStore=$it" }) })
+}
+
 compose.desktop {
     application {
         mainClass = "com.ota.desktop.MainKt"

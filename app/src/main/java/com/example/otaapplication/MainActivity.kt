@@ -63,7 +63,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
 import com.example.otaapplication.cloud.OrderLimitReached
@@ -77,8 +79,13 @@ import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
+import com.example.otaapplication.update.AppUpdater
+import com.example.otaapplication.update.UpdateDialog
+import com.example.otaapplication.update.UpdateState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -151,6 +158,7 @@ class MainActivity : ComponentActivity() {
     internal val orderRepository: OrderRepository get() = localOrders.index
     private val orderFiles by lazy { OrderFiles(this, localOrders) }
     private val payments by lazy { PaymentRepository.get(this) }
+    private val updater by lazy { AppUpdater.get(this) }
 
     // Bumped on every resume so the previewed order number follows a change of day.
     private var resumeTick by mutableIntStateOf(0)
@@ -162,6 +170,23 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         resumeTick++
         inForeground = true
+        // Back from "Install unknown apps": carry on with the update the user started.
+        (updater.state.value as? UpdateState.NeedsPermission)?.let { s ->
+            if (updater.canInstall()) startUpdate(s.release)
+        }
+    }
+
+    private fun startUpdate(release: com.example.otaapplication.update.PhoneRelease) {
+        lifecycleScope.launch { updater.update(release, ::syncBeforeUpdate) }
+    }
+
+    /** Uploads unsynced changes before an update. Whatever can't upload now stays in the database, which the update keeps. */
+    private suspend fun syncBeforeUpdate(): String? {
+        withTimeoutOrNull(90_000) { cloud.syncNow() }
+        val pending = cloud.status.value.pending
+        return if (pending > 0) {
+            "$pending change${if (pending == 1) "" else "s"} not uploaded yet. They stay safely on this phone and upload after the update."
+        } else null
     }
 
     override fun onPause() {
@@ -208,6 +233,16 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) { syncOrderIndex(); shrinkOldOrderPdfs() }
         // Alarms are cleared when the app is force-stopped; setting them again on launch is cheap.
         lifecycleScope.launch(Dispatchers.IO) { Reminders.rescheduleAll(this@MainActivity) }
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { updater.cleanUp() } }
+        // New phone releases on GitHub: looked for when the app comes to the front, then every few hours.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    updater.check(manual = false)
+                    delay(AppUpdater.CHECK_EVERY_MS)
+                }
+            }
+        }
         takeHomeRequest(intent)
         setContent {
             OTAApplicationTheme {
@@ -221,6 +256,15 @@ class MainActivity : ComponentActivity() {
                 ) { signedIn ->
                     if (signedIn) SignedInApp() else SignInScreen(cloud = cloud, status = authStatus)
                 }
+                val updateState by updater.state.collectAsState()
+                UpdateDialog(
+                    state = updateState,
+                    currentVersion = updater.currentName,
+                    onUpdate = ::startUpdate,
+                    onLater = updater::later,
+                    onAllow = { runCatching { startActivity(updater.permissionIntent()) } },
+                    onDismiss = updater::dismiss
+                )
             }
         }
     }
@@ -432,7 +476,11 @@ class MainActivity : ComponentActivity() {
                             val totalOrders by produceState<Int?>(initialValue = null) {
                                 value = withContext(Dispatchers.IO) { countTotalOrders() }
                             }
-                            SyncControlScreen(totalOrders = totalOrders, cloud = cloud)
+                            SyncControlScreen(
+                                totalOrders = totalOrders, cloud = cloud,
+                                appVersion = updater.currentName,
+                                onCheckUpdates = { scope.launch { updater.check(manual = true) } }
+                            )
                         }
                     }
                 }
@@ -657,7 +705,7 @@ private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigat
 }
 
 @Composable
-fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null) {
+fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null, appVersion: String? = null, onCheckUpdates: (() -> Unit)? = null) {
     val context = LocalContext.current
     val sharedPrefs = remember { context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE) }
     var deviceId by remember { mutableStateOf(sharedPrefs.getString("device_id", "") ?: "") }
@@ -712,6 +760,23 @@ fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null) {
                 icon = Icons.Default.Badge,
                 imeAction = androidx.compose.ui.text.input.ImeAction.Done
             )
+        }
+
+        if (onCheckUpdates != null) {
+            FormSection(title = "App updates", icon = Icons.Default.Refresh) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("OTA Business ${appVersion.orEmpty()}", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "New versions install from GitHub, keeping all data on this phone.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    OutlinedButton(onClick = onCheckUpdates) { Text("Check") }
+                }
+            }
         }
 
         FormSection(title = "Weather on Home", icon = Icons.Default.LocationOn) {
