@@ -62,9 +62,6 @@ data class SyncStatus(
  *   asks the cloud to purge archived rows older than the retention window. A row is never archived
  *   unless its current cloud version is committed in the local database.
  */
-/** A sign-in that would mix test and real data on this laptop. */
-class DataModeConflict(message: String) : Exception(message)
-
 class SyncEngine(
     private val db: Db,
     private val kv: Kv,
@@ -99,79 +96,52 @@ class SyncEngine(
     /** Admins (archive, purge, retention, Accounts) are fixed by sign-in email, the same rule the cloud enforces. */
     fun isAdmin(): Boolean = OtaAccounts.isAdmin(auth.session.value?.email)
 
-    /** Which data set this laptop holds; installs from before 1.5.0 hold real data. */
+    /** Which data set is in use (the last login's); installs from before 1.5.0 hold real data. */
     fun dataMode(): String = kv[KEY_DATA_MODE] ?: OtaAccounts.MODE_PRODUCTION
 
-    /** Commission is posted into the books from real bills only, never from test data. */
-    fun postingAllowed(): Boolean = dataMode() == OtaAccounts.MODE_PRODUCTION
-
-    /** On start: picks up the stored data set, so ids and PDF folders follow it. */
+    /** On start: picks up the data set in use, so queries, ids and PDF folders follow it. */
     fun loadDataMode() {
         if (kv[KEY_DATA_MODE] == null) auth.session.value?.let { kv[KEY_DATA_MODE] = OtaAccounts.dataMode(it.email) }
-        SyncIds.testMode = dataMode() == OtaAccounts.MODE_TEST
+        useDataMode(dataMode())
+    }
+
+    private fun useDataMode(mode: String) {
+        val test = mode == OtaAccounts.MODE_TEST
+        db.schema = if (test) Db.TEST else Db.PRODUCTION
+        SyncIds.testMode = test
     }
 
     /**
-     * After a sign-in: test and real data never share a laptop. Moving to the test account needs a
-     * laptop without real data (the cloud keeps orders only for the retention days, so the laptop
-     * may hold the only copy, and the Accounts books are local only). Moving back to real data
-     * first drops the test copy. Throws [DataModeConflict] when the switch isn't safe.
+     * After a sign-in: switches to [email]'s data set. Real and test data live side by side in
+     * separate schemas, so switching never deletes or mixes anything; each set keeps its own
+     * unsynced changes, which go up the next time its account signs in.
      */
     suspend fun adoptDataMode(email: String) = mutex.withLock {
         withContext(Dispatchers.IO) {
             val mode = OtaAccounts.dataMode(email)
-            val held = dataMode()
-            if (held != mode) {
-                checkDataMode(email)
-                wipeSynced(deleteTestFiles = held == OtaAccounts.MODE_TEST)
-            }
             kv[KEY_DATA_MODE] = mode
-            SyncIds.testMode = mode == OtaAccounts.MODE_TEST
+            useDataMode(mode)
+            _status.update { it.copy(lastSyncAt = kv.long(KEY_LAST_SYNC), error = null, notices = emptyList()) }
         }
         refreshPending()
     }
 
-    /** Throws [DataModeConflict] when [email]'s data set can't replace this laptop's (checked before signing in too). */
-    fun checkDataMode(email: String) {
-        val mode = OtaAccounts.dataMode(email)
-        val held = dataMode()
-        if (held == mode) return
-        if (mode == OtaAccounts.MODE_TEST && liveRows() > 0) throw DataModeConflict(
-            "This laptop holds real business data, so the test account can't be used on it. " +
-                "Use the test account on a computer without real orders, bills, advices or accounts."
-        )
-        val pending = pendingCount()
-        if (pending > 0) throw DataModeConflict(
-            "This laptop has $pending unsynced change${if (pending == 1) "" else "s"} from " +
-                (if (held == OtaAccounts.MODE_TEST) "the test account" else "a staff account") + ". Sign in with that account and let it sync first."
-        )
-    }
-
-    /** Test account only: deletes its rows in the cloud, then this laptop's copy and its PDFs. */
+    /** Test account only: deletes its rows in the cloud, then this laptop's test copy, test books and PDFs. */
     suspend fun clearTestData(): Map<String, Int> = mutex.withLock {
-        check(OtaAccounts.isTest(auth.session.value?.email) && dataMode() == OtaAccounts.MODE_TEST) { "Only the test account can clear test data" }
+        check(OtaAccounts.isTest(auth.session.value?.email) && dataMode() == OtaAccounts.MODE_TEST && db.schema == Db.TEST) { "Only the test account can clear test data" }
         val counts = orderApi.clearTestData()
-        withContext(Dispatchers.IO) { wipeSynced(deleteTestFiles = true) }
+        withContext(Dispatchers.IO) {
+            db.tx { c ->
+                // Schema-qualified: whatever happens to the pool, this only ever touches the test data set.
+                for (t in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", "buyers", "suppliers", "pending_deletions", "acc_vouchers", "acc_audit")) {
+                    c.update("delete from ${Db.TEST}.$t")
+                }
+                c.update("delete from ${Db.TEST}.kv where key like 'cursor.%' or key like 'counter.%' or key = 'sync.last'")
+            }
+            com.ota.desktop.AppPaths.testDocuments.deleteRecursively()
+        }
         _status.update { it.copy(lastSyncAt = null, error = null, notices = emptyList(), pending = pendingCount()) }
         counts
-    }
-
-    /** Live orders, bills, advices, catalog entries and journal vouchers on this laptop. */
-    internal fun liveRows(): Int = db.read { c ->
-        listOf("orders", "bills", "payment_advices", "buyers", "suppliers").sumOf { t ->
-            c.one("select count(*) from $t where not deleted") { it.getInt(1) } ?: 0
-        } + (c.one("select count(*) from acc_vouchers where not deleted") { it.getInt(1) } ?: 0)
-    }
-
-    /** Empties the synced tables and their sync cursors (never the Accounts books). */
-    private fun wipeSynced(deleteTestFiles: Boolean) {
-        db.tx { c ->
-            for (t in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", "buyers", "suppliers")) c.update("delete from $t")
-            c.update("delete from pending_deletions")
-            c.update("delete from kv where key like 'cursor.%'")
-        }
-        kv.remove(KEY_LAST_SYNC, KEY_USAGE)
-        if (deleteTestFiles) com.ota.desktop.AppPaths.testDocuments.deleteRecursively()
     }
 
     /** Reads the staff row for the signed-in user and caches it, so numbering works offline. */

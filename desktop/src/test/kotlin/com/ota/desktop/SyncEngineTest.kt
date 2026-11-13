@@ -20,7 +20,7 @@ import com.ota.desktop.db.Kv
 import com.ota.desktop.db.one
 import com.ota.desktop.sync.CloudSettings
 import com.ota.desktop.sync.SyncEngine
-import com.ota.desktop.sync.DataModeConflict
+import com.ota.desktop.db.Migrations
 import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.SyncIds
 import kotlinx.coroutines.runBlocking
@@ -254,41 +254,51 @@ class SyncEngineTest {
     }
 
     @Test
-    fun testLoginIsRefusedOnALaptopWithRealData() = runBlocking {
-        numbered(order())
-        engine.sync()
-        assertFailsWith<DataModeConflict> { engine.checkDataMode("testuser1@ota.com") }
-        assertFailsWith<DataModeConflict> { engine.adoptDataMode("testuser1@ota.com") }
-        assertEquals(OtaAccounts.MODE_PRODUCTION, engine.dataMode())
-        assertEquals(false, SyncIds.testMode)
-        assertEquals(1, orders.list().size, "real data is never wiped for a test login")
-        assertTrue(engine.postingAllowed())
-    }
-
-    @Test
-    fun switchingBackToRealDataDropsTheTestCopyButKeepsTheBooks() = runBlocking {
+    fun testLoginKeepsRealDataSideBySideAndHidden() = runBlocking {
+        val real = numbered(order())
+        assertNull(engine.sync().error)
+        engine.sync() // pulls the pushed row back, which sets the cursors
         val chart = count("select count(*) from acc_accounts")
-        assertTrue(chart > 0, "chart $chart")
+        val cursors = count("select count(*) from kv where key like 'cursor.%'")
+        assertTrue(cursors > 0, "cursors")
+
         auth.signIn("testuser1@ota.com", "x")
         engine.adoptDataMode("testuser1@ota.com")
         assertEquals(OtaAccounts.MODE_TEST, engine.dataMode())
-        assertTrue(SyncIds.testMode, "test mode")
-        assertEquals(false, engine.postingAllowed(), "test bills never reach the books")
-        numbered(order())
-        // Unsynced test changes block the switch, so nothing is lost silently.
-        assertFailsWith<DataModeConflict> { engine.checkDataMode("shubham@ota.com") }
-        cloud.put("orders", cloudOrder("33333333-3333-4333-8333-333333333333", "26270002"))
+        assertTrue(SyncIds.testMode && db.schema == Db.TEST)
+        assertTrue(orders.list().isEmpty(), "real orders are hidden from the test login")
+        assertEquals(0, count("select count(*) from kv where key like 'cursor.%'"), "the test set syncs from scratch")
+        assertEquals(chart, count("select count(*) from acc_accounts"), "the test books get their own default chart")
+        // The cloud only shows the test login its test rows.
+        cloud.table("orders").clear()
+        cloud.put("orders", cloudOrder("33333333-3333-4333-8333-333333333333", "26279001"))
         engine.sync()
+        val pendingTest = numbered(order("Test Buyer"))
+        engine.refreshPending()
         assertEquals(2, orders.list().size)
-        assertTrue(count("select count(*) from kv where key like 'cursor.%'") > 0, "cursors")
+        assertEquals(1, engine.status.value.pending, "the test change waits for the next test login")
 
         auth.signIn("shubham@ota.com", "x")
         engine.adoptDataMode("shubham@ota.com")
-        assertEquals(OtaAccounts.MODE_PRODUCTION, engine.dataMode())
         assertEquals(false, SyncIds.testMode)
-        assertTrue(orders.list().isEmpty())
-        assertEquals(0, count("select count(*) from kv where key like 'cursor.%'"), "the next sync pulls real data from scratch")
-        assertEquals(chart, count("select count(*) from acc_accounts"), "Accounts are never wiped")
+        assertEquals(listOf(real.id), orders.list().map { it.id }, "real data is untouched and back")
+        assertEquals(cursors, count("select count(*) from kv where key like 'cursor.%'"), "real cursors kept")
+        assertEquals(0, engine.status.value.pending)
+        assertEquals(1, count("select count(*) from ota_test.orders where id = '${pendingTest.id}'"), "test data kept, hidden")
+    }
+
+    @Test
+    fun aTestLaptopFromBefore170MovesItsDataIntoTheTestSet() {
+        numbered(order())
+        db.read { c -> c.createStatement().use { it.execute("drop schema ota_test cascade") } }
+        Kv(db)["data.mode"] = OtaAccounts.MODE_TEST
+        Kv(db)["cursor.orders"] = "42"
+        Migrations.run(db)
+        assertEquals(0, count("select count(*) from public.orders"))
+        assertEquals(1, count("select count(*) from ota_test.orders"))
+        assertEquals("42", db.read { c -> c.one("select value from ota_test.kv where key = 'cursor.orders'") { it.getString(1) } })
+        assertEquals(0, count("select count(*) from public.kv where key = 'cursor.orders'"))
+        assertTrue(count("select count(*) from ota_test.acc_accounts") > 0)
     }
 
     @Test

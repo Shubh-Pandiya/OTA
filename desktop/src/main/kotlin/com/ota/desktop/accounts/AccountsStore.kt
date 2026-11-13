@@ -32,8 +32,6 @@ internal data class BookBill(val id: String, val no: String, val date: LocalDate
  */
 class AccountsStore(
     private val db: Db,
-    /** False while the laptop holds the test account's data: test bills never reach the books. */
-    private val postingAllowed: () -> Boolean = { true },
     /** Who is signed in, for the audit note left by a deleted voucher. */
     private val actor: () -> String = { "" },
     private val onChange: () -> Unit = {}
@@ -262,7 +260,6 @@ class AccountsStore(
      * buyer and supplier and every party named on a bill.
      */
     fun reconcileCommission(today: LocalDate = LocalDate.now()): ReconcileResult {
-        if (!postingAllowed()) return ReconcileResult()
         val result = synchronized(reconcileLock) {
             db.tx { c ->
                 c.exec("lock table acc_vouchers in share row exclusive mode")

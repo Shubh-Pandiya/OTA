@@ -286,7 +286,7 @@ class AccountsTest {
             c.exec("delete from schema_version where version >= 4")
         }
         Migrations.run(db)
-        assertEquals(listOf(1, 2, 3, 4, 5), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
         assertEquals(20, books.accounts().size)
         assertEquals(1, db.read { c -> c.one("select count(*) from bills") { it.getInt(1) } })
         Migrations.run(db)
@@ -308,10 +308,25 @@ class AccountsTest {
     }
 
     @Test
-    fun noCommissionIsPostedFromTestData() {
-        val testBooks = AccountsStore(db, postingAllowed = { false }) { changes++ }
-        bill("TB-1", 10_000.0)
-        assertFalse(testBooks.reconcileCommission(day).changed)
-        assertEquals(0, allCommissionRows())
+    fun theTestAccountKeepsItsOwnBooks() {
+        bill("RB-1", 10_000.0)
+        books.reconcileCommission(day)
+        books.setCommission(supplier("Shiv Mills").id, 2.0)
+        db.schema = Db.TEST
+        try {
+            assertEquals(20, books.accounts().size, "the test books start from the default chart")
+            assertNull(books.partyAccount(PartyKind.SUPPLIER, "Shiv Mills"), "no real parties in the test books")
+            assertEquals(0, allCommissionRows(), "no real commission in the test books")
+            bill("TB-1", 1_000.0, supplier = "Test Mills")
+            books.reconcileCommission(day)
+            assertTrue(books.setCommission(supplier("Test Mills").id, 5.0).changed)
+            assertEquals(1, allCommissionRows())
+            assertEquals(1, payments.bills().size)
+        } finally {
+            db.schema = Db.PRODUCTION
+        }
+        assertEquals(1, allCommissionRows(), "test commission never reaches the real books")
+        assertNull(books.partyAccount(PartyKind.SUPPLIER, "Test Mills"))
+        assertEquals(listOf("RB-1"), payments.bills().map { it.bill.billNo })
     }
 }

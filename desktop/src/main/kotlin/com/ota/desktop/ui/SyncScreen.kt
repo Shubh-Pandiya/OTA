@@ -71,7 +71,7 @@ fun SyncScreen() {
         if (testAccount) {
             Banner(
                 "Test account. Everything made here is test data: only this login sees it, it has its own order and advice numbers, " +
-                    "and it never counts in real totals, Insights or Accounts. Its PDFs go to ${AppPaths.testDocuments.path}.",
+                    "and it has its own Accounts books. Real data on this laptop stays untouched and hidden until a staff login. Its PDFs go to ${AppPaths.testDocuments.path}.",
                 Brand.Blue
             ) {
                 OutlinedButton(enabled = !clearing && !status.running, onClick = { confirmClear = true }) {
@@ -159,7 +159,7 @@ fun SyncScreen() {
 internal fun ClearTestDataDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmDeleteDialog(
     what = "all test data",
     detail = "Deletes every order, bill, payment advice and catalog entry made with the test account, in the cloud and on this laptop, " +
-        "including the test PDFs. Real business data and the Accounts books are not touched.",
+        "including the test PDFs and the test Accounts vouchers. Real business data and the real Accounts books are not touched.",
     confirm = "Delete all",
     onDismiss = onDismiss,
     onConfirm = onConfirm

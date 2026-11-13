@@ -17,7 +17,24 @@ class Db(private val open: () -> Connection, private val poolSize: Int = 4) : Au
     private val idle = LinkedBlockingDeque<Connection>()
     @Volatile private var created = 0
 
-    private fun borrow(): Connection {
+    /**
+     * The schema every unqualified table name resolves to: [PRODUCTION] for real data, [TEST] for the
+     * test account's. Both hold the same tables, so the test login never sees real rows and back.
+     */
+    @Volatile var schema: String = PRODUCTION
+        set(value) { require(value == PRODUCTION || value == TEST); field = value }
+
+    private val connectionSchema = java.util.Collections.synchronizedMap(java.util.WeakHashMap<Connection, String>())
+
+    private fun borrow(): Connection = pooled().also { c ->
+        val want = schema
+        if (connectionSchema[c] != want) {
+            c.createStatement().use { it.execute("set search_path to $want") }
+            connectionSchema[c] = want
+        }
+    }
+
+    private fun pooled(): Connection {
         idle.pollFirst()?.let { c -> if (runCatching { c.isValid(2) }.getOrDefault(false)) return c else runCatching { c.close() } }
         synchronized(this) {
             if (created < poolSize) {
@@ -67,6 +84,11 @@ class Db(private val open: () -> Connection, private val poolSize: Int = 4) : Au
             runCatching { c.autoCommit = true }
             release(c, broken)
         }
+    }
+
+    companion object {
+        const val PRODUCTION = "public"
+        const val TEST = "ota_test"
     }
 
     /** Closes the idle connections. The pool stays usable and opens new ones when needed. */

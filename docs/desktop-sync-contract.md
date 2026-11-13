@@ -41,13 +41,20 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 - `ota_clear_test_data()` (test login only) deletes every test row and resets the test counters. It
   returns the deleted counts as JSON. The phone and the desktop show **Clear all my test data** to the
   test login only, and then also wipe their local synced copy.
-- A device keeps one kind of data. The desktop stores it as kv `data.mode` (`production` / `test`),
-  the phone as `SyncIds.testMode`.
-  - A test login is refused on a phone or laptop that holds real data, because the device may hold the
-    only copy of old rows (the cloud keeps 30 days and the books are local).
-  - Switching a test device back to a real login drops the synced test copy first. Desktop Accounts
-    (`acc_*`) are never wiped.
-  - Commission is not posted from test data, and test PDFs are saved in a separate `Test data` folder.
+- The phone keeps one kind of data (`SyncIds.testMode`). It refuses a test login while it holds real
+  data, and switching it back to a real login drops the synced test copy first.
+- The desktop (1.7.0+) keeps both side by side in its local database. Real data is in schema `public`,
+  test data in schema `ota_test` with the same tables. kv `data.mode` (in `public`) records the last
+  login, and every connection's `search_path` follows it, so every store, report, Insights query and
+  Accounts query sees one data set only.
+  - Sync cursors, number counters and the last sync time (`cursor.*`, `counter.*`, `sync.last`) are
+    per data set. Unsynced changes stay in their own set and upload at that login's next sync.
+  - Switching logins never deletes or moves rows. Migration V6 moves a pre-1.7.0 test laptop's data
+    from `public` into `ota_test` once.
+  - The test account has its own Accounts books (chart, vouchers, commission) in `ota_test`, built
+    from test bills only. Real books never see test data.
+  - **Clear all my test data** on the desktop empties `ota_test` (synced tables, test vouchers and audit)
+    and keeps its chart of accounts. Test PDFs are saved in a separate `Test data` folder.
 
 ## Tables
 
@@ -348,7 +355,7 @@ that matter for data safety are:
 
 ## Local-only accounts (desktop 1.4.0)
 
-The Accounts section's tables are on the admin laptop only. They have no cloud tables, columns or migrations, and neither app pushes or pulls them.
+The Accounts section's tables are on the laptop only (real books in `public`, the test account's in `ota_test`). They have no cloud tables, columns or migrations, and neither app pushes or pulls them.
 
 - `V4__accounts.sql` adds `acc_accounts`, `acc_vouchers`, `acc_voucher_lines` and `acc_audit` to the local database.
 - Archive/purge never touches them. They are inside `pgdata`, so every update backup includes them.

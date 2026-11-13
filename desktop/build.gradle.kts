@@ -156,7 +156,7 @@ tasks.register<JavaExec>("liveCheck") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("com.ota.desktop.LiveCloudCheckKt")
     val home = providers.environmentVariable("OTA_LIVE_HOME").orElse(layout.buildDirectory.dir("live-check").map { it.asFile.path })
-    jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Dota.home=${home.get()}", "-Dota.documents=${home.get()}/documents") +
+    jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Dota.home=${home.get()}", "-Dota.documents=${home.get()}/documents", "-Djava.net.preferIPv4Stack=true") +
         // Behind a TLS-inspecting proxy, point OTA_LIVE_TRUSTSTORE at a truststore holding its CA.
         listOfNotNull(System.getenv("OTA_LIVE_TRUSTSTORE")?.let { "-Djavax.net.ssl.trustStore=$it" }) })
 }
@@ -164,7 +164,8 @@ tasks.register<JavaExec>("liveCheck") {
 compose.desktop {
     application {
         mainClass = "com.ota.desktop.MainKt"
-        jvmArgs += listOf("-Xms64m", "-Xmx768m", "-Dfile.encoding=UTF-8", "-Dsun.java2d.uiScale.enabled=true")
+        // IPv4 stack: on Macs with IPv6 the JDK HTTP client times out connecting to GitHub's IPv4-only download CDN.
+        jvmArgs += listOf("-Xms64m", "-Xmx768m", "-Dfile.encoding=UTF-8", "-Dsun.java2d.uiScale.enabled=true", "-Djava.net.preferIPv4Stack=true")
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Dmg)
             packageName = "OTA Business"

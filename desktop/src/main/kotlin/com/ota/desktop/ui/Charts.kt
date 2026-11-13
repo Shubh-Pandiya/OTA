@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -115,38 +116,45 @@ private val axisStyle = TextStyle(fontSize = 10.sp, color = Brand.Muted)
 private fun DrawScope.tooltip(measurer: TextMeasurer, at: Offset, title: String, value: String) {
     val t1 = measurer.measure(title, TextStyle(fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f)))
     val t2 = measurer.measure(value, TextStyle(fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.SemiBold))
-    val w = max(t1.size.width, t2.size.width) + 16f
-    val h = t1.size.height + t2.size.height + 10f
-    val x = (at.x - w / 2).coerceIn(0f, size.width - w)
-    val y = (at.y - h - 10f).coerceAtLeast(0f)
-    drawRoundRect(Color(0xE62A1F18), Offset(x, y), Size(w, h), CornerRadius(6f))
-    drawText(t1, topLeft = Offset(x + 8f, y + 5f))
-    drawText(t2, topLeft = Offset(x + 8f, y + 5f + t1.size.height))
+    val padX = 8.dp.toPx()
+    val padY = 5.dp.toPx()
+    val w = max(t1.size.width, t2.size.width) + padX * 2
+    val h = t1.size.height + t2.size.height + padY * 2
+    val x = (at.x - w / 2).coerceIn(0f, max(0f, size.width - w))
+    val y = (at.y - h - 10.dp.toPx()).coerceAtLeast(0f)
+    drawRoundRect(Color(0xE62A1F18), Offset(x, y), Size(w, h), CornerRadius(6.dp.toPx()))
+    drawText(t1, topLeft = Offset(x + padX, y + padY))
+    drawText(t2, topLeft = Offset(x + padX, y + padY + t1.size.height))
 }
 
-/** Grid, y labels and x labels shared by the bar and line charts; returns the plot area. */
+/** Grid, y labels and x labels shared by the bar and line charts; returns the plot area. Sizes are in dp, so a Retina Mac draws them like Windows. */
 private fun DrawScope.axes(measurer: TextMeasurer, points: List<Point>, top: Double, step: Double, format: (Double) -> String): Pair<Offset, Size> {
-    val labelW = (0..4).maxOf { measurer.measure(format(step * it), axisStyle).size.width }.toFloat() + 8f
-    val bottomH = 18f
-    val origin = Offset(labelW, 6f)
-    val plot = Size(size.width - labelW, size.height - bottomH - 6f)
+    val gap = 8.dp.toPx()
+    val labelW = (0..4).maxOf { measurer.measure(format(step * it), axisStyle).size.width }.toFloat() + gap
+    val textH = measurer.measure("0", axisStyle).size.height.toFloat()
+    // Room for half a y label above the top gridline, and a band below the baseline for the x labels.
+    val origin = Offset(labelW, textH / 2 + 2.dp.toPx())
+    val plot = Size(size.width - labelW, size.height - origin.y - textH - gap)
+    val dash = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx()))
+    val hair = 1.dp.toPx()
     var v = 0.0
     while (v <= top + 1e-9) {
         val y = origin.y + plot.height * (1 - (v / top)).toFloat()
-        drawLine(Brand.Line, Offset(origin.x, y), Offset(size.width, y), 1f, pathEffect = if (v == 0.0) null else PathEffect.dashPathEffect(floatArrayOf(4f, 4f)))
+        drawLine(Brand.Line, Offset(origin.x, y), Offset(size.width, y), hair, pathEffect = if (v == 0.0) null else dash)
         val t = measurer.measure(format(v), axisStyle)
-        drawText(t, topLeft = Offset(labelW - t.size.width - 6f, y - t.size.height / 2))
+        drawText(t, topLeft = Offset(labelW - t.size.width - gap / 1.5f, y - t.size.height / 2))
         v += step
     }
     if (points.isNotEmpty()) {
         val slot = plot.width / points.size
-        val sample = measurer.measure(points.maxBy { it.label.length }.label, axisStyle).size.width + 10f
+        val sample = measurer.measure(points.maxBy { it.label.length }.label, axisStyle).size.width + 12.dp.toPx()
         val every = max(1, ceil(sample / slot).toInt())
+        val labelY = origin.y + plot.height + gap / 2
         points.forEachIndexed { i, p ->
             if (i % every != 0) return@forEachIndexed
             val t = measurer.measure(p.label, axisStyle)
             val cx = origin.x + slot * (i + 0.5f)
-            drawText(t, topLeft = Offset((cx - t.size.width / 2).coerceIn(origin.x, size.width - t.size.width), size.height - t.size.height))
+            drawText(t, topLeft = Offset((cx - t.size.width / 2).coerceIn(origin.x, max(origin.x, size.width - t.size.width)), labelY))
         }
     }
     return origin to plot
@@ -162,17 +170,20 @@ fun BarChart(points: List<Point>, modifier: Modifier = Modifier, color: Color = 
         val (o, plot) = axes(measurer, points, top, step, format)
         if (points.isEmpty()) return@Canvas
         val slot = plot.width / points.size
-        val barW = (slot * 0.62f).coerceAtMost(42f)
+        val barW = (slot * 0.6f).coerceAtMost(40.dp.toPx())
+        val radius = min(5.dp.toPx(), barW / 3)
         var tip: Triple<Offset, String, String>? = null
         points.forEachIndexed { i, p ->
-            val h = (plot.height * (p.value / top).toFloat() * progress).coerceAtLeast(if (p.value > 0) 1.5f else 0f)
+            val h = (plot.height * (p.value / top).toFloat() * progress).coerceAtLeast(if (p.value > 0) 2.dp.toPx() else 0f)
             val x = o.x + slot * i + (slot - barW) / 2
             val y = o.y + plot.height - h
             val hovered = hover?.let { it.x >= o.x + slot * i && it.x < o.x + slot * (i + 1) } == true
-            drawRoundRect(
-                if (hovered) color else color.copy(alpha = 0.82f), Offset(x, y), Size(barW, h),
-                CornerRadius(min(4f, barW / 3), min(4f, barW / 3))
-            )
+            if (hovered) drawRect(color.copy(alpha = 0.07f), Offset(o.x + slot * i, o.y), Size(slot, plot.height))
+            // Rounded top, square foot on the baseline.
+            val bar = Path().apply {
+                addRoundRect(androidx.compose.ui.geometry.RoundRect(x, y, x + barW, y + h, CornerRadius(radius), CornerRadius(radius), CornerRadius.Zero, CornerRadius.Zero))
+            }
+            drawPath(bar, if (hovered) color else color.copy(alpha = 0.85f))
             if (hovered) tip = Triple(Offset(x + barW / 2, y), p.label, tipFormat(p.value))
         }
         tip?.let { (at, l, v) -> tooltip(measurer, at, l, v) }
@@ -189,24 +200,27 @@ fun LineChart(points: List<Point>, modifier: Modifier = Modifier, color: Color =
         val (o, plot) = axes(measurer, points, top, step, format)
         if (points.isEmpty()) return@Canvas
         val slot = plot.width / points.size
+        val base = o.y + plot.height
         val pts = points.mapIndexed { i, p ->
             Offset(o.x + slot * (i + 0.5f), o.y + plot.height * (1 - (p.value / top).toFloat() * progress))
         }
         val line = Path().apply { pts.forEachIndexed { i, p -> if (i == 0) moveTo(p.x, p.y) else lineTo(p.x, p.y) } }
         val area = Path().apply {
             addPath(line)
-            lineTo(pts.last().x, o.y + plot.height)
-            lineTo(pts.first().x, o.y + plot.height)
+            lineTo(pts.last().x, base)
+            lineTo(pts.first().x, base)
             close()
         }
-        drawPath(area, Brush.verticalGradient(listOf(color.copy(alpha = 0.22f), color.copy(alpha = 0.02f)), o.y, o.y + plot.height))
-        drawPath(line, color, style = Stroke(2.2f, cap = StrokeCap.Round))
+        drawPath(area, Brush.verticalGradient(listOf(color.copy(alpha = 0.24f), color.copy(alpha = 0.03f)), o.y, base))
+        drawPath(line, color, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
         val idx = hover?.let { ((it.x - o.x) / slot).toInt() }?.takeIf { it in pts.indices }
-        if (pts.size <= 40) pts.forEach { drawCircle(Color.White, 3.2f, it); drawCircle(color, 3.2f, it, style = Stroke(1.6f)) }
+        val dot = 3.5.dp.toPx()
+        if (pts.size <= 40) pts.forEach { drawCircle(Color.White, dot, it); drawCircle(color, dot, it, style = Stroke(1.5.dp.toPx())) }
         if (idx != null) {
             val p = pts[idx]
-            drawLine(color.copy(alpha = 0.4f), Offset(p.x, o.y), Offset(p.x, o.y + plot.height), 1f)
-            drawCircle(color, 5f, p)
+            drawLine(color.copy(alpha = 0.4f), Offset(p.x, o.y), Offset(p.x, base), 1.dp.toPx())
+            drawCircle(Color.White, 6.dp.toPx(), p)
+            drawCircle(color, 4.5.dp.toPx(), p)
             tooltip(measurer, p, points[idx].label, tipFormat(points[idx].value))
         }
     }
@@ -312,7 +326,7 @@ fun Gauge(percent: Double, warnAt: Int, label: String, modifier: Modifier = Modi
             val c = Offset(size.width / 2, tl.y + d / 2)
             val r1 = d / 2 - stroke * 0.8f
             val r2 = d / 2 + stroke * 0.8f
-            drawLine(Brand.Muted, Offset(c.x + r1 * kotlin.math.cos(a).toFloat(), c.y + r1 * kotlin.math.sin(a).toFloat()), Offset(c.x + r2 * kotlin.math.cos(a).toFloat(), c.y + r2 * kotlin.math.sin(a).toFloat()), 2f)
+            drawLine(Brand.Muted, Offset(c.x + r1 * kotlin.math.cos(a).toFloat(), c.y + r1 * kotlin.math.sin(a).toFloat()), Offset(c.x + r2 * kotlin.math.cos(a).toFloat(), c.y + r2 * kotlin.math.sin(a).toFloat()), 2.dp.toPx())
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(bottom = 4.dp)) {
             Text("%.1f %%".format(percent), style = MaterialTheme.typography.titleLarge, color = color)

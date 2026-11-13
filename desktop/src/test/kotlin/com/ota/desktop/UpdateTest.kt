@@ -32,13 +32,24 @@ import kotlin.test.assertTrue
 class FakeReleases : AutoCloseable {
     val files = HashMap<String, ByteArray>()
     var releases = JSONArray()
+    /** Download responses still to be cut off halfway. */
+    @Volatile var drops = 0
+    /** Range (resume) requests served. */
+    @Volatile var ranges = 0
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/") { ex ->
             val path = ex.requestURI.path.removePrefix("/")
-            val body = if (path == "releases") releases.toString().toByteArray() else files[path]
+            val full = if (path == "releases") releases.toString().toByteArray() else files[path]
+            val from = ex.requestHeaders.getFirst("Range")?.removePrefix("bytes=")?.removeSuffix("-")?.toIntOrNull()
+            if (full != null && from != null) ranges++
+            val body = if (full != null && from != null) full.copyOfRange(from, full.size) else full
             if (body == null) ex.sendResponseHeaders(404, -1) else {
-                ex.sendResponseHeaders(200, body.size.toLong())
-                ex.responseBody.use { it.write(body) }
+                ex.sendResponseHeaders(if (from != null) 206 else 200, body.size.toLong())
+                if (path != "releases" && drops > 0) {
+                    // A dropped connection: half the bytes, then gone.
+                    drops--
+                    runCatching { ex.responseBody.write(body, 0, body.size / 2); ex.responseBody.flush() }
+                } else ex.responseBody.use { it.write(body) }
             }
             ex.close()
         }
@@ -131,11 +142,29 @@ class UpdateTest {
             file.delete()
             assertFailsWith<VerificationFailed> { Downloader.fetch(release.installer!!, dir, null) }
             assertTrue(dir.listFiles()!!.isEmpty())
-            // Cut short.
+            // Cut short every time: retried, then given up.
             r.files["OTA-Business-1.3.0.msi"] = bytes.copyOf(1000)
-            assertFailsWith<VerificationFailed> { Downloader.fetch(release.installer!!, dir, null) }
+            assertFailsWith<java.io.IOException> { Downloader.fetch(release.installer!!, dir, null, backoff = {}) }
+            assertTrue(dir.listFiles()!!.isEmpty())
             // SHA256SUMS.txt and the API digest disagree.
             assertFailsWith<VerificationFailed> { Downloader.fetch(release.installer!!, dir, "00".repeat(32)) }
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun droppedDownloadResumesWhereItStopped() {
+        FakeReleases().use { r ->
+            val bytes = ByteArray(400_000) { (it * 7).toByte() }
+            r.publish("1.3.0", bytes)
+            val dir = Files.createTempDirectory("ota-dl").toFile()
+            val release = ReleaseFeed(r.feed, platform = Platform.WINDOWS).newer(v("1.2.1"))!!
+            r.drops = 2
+            var retries = 0
+            val file = Downloader.fetch(release.installer!!, dir, null, backoff = { retries++ })
+            assertTrue(file.readBytes().contentEquals(bytes))
+            assertEquals(2, retries)
+            assertEquals(2, r.ranges, "the later attempts asked only for the missing bytes")
             dir.deleteRecursively()
         }
     }
@@ -192,13 +221,13 @@ class UpdateTest {
     fun aFailedMigrationChangesNothing() {
         val db = TestDb.fresh()
         db.read { c -> c.createStatement().use { it.execute("insert into kv (key, value) values ('k', 'v')") } }
-        val steps = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql", "V4__accounts.sql", "V5__hard_deletes.sql").map { n ->
+        val steps = listOf("V1__init.sql", "V2__bill_lines_claims_parties.sql", "V3__bill_transport.sql", "V4__accounts.sql", "V5__hard_deletes.sql", "V6__test_schema.sql").map { n ->
             n to { Migrations::class.java.getResource("/db/$n")!!.readText() }
         }
-        val bad = "V6__bad.sql" to { "create table new_stuff (x int); update kv set value = 'changed'; select no_such_column from kv;" }
+        val bad = "V7__bad.sql" to { "create table new_stuff (x int); update kv set value = 'changed'; select no_such_column from kv;" }
         assertFailsWith<Exception> { Migrations.run(db, steps + bad) }
         db.read { c ->
-            assertEquals(5, c.one("select max(version) from schema_version") { it.getInt(1) })
+            assertEquals(6, c.one("select max(version) from schema_version") { it.getInt(1) })
             assertEquals("v", c.one("select value from kv where key = 'k'") { it.getString(1) })
             assertEquals(0, c.one("select count(*) from information_schema.tables where table_name = 'new_stuff'") { it.getInt(1) })
         }

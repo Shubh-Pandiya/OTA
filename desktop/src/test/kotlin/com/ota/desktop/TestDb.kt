@@ -25,7 +25,7 @@ object TestDb {
         // run into max_connections (20). A pool that is still in use just reopens what it needs.
         synchronized(opened) { opened.forEach { it.close() }; opened.clear() }
         val db = Db(server::connect).also { synchronized(opened) { opened += it } }
-        db.read { c -> c.createStatement().use { it.execute("drop schema public cascade; create schema public") } }
+        db.read { c -> c.createStatement().use { it.execute("drop schema if exists ota_test cascade; drop schema public cascade; create schema public") } }
         Migrations.run(db)
         return db
     }

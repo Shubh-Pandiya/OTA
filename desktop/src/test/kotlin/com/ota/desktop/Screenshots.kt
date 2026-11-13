@@ -76,8 +76,13 @@ fun main(args: Array<String>) {
     // One order saved while offline, waiting for its number.
     val pending = demo.orders.create(demo.orders.list().first().data.copy(remarks = "Saved offline"), "")
 
+    // OTA_SHOT_DENSITY=2 renders like a Retina Mac; OTA_SHOTS=02-insights,… renders only those.
+    val density = System.getenv("OTA_SHOT_DENSITY")?.toFloatOrNull() ?: 1.25f
+    val only = System.getenv("OTA_SHOTS")?.split(',')?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
     fun shot(name: String, nav: Navigator? = null, height: Int = 1000, ctx: AppContext = app, content: (@Composable () -> Unit)? = null) {
-        val scene = ImageComposeScene(1600, height, Density(1.25f)) {
+        if (only.isNotEmpty() && name !in only) return
+        val scale = density / 1.25f
+        val scene = ImageComposeScene((1600 * scale).toInt(), (height * scale).toInt(), Density(density)) {
             OtaTheme {
                 CompositionLocalProvider(LocalApp provides ctx) {
                     if (content != null) content() else AppShell(ctx, nav!!)

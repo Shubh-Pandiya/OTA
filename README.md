@@ -185,14 +185,17 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 
 - **Admins** are varun@ota.com and shubham@ota.com. Only they may archive or purge the cloud or
   change retention, and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
-  clean-up, the retention settings and **Accounts**.
+  clean-up and the retention settings. **Accounts** is shown to the admins and to the test account.
 - **Test account** testuser1@ota.com uses the same cloud, but its rows are tagged `is_test` and hidden
   by RLS. Nobody else sees them in any list, search, total, Insights, Accounts or export, and it sees
   only its own test data. Test orders and advices use their own number series.
   - Signed in as the test user, *Sync Settings* (phone) and *Sync & Cloud* (desktop) show
     **Clear all my test data**. It deletes every test row in the cloud and on that device.
-  - A device holding real data refuses the test login, so testing can never wipe real data. Use a
-    fresh install or emulator for the test account.
+  - The desktop accepts the test login on a laptop that holds real data (desktop 1.7.0). The test data
+    sits beside the real data in its own local schema, so while the test user is signed in only test
+    rows show, and signing in with a staff login brings the real data back. Switching never deletes or
+    mixes anything. The test user gets its own Accounts books, built from test bills only.
+  - The phone keeps one kind of data and refuses a test login while it holds real data.
 
 See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md#test-account) for the details.
 
@@ -232,6 +235,8 @@ start ("cannot be opened" / "Apple could not verify…"). Choose **Done**, open 
 Privacy & Security**, scroll to *Security*, click **Open Anyway** next to OTA Business, and confirm with
 your password. This is needed only once. The data lives in `~/Library/Application Support/OTA Business Data`
 (database, backups and logs), and PDFs go to `~/Documents/OTA Orders`. Intel Macs aren't supported.
+On some networks with IPv6 the Mac app 1.5.0–1.6.1 can't download its update ("HTTP connect timed out").
+1.7.0 fixes this (IPv4, resumable download with retries), so install the 1.7.0 DMG by hand once.
 
 **Updates (1.3.0 and later):** the app checks the public GitHub Releases (`desktop-v*` tags, no token)
 a few seconds after start and every 6 hours, and asks *Update now / Later* with the release notes
@@ -255,7 +260,7 @@ On a Mac the update downloads the DMG and verifies it the same way. After the ap
 - A Home screen: today's orders, bills still to receive, outstanding and this month's receipts, dues by age, the oldest dues, recent orders and advices, and quick actions.
 - Everything the phone does: orders with units and PDFs, bills (with their own item lines, added from an order or on their own), payment advices with claim / defect deductions and PDFs, the buyer/supplier catalog, search, sync status and *Sync now*. Order numbers come from the shared financial-year counter (`26270001`, …); an order saved offline waits for its number until the next sync. Advice numbers use the signed-in staff digit. Advice images stay on the phone.
 - Dashboards: orders over time, quantity per unit, top buyers and suppliers, outstanding bills with ageing buckets, payments over time, adjustments (C.D./G.R./R.D./claims), per-staff activity and cloud storage. Filters: date range, buyer, supplier and staff.
-- **Accounts** (admins only: varun@ota.com, shubham@ota.com): the agency's own double-entry books.
+- **Accounts** (admins varun@ota.com and shubham@ota.com; the test account gets separate test books): the agency's own double-entry books.
   - A default chart of accounts you can edit, and a ledger for every catalog buyer and supplier.
   - Journal, payment, receipt and contra vouchers with balanced Dr/Cr lines, and an audit log of every add, edit and delete.
   - Commission is set as a % per supplier and posted automatically from every bill (Dr supplier, Cr Commission income), at most one voucher per bill. It is re-posted when a bill is edited and removed when the bill is deleted.

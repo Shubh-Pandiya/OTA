@@ -150,10 +150,15 @@ class VerificationFailed(message: String) : IOException(message)
 /** Downloads an installer next to the data folder and checks it before anything runs it. */
 object Downloader {
     /**
-     * Downloads [installer] into [dir] (resuming nothing: a partial file is thrown away), then checks
-     * its size and SHA-256. [expectedSha] wins over the release's own digest; both must agree.
+     * Downloads [installer] into [dir], then checks its size and SHA-256. [expectedSha] wins over the
+     * release's own digest; both must agree. A dropped or stalled connection is retried [attempts]
+     * times, resuming from the bytes already saved when the server allows it.
      */
-    fun fetch(installer: Installer, dir: File, expectedSha: String?, http: HttpClient = ReleaseFeed.client, progress: (Float) -> Unit = {}): File {
+    fun fetch(
+        installer: Installer, dir: File, expectedSha: String?, http: HttpClient = ReleaseFeed.client,
+        attempts: Int = 4, stall: Duration = Duration.ofSeconds(60), backoff: (Int) -> Unit = { Thread.sleep(2000L * it) },
+        progress: (Float) -> Unit = {}
+    ): File {
         dir.mkdirs()
         val target = File(dir, installer.name)
         val sha = listOfNotNull(expectedSha, installer.sha256).distinct()
@@ -161,31 +166,66 @@ object Downloader {
         if (target.exists() && verify(target, installer.size, sha.firstOrNull()) == null) return target
         target.delete()
         val part = File(dir, installer.name + ".part").apply { delete() }
-        val response = http.send(
-            HttpRequest.newBuilder(URI(installer.url)).timeout(Duration.ofMinutes(20)).header("User-Agent", "OTA-Business-Desktop").GET().build(),
-            HttpResponse.BodyHandlers.ofInputStream()
-        )
-        if (response.statusCode() != 200) {
-            response.body().close()
-            throw IOException("Download answered HTTP ${response.statusCode()}")
-        }
-        val total = installer.size.takeIf { it > 0 } ?: response.headers().firstValueAsLong("Content-Length").orElse(-1)
-        response.body().use { input ->
-            part.outputStream().use { out ->
-                val buf = ByteArray(1 shl 16)
-                var done = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                    done += n
-                    if (total > 0) progress((done.toFloat() / total).coerceAtMost(1f))
-                }
+        var attempt = 0
+        while (true) {
+            attempt++
+            try {
+                download(installer, part, http, stall, progress)
+                break
+            } catch (e: IOException) {
+                if (attempt >= attempts) { part.delete(); throw e }
+                backoff(attempt)
             }
         }
         verify(part, installer.size, sha.firstOrNull())?.let { part.delete(); throw VerificationFailed(it) }
         if (!part.renameTo(target)) throw IOException("Could not save ${target.name}")
         return target
+    }
+
+    /** One attempt: appends to [part] from its current length (HTTP Range), or restarts when the server ignores it. */
+    private fun download(installer: Installer, part: File, http: HttpClient, stall: Duration, progress: (Float) -> Unit) {
+        val have = if (installer.size > 0 && part.length() > installer.size) 0L.also { part.delete() } else part.length()
+        val request = HttpRequest.newBuilder(URI(installer.url)).timeout(Duration.ofMinutes(2)).header("User-Agent", "OTA-Business-Desktop")
+            .apply { if (have > 0) header("Range", "bytes=$have-") }.GET().build()
+        val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
+        val append = when (response.statusCode()) {
+            206 -> have > 0
+            200 -> false
+            else -> { response.body().close(); throw IOException("Download answered HTTP ${response.statusCode()}") }
+        }
+        val start = if (append) have else 0L
+        val total = installer.size.takeIf { it > 0 } ?: response.headers().firstValueAsLong("Content-Length").orElse(-1).let { if (it > 0) it + start else -1 }
+        // The request timeout ends at the headers; a body that stops arriving is cut by this watchdog.
+        val lastRead = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+        val body = response.body()
+        val watchdog = Thread {
+            try {
+                while (!Thread.currentThread().isInterrupted) {
+                    Thread.sleep(1000)
+                    if (System.nanoTime() - lastRead.get() > stall.toNanos()) { runCatching { body.close() }; return@Thread }
+                }
+            } catch (_: InterruptedException) {
+            }
+        }.apply { isDaemon = true; name = "update-download-watchdog"; start() }
+        try {
+            body.use { input ->
+                java.io.FileOutputStream(part, append).use { out ->
+                    val buf = ByteArray(1 shl 16)
+                    var done = start
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        lastRead.set(System.nanoTime())
+                        out.write(buf, 0, n)
+                        done += n
+                        if (total > 0) progress((done.toFloat() / total).coerceAtMost(1f))
+                    }
+                }
+            }
+        } finally {
+            watchdog.interrupt()
+        }
+        if (installer.size > 0 && part.length() < installer.size) throw IOException("Download stopped at ${part.length()} of ${installer.size} bytes")
     }
 
     /** Null when [file] matches, else why not. */

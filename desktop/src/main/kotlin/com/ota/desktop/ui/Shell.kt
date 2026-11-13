@@ -184,7 +184,7 @@ fun AppShell(app: AppContext, nav: Navigator = remember { Navigator() }) {
                             Section.BILLS -> BillsScreen()
                             Section.ADVICES -> AdvicesScreen()
                             Section.CATALOG -> CatalogScreen()
-                            Section.ACCOUNTS -> if (app.admin.collectAsState().value) AccountsScreen() else HomeScreen()
+                            Section.ACCOUNTS -> if (app.accountsAllowed.collectAsState().value) AccountsScreen() else HomeScreen()
                             Section.SYNC -> SyncScreen()
                             Section.EXPORT -> ExportScreen()
                         }
@@ -213,9 +213,10 @@ private fun Sidebar(app: AppContext, nav: Navigator) {
         }
         Spacer(Modifier.height(22.dp))
         val admin by app.admin.collectAsState()
-        // Accounts (the agency's own books) is for the admins only.
-        LaunchedEffect(admin) { if (!admin && nav.section == Section.ACCOUNTS) nav.go(Section.HOME) }
-        Section.entries.filter { admin || it != Section.ACCOUNTS }.forEach { s -> NavItem(s, nav.section == s) { nav.go(s) } }
+        // Accounts (the agency's own books) is for the admins, and the test account's test books.
+        val accountsAllowed by app.accountsAllowed.collectAsState()
+        LaunchedEffect(accountsAllowed) { if (!accountsAllowed && nav.section == Section.ACCOUNTS) nav.go(Section.HOME) }
+        Section.entries.filter { accountsAllowed || it != Section.ACCOUNTS }.forEach { s -> NavItem(s, nav.section == s) { nav.go(s) } }
         Spacer(Modifier.weight(1f))
 
         // Sync status

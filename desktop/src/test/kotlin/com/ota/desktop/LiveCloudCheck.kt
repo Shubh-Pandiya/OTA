@@ -12,9 +12,12 @@ import kotlin.system.exitProcess
  * Manual check against the real cloud, as the test account only:
  * `OTA_LIVE_HOME=/tmp/x OTA_PW=… gradlew liveCheck --args="signin|sync|list|create <buyer>|delete <order no>"`.
  * A throwaway laptop (its own data folder) running the real sync engine, to watch deletes and order
- * numbers travel between it and a phone. Every command ends with a sync round and the order list.
+ * numbers travel between it and a phone. `download <version>`: fetches the newest real release above
+ * <version> for this OS with the updater's own downloader and verifies it.
+ * The other commands end with a sync round and the order list.
  */
 fun main(args: Array<String>) {
+    if (args.getOrNull(0) == "download") exitProcess(liveDownload(args.getOrNull(1) ?: "1.0.0"))
     val app = AppContext.open()
     var code = 0
     try {
@@ -56,4 +59,18 @@ fun main(args: Array<String>) {
         app.close()
     }
     exitProcess(code)
+}
+
+private fun liveDownload(current: String): Int {
+    val feed = com.ota.desktop.update.ReleaseFeed()
+    val release = feed.newer(com.ota.desktop.update.AppVersion.parse(current)!!) ?: return 1.also { println("no release above $current") }
+    val installer = release.installer ?: return 1.also { println("${release.version} has no installer for this OS") }
+    val sha = feed.publishedChecksum(release, installer.name)
+    val dir = java.nio.file.Files.createTempDirectory("ota-live-dl").toFile()
+    val started = System.currentTimeMillis()
+    var shown = -1
+    val file = com.ota.desktop.update.Downloader.fetch(installer, dir, sha) { p -> (p * 10).toInt().let { if (it != shown) { shown = it; println("downloaded ${it * 10}%") } } }
+    println("ok ${file.name} ${file.length()} bytes, sha256 ${com.ota.desktop.update.ReleaseFeed.sha256(file)} (published $sha) in ${(System.currentTimeMillis() - started) / 1000}s")
+    dir.deleteRecursively()
+    return 0
 }
