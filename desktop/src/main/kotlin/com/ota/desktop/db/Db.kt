@@ -69,8 +69,13 @@ class Db(private val open: () -> Connection, private val poolSize: Int = 4) : Au
         }
     }
 
+    /** Closes the idle connections. The pool stays usable and opens new ones when needed. */
     override fun close() {
-        while (true) runCatching { (idle.pollFirst() ?: return).close() }
+        while (true) {
+            val c = idle.pollFirst() ?: return
+            runCatching { c.close() }
+            synchronized(this) { created-- }
+        }
     }
 }
 

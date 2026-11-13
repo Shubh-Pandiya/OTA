@@ -17,9 +17,14 @@ object TestDb {
         }
     }
 
+    private val opened = mutableListOf<Db>()
+
     /** Drops every table and runs the migrations again. */
     fun fresh(): Db {
-        val db = Db(server::connect)
+        // Earlier tests' pools would otherwise keep their connections open until the JVM exits and
+        // run into max_connections (20). A pool that is still in use just reopens what it needs.
+        synchronized(opened) { opened.forEach { it.close() }; opened.clear() }
+        val db = Db(server::connect).also { synchronized(opened) { opened += it } }
         db.read { c -> c.createStatement().use { it.execute("drop schema public cascade; create schema public") } }
         Migrations.run(db)
         return db
