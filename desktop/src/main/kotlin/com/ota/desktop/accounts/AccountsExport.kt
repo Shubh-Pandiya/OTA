@@ -18,7 +18,7 @@ object AccountsExport {
     /** One sheet per table: title rows, a frozen filterable header, real ₹ number cells, bold totals. */
     fun xlsx(file: File, tables: List<ReportTable>): File = XlsxExport.write(file, tables.map { t ->
         SheetTable(
-            t.title.take(31).replace(Regex("[\\[\\]*?/\\\\:]"), " "),
+            t.title.replace(" / ", " & ").take(31).replace(Regex("[\\[\\]*?/\\\\:]"), " "),
             t.columns.map { it.title },
             t.rows.map { r -> r.cells.map { if (it is Long) it.toDouble() else it } },
             t.moneyColumns,
