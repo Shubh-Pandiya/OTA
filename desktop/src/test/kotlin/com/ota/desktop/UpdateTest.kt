@@ -248,8 +248,9 @@ class UpdateTest {
         val dmg = File(dir, "update.dmg")
         val made = ProcessBuilder("hdiutil", "create", "-quiet", "-fs", "HFS+", "-volname", "OTA Business", "-srcfolder", src.path, "-format", "UDZO", dmg.path)
             .inheritIO().start().waitFor()
+        // Sandboxed shells may forbid making or mounting disk images; CI runners must not skip.
+        if (made != 0 && System.getenv("CI") == null) { dir.deleteRecursively(); return }
         assertEquals(0, made, "hdiutil create")
-        // Sandboxed shells may forbid mounting disk images; CI runners must not skip.
         val probe = Files.createTempDirectory("ota-probe").toFile()
         val mounted = ProcessBuilder("hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", probe.path, dmg.path)
             .redirectErrorStream(true).start().apply { inputStream.readBytes() }.waitFor() == 0
