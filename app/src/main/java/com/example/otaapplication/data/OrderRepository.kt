@@ -39,10 +39,10 @@ class OrderRepository(
         var changed = false
         db.beginTransaction()
         try {
-            data class Row(val fingerprint: String, val seq: Int, val deleted: Boolean)
+            data class Row(val fingerprint: String, val seq: Int, val offerNo: String)
             val existing = HashMap<String, Row>()
-            db.rawQuery("SELECT id, fingerprint, seq, is_deleted FROM orders", null).use { c ->
-                while (c.moveToNext()) existing[c.getString(0)] = Row(c.getString(1), c.getInt(2), c.getInt(3) != 0)
+            db.rawQuery("SELECT id, fingerprint, seq, offer_no FROM orders", null).use { c ->
+                while (c.moveToNext()) existing[c.getString(0)] = Row(c.getString(1), c.getInt(2), c.getString(3))
             }
             val now = clock()
             for (e in entries) {
@@ -55,7 +55,7 @@ class OrderRepository(
                         db.insertOrThrow("orders", null, values().apply { put("id", e.id); put("created_at", remoteAt ?: now) })
                         changed = true
                     }
-                    row.fingerprint != fingerprint || row.deleted -> {
+                    row.fingerprint != fingerprint -> {
                         db.update("orders", values(), "id = ?", arrayOf(e.id))
                         changed = true
                     }
@@ -70,12 +70,12 @@ class OrderRepository(
                 }
             }
             val present = entries.mapTo(HashSet()) { it.id }
-            val removed = existing.filter { (id, row) -> !row.deleted && id !in present }.keys
-            for (id in removed) {
-                val remoteAt = remote[id]
-                // A deletion pulled from the cloud: the phone that deleted it uploads its own link changes.
-                db.update("orders", if (remoteAt != null) tombstoneSynced(remoteAt) else tombstone(now), "id = ?", arrayOf(id))
-                db.update("order_bills", if (remoteAt != null) tombstoneSynced(now) else tombstone(now), "order_id = ? AND is_deleted = 0", arrayOf(id))
+            val removed = existing.filterKeys { it !in present }
+            for ((id, row) in removed) {
+                // A delete pulled from the cloud is already there; only orders that reached the cloud
+                // (they have a uuid and a number) need telling it.
+                val queue = id !in remote && id.length == 36 && row.offerNo.isNotEmpty()
+                LocalDeletions.delete(db, "orders", id, now, queue)
             }
             if (removed.isNotEmpty()) {
                 retireOrphanBills(db, now)
@@ -252,9 +252,7 @@ class OrderRepository(
             val live = db.rawQuery("SELECT order_id FROM order_bills WHERE bill_id = ? AND is_deleted = 0", arrayOf(id)).use { c ->
                 buildSet { while (c.moveToNext()) add(c.getString(0)) }
             }
-            for (orderId in live - wanted.toSet()) {
-                db.update("order_bills", tombstone(now), "order_id = ? AND bill_id = ? AND is_deleted = 0", arrayOf(orderId, id))
-            }
+            for (orderId in live - wanted.toSet()) unlink(db, orderId, id, now)
             for (orderId in wanted.filterNot(live::contains)) linkOrder(db, orderId, id, now)
             db.setTransactionSuccessful()
             return BillSql.billById(db, id)!!
@@ -272,8 +270,7 @@ class OrderRepository(
         try {
             val bill = BillSql.billById(db, billId) ?: return
             require(bill.adviceCount == 0) { "Bill ${bill.billNo} is on a payment advice. Remove it from the advice first." }
-            db.update("order_bills", tombstone(now), "bill_id = ? AND is_deleted = 0", arrayOf(billId))
-            db.update("bills", tombstone(now), "id = ? AND is_deleted = 0", arrayOf(billId))
+            LocalDeletions.delete(db, "bills", billId, now)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -282,18 +279,17 @@ class OrderRepository(
     }
 
     private fun linkOrder(db: SQLiteDatabase, orderId: String, billId: String, now: Long) {
-        val revived = db.update(
-            "order_bills",
-            ContentValues().apply { put("is_deleted", 0); put("updated_at", now); put("sync_pending", 1) },
-            "order_id = ? AND bill_id = ? AND is_deleted = 1",
-            arrayOf(orderId, billId)
-        )
-        if (revived == 0) {
-            db.insertWithOnConflict("order_bills", null, ContentValues().apply {
-                put("id", SyncIds.link(orderId, billId)); put("order_id", orderId); put("bill_id", billId)
-                put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
-            }, SQLiteDatabase.CONFLICT_IGNORE)
+        db.insertWithOnConflict("order_bills", null, ContentValues().apply {
+            put("id", SyncIds.link(orderId, billId)); put("order_id", orderId); put("bill_id", billId)
+            put("created_at", now); put("updated_at", now); put("is_deleted", 0); put("sync_pending", 1)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
+    }
+
+    private fun unlink(db: SQLiteDatabase, orderId: String, billId: String, now: Long) {
+        val ids = db.rawQuery("SELECT id FROM order_bills WHERE order_id = ? AND bill_id = ?", arrayOf(orderId, billId)).use { c ->
+            buildList { while (c.moveToNext()) add(c.getString(0)) }
         }
+        ids.forEach { LocalDeletions.delete(db, "order_bills", it, now) }
     }
 
     /** Cloud ids (uuids) of the given local orders, in the given order; orders without one are left out. */
@@ -358,7 +354,7 @@ class OrderRepository(
         val now = clock()
         db.beginTransaction()
         try {
-            db.update("order_bills", tombstone(now), "order_id = ? AND bill_id = ? AND is_deleted = 0", arrayOf(orderId, billId))
+            unlink(db, orderId, billId, now)
             retireOrphanBills(db, now)
             db.setTransactionSuccessful()
         } finally {
@@ -369,16 +365,18 @@ class OrderRepository(
 
     /** Bills that name their own buyer and supplier (added from the Bills section) are kept. */
     private fun retireOrphanBills(db: SQLiteDatabase, now: Long) {
-        db.update(
-            "bills", tombstone(now),
-            "is_deleted = 0 AND (buyer = '' OR supplier = '') AND NOT EXISTS (SELECT 1 FROM order_bills ob WHERE ob.bill_id = bills.id AND ob.is_deleted = 0)",
+        val orphans = db.rawQuery(
+            """SELECT id FROM bills WHERE (buyer = '' OR supplier = '')
+               AND NOT EXISTS (SELECT 1 FROM order_bills ob WHERE ob.bill_id = bills.id)
+               AND NOT EXISTS (SELECT 1 FROM advice_lines l WHERE l.bill_id = bills.id)""",
             null
-        )
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+        orphans.forEach { LocalDeletions.delete(db, "bills", it, now) }
     }
 
     // ------------------------------------------------------------------ cloud sync
 
-    /** Order numbers starting with [prefix], including deleted orders (numbers are never reused). */
+    /** Order numbers starting with [prefix] on this phone. */
     fun offerNosWithPrefix(prefix: String): List<String> =
         helper.readableDatabase.rawQuery(
             "SELECT offer_no FROM orders WHERE substr(offer_no, 1, ?) = ?",
@@ -457,16 +455,21 @@ class OrderRepository(
     /** Clears the dirty flag of rows that were not edited again while the upload was running. */
     fun markSynced(table: String, rows: List<Pair<String, Long>>) = BillSql.markSynced(helper.writableDatabase, table, rows)
 
-    /**
-     * Remembers an order that was deleted in the cloud before this phone ever saw it, so that
-     * its number still counts as used.
-     */
-    fun recordRemoteTombstone(id: String, offerNo: String, date: String, clientUpdatedAt: Long) {
-        helper.writableDatabase.insertWithOnConflict("orders", null, ContentValues().apply {
-            put("id", id); put("uuid", id); put("offer_no", offerNo); put("order_date", date)
-            put("day_key", SearchText.dayKey(date)); put("seq", -1); put("search_text", ""); put("fingerprint", "")
-            put("created_at", clientUpdatedAt); put("updated_at", clientUpdatedAt); put("is_deleted", 1); put("sync_pending", 0)
-        }, SQLiteDatabase.CONFLICT_IGNORE)
+    /** True when this phone deleted [id] at or after [editedAt] (the cloud may not know yet). */
+    fun deletedHere(id: String, editedAt: Long): Boolean = LocalDeletions.blocks(helper.readableDatabase, id, editedAt)
+
+    /** Bills and bill links deleted on other devices (cloud tombstones). Returns how many rows went here. */
+    fun applyDeletions(rows: List<Deletion>): Int {
+        if (rows.isEmpty()) return 0
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        try {
+            val removed = rows.count { LocalDeletions.applyRemote(db, it.table, it.id, it.at) }
+            db.setTransactionSuccessful()
+            return removed
+        } finally {
+            db.endTransaction()
+        }
     }
 
     /** Applies pulled bills (last write wins). Returns how many local rows changed. */
@@ -477,14 +480,19 @@ class OrderRepository(
         db.beginTransaction()
         try {
             for (row in rows) {
-                if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                if (row.deleted) {
+                    if (LocalDeletions.applyRemote(db, "bills", row.id, row.clientUpdatedAt)) changed++
+                    continue
+                }
+                if (LocalDeletions.blocks(db, row.id, row.clientUpdatedAt)) continue
+                if (SyncMerge.onPulled(local[row.id], false, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
                 val values = ContentValues().apply {
                     put("bill_no", row.value.billNo); put("bill_key", SearchText.billKey(row.value.billNo))
                     put("bill_date", row.value.billDate); put("amount", row.value.amount)
                     put("lr_no", row.value.lrNo); put("cd_percent", row.value.cdPercent); put("cd_amount", row.value.cdAmount)
                     put("items", BillSql.itemsToText(row.value.items))
                     put("buyer", row.value.buyer); put("supplier", row.value.supplier); put("transport", row.value.transport)
-                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", 0); put("sync_pending", 0)
                 }
                 if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {
                     values.put("id", row.id); values.put("created_at", row.clientUpdatedAt)
@@ -508,9 +516,14 @@ class OrderRepository(
         db.beginTransaction()
         try {
             for (row in rows) {
-                if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                if (row.deleted) {
+                    if (LocalDeletions.applyRemote(db, "order_bills", row.id, row.clientUpdatedAt)) changed++
+                    continue
+                }
+                if (LocalDeletions.blocks(db, row.id, row.clientUpdatedAt)) continue
+                if (SyncMerge.onPulled(local[row.id], false, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
                 val values = ContentValues().apply {
-                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", 0); put("sync_pending", 0)
                 }
                 if (db.update("order_bills", values, "id = ?", arrayOf(row.id)) == 0) {
                     val known = db.rawQuery(
@@ -566,14 +579,6 @@ class OrderRepository(
         put("updated_at", now)
         put("is_deleted", 0)
         put("sync_pending", if (pending) 1 else 0)
-    }
-
-    private fun tombstone(now: Long) = ContentValues().apply {
-        put("is_deleted", 1); put("updated_at", now); put("sync_pending", 1)
-    }
-
-    private fun tombstoneSynced(at: Long) = ContentValues().apply {
-        put("is_deleted", 1); put("updated_at", at); put("sync_pending", 0)
     }
 
     private fun syncedAt(at: Long) = ContentValues().apply { put("updated_at", at); put("sync_pending", 0) }

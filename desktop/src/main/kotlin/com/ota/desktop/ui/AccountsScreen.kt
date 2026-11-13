@@ -367,17 +367,15 @@ private fun VouchersTab(onOpen: (String) -> Unit) {
     val app = LocalApp.current
     var text by rememberSaveable { mutableStateOf("") }
     var type by rememberSaveable { mutableStateOf<VType?>(null) }
-    var deleted by rememberSaveable { mutableStateOf(false) }
     val period = remember { Period() }
     val (from, to) = period.bounds()
-    val rows by rememberLoad(emptyList<VoucherSummary>(), text, type, deleted, from, to) { app.accounts.vouchers(from, to, text, type, deleted) }
+    val rows by rememberLoad(emptyList<VoucherSummary>(), text, type, from, to) { app.accounts.vouchers(from, to, text, type) }
     Panel(Modifier.fillMaxSize(), padding = PaddingValues(0.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Field(text, { text = it }, "Search voucher no, account, narration, amount…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
             ChipRow {
                 Chip("All types", type == null) { type = null }
                 VType.entries.forEach { t -> Chip("${t.label} (${t.prefix})", type == t) { type = if (type == t) null else t } }
-                Chip("Show deleted", deleted) { deleted = !deleted }
             }
             PeriodBar(period)
         }
@@ -583,8 +581,9 @@ private fun VoucherDialog(id: String?, newType: VType, onDismiss: () -> Unit, on
             }
         }
     )
-    if (confirmDelete && v != null) ConfirmDialog(
-        "Delete ${v.no}?", "It stops counting in every ledger and report. The audit log keeps a copy of it.", "Delete", danger = true,
+    if (confirmDelete && v != null) ConfirmDeleteDialog(
+        "voucher ${v.no}", "The voucher and all its lines are deleted completely and stop counting in every ledger and report. " +
+            "The audit log keeps only one line: who deleted ${v.no} and when.",
         onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
@@ -942,8 +941,8 @@ private fun AccountDialog(account: Account?, onDismiss: () -> Unit, openLedger: 
             }
         }
     )
-    if (confirmDelete && account != null) ConfirmDialog(
-        "Delete ${account.name}?", "Only accounts with no entries can be deleted.", "Delete", danger = true, onDismiss = { confirmDelete = false }
+    if (confirmDelete && account != null) ConfirmDeleteDialog(
+        "account ${account.name}", "Only accounts with no entries can be deleted.", onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
         scope.launch { attempt { app.accounts.deleteAccount(account.id) }.onSuccess { toast("Deleted ${account.name}"); onDismiss() }.onFailure { error = it.friendly() } }

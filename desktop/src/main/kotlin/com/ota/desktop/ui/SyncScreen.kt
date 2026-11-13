@@ -156,12 +156,11 @@ fun SyncScreen() {
 }
 
 @Composable
-internal fun ClearTestDataDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmDialog(
-    title = "Clear all test data?",
-    text = "Deletes every order, bill, payment advice and catalog entry made with the test account, in the cloud and on this laptop, " +
-        "including the test PDFs. Real business data and the Accounts books are not touched. This can't be undone.",
-    confirm = "Clear",
-    danger = true,
+internal fun ClearTestDataDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) = ConfirmDeleteDialog(
+    what = "all test data",
+    detail = "Deletes every order, bill, payment advice and catalog entry made with the test account, in the cloud and on this laptop, " +
+        "including the test PDFs. Real business data and the Accounts books are not touched.",
+    confirm = "Delete all",
     onDismiss = onDismiss,
     onConfirm = onConfirm
 )

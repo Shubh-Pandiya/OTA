@@ -9,8 +9,10 @@ import android.database.sqlite.SQLiteOpenHelper
  * Local-first store for the catalog, bills, payment advices and the order search index.
  *
  * Every synced table follows the same contract so it can later be mirrored to the cloud:
- * UUID text primary key, `created_at`/`updated_at` (epoch millis), a soft-delete flag
- * (`is_deleted`) and a dirty marker (`sync_pending` = 1 until pushed to the server).
+ * UUID text primary key, `created_at`/`updated_at` (epoch millis) and a dirty marker
+ * (`sync_pending` = 1 until pushed to the server). Deletes are hard ([LocalDeletions]): the row
+ * goes at once and a note waits in `pending_deletions` until the cloud has it. `is_deleted` is
+ * legacy and always 0.
  * Orders themselves remain stored as the existing JSON/PDF files; `orders` is an index of them.
  */
 class OtaDatabase(context: Context, name: String? = DB_NAME) :
@@ -40,9 +42,19 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             )
             db.execSQL("CREATE INDEX idx_${party.table}_name ON ${party.table}(is_deleted, name_key)")
         }
+        createOrderTables(db)
+        createPaymentTables(db)
+        addBillLinesClaimsImages(db)
+        addBillParties(db)
+        addBillTransport(db)
+        hardDeletes(db)
+    }
+
+    /** Orders index, bills and their links (as of v4; later versions add columns). */
+    private fun createOrderTables(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE orders (
+            CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY NOT NULL,
                 uuid TEXT,
                 offer_no TEXT NOT NULL,
@@ -60,10 +72,10 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             )
             """.trimIndent()
         )
-        db.execSQL("CREATE INDEX idx_orders_day ON orders(is_deleted, day_key, seq)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_orders_day ON orders(is_deleted, day_key, seq)")
         db.execSQL(
             """
-            CREATE TABLE bills (
+            CREATE TABLE IF NOT EXISTS bills (
                 id TEXT PRIMARY KEY NOT NULL,
                 bill_no TEXT NOT NULL,
                 bill_key TEXT NOT NULL UNIQUE,
@@ -79,7 +91,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         // Many-to-many: an order can have several bills and a bill can cover several orders.
         db.execSQL(
             """
-            CREATE TABLE order_bills (
+            CREATE TABLE IF NOT EXISTS order_bills (
                 id TEXT PRIMARY KEY NOT NULL,
                 order_id TEXT NOT NULL REFERENCES orders(id),
                 bill_id TEXT NOT NULL REFERENCES bills(id),
@@ -88,11 +100,34 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
             )
             """.trimIndent()
         )
-        db.execSQL("CREATE INDEX idx_order_bills_bill ON order_bills(bill_id)")
-        createPaymentTables(db)
-        addBillLinesClaimsImages(db)
-        addBillParties(db)
-        addBillTransport(db)
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_order_bills_bill ON order_bills(bill_id)")
+    }
+
+    /**
+     * v8: hard deletes. Soft-deleted rows that never reached the cloud as deleted are queued in
+     * pending_deletions (rows that never reached the cloud at all are not), then every soft-deleted
+     * row and everything hanging off it is removed.
+     */
+    private fun hardDeletes(db: SQLiteDatabase) {
+        db.execSQL(LocalDeletions.CREATE)
+        val queued = listOf(
+            "orders" to " AND length(id) = 36 AND offer_no <> ''",
+            "bills" to "",
+            "payment_advices" to " AND advice_no <> ''",
+            "order_bills" to " AND order_id NOT IN (SELECT id FROM orders WHERE is_deleted = 1) AND bill_id NOT IN (SELECT id FROM bills WHERE is_deleted = 1)",
+            "advice_lines" to " AND advice_id NOT IN (SELECT id FROM payment_advices WHERE is_deleted = 1) AND bill_id NOT IN (SELECT id FROM bills WHERE is_deleted = 1)"
+        ) + PartyType.entries.map { it.table to "" }
+        for ((table, extra) in queued) {
+            db.execSQL(
+                "INSERT OR REPLACE INTO ${LocalDeletions.TABLE} (id, tbl, deleted_at) " +
+                    "SELECT id, '$table', updated_at FROM $table WHERE is_deleted = 1 AND sync_pending = 1$extra"
+            )
+        }
+        db.execSQL("DELETE FROM advice_lines WHERE is_deleted = 1 OR advice_id IN (SELECT id FROM payment_advices WHERE is_deleted = 1) OR bill_id IN (SELECT id FROM bills WHERE is_deleted = 1)")
+        db.execSQL("DELETE FROM order_bills WHERE is_deleted = 1 OR order_id IN (SELECT id FROM orders WHERE is_deleted = 1) OR bill_id IN (SELECT id FROM bills WHERE is_deleted = 1)")
+        for (table in listOf("payment_advices", "bills", "orders") + PartyType.entries.map { it.table }) {
+            db.execSQL("DELETE FROM $table WHERE is_deleted = 1")
+        }
     }
 
     /** v7: transport company on a bill (the supplier may send goods by another transport). */
@@ -177,12 +212,16 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
                 db.execSQL("ALTER TABLE bills ADD COLUMN lr_no TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE bills ADD COLUMN cd_percent REAL")
                 db.execSQL("ALTER TABLE bills ADD COLUMN cd_amount REAL")
+            } else {
+                // A catalog-only database from v1 never had the order tables.
+                createOrderTables(db)
             }
             createPaymentTables(db)
         }
         if (oldVersion < 5) addBillLinesClaimsImages(db)
         if (oldVersion < 6) addBillParties(db)
         if (oldVersion < 7) addBillTransport(db)
+        if (oldVersion < 8) hardDeletes(db)
     }
 
     /**
@@ -216,7 +255,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         }
     }
 
-    /** Live (not deleted) orders, bills, advices and catalog entries on this phone. */
+    /** Orders, bills, advices and catalog entries on this phone. */
     fun liveSyncedRows(): Int {
         val db = readableDatabase
         return (listOf("orders", "bills", "payment_advices") + PartyType.entries.map { it.table }).sumOf { table ->
@@ -232,7 +271,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         val db = writableDatabase
         db.beginTransaction()
         try {
-            for (table in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders")) db.delete(table, null, null)
+            for (table in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", LocalDeletions.TABLE)) db.delete(table, null, null)
             for (party in PartyType.entries) db.delete(party.table, null, null)
             db.setTransactionSuccessful()
         } finally {
@@ -242,7 +281,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 7
+        const val VERSION = 8
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

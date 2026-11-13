@@ -172,8 +172,8 @@ private fun PartyForm(initial: Party, onDone: (Party?) -> Unit) {
             if (!isNew) TextButton(onClick = { confirmDelete = true }) { IconText(Icons.Default.Delete, "Delete") }
         }
     }
-    if (confirmDelete) ConfirmDialog(
-        "Delete ${initial.name}?", "It's removed from the catalog here and on the phones. Orders that mention it are not changed.", "Delete", danger = true,
+    if (confirmDelete) ConfirmDeleteDialog(
+        "${initial.type.label.lowercase()} ${initial.name}", "$EVERYWHERE Orders and bills that mention it are not changed.",
         onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false

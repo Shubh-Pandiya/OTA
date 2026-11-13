@@ -4,6 +4,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.otaapplication.data.BankDetails
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.Deletion
+import com.example.otaapplication.data.LocalDeletions
+import com.example.otaapplication.data.PendingRow
+import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.Party
 import com.example.otaapplication.data.PartyType
@@ -27,6 +31,19 @@ private class FakeCloud : CatalogCloudApi {
     private var tick = 0L
 
     private fun nextServerTime(): String = Instant.parse("2026-11-07T10:00:00Z").plusNanos(++tick * 1_000).toString()
+    val tombstones = FakeTombstones(::nextServerTime)
+
+    /** ota_delete_rows and ota_deletions for buyers and suppliers. */
+    val deletionApi = object : OrderCloudApi {
+        override suspend fun <T> pull(table: OrderTable<T>, after: String?, afterId: String?, limit: Int): List<RemoteRow<T>> = error("unused")
+        override suspend fun <T> push(table: OrderTable<T>, rows: List<PendingRow<T>>) = error("unused")
+        override suspend fun staff(userId: String): StaffInfo? = null
+        override suspend fun deleteRows(rows: List<Deletion>): Set<String> = rows.filterNot { row ->
+            val target = tables.getValue(PartyType.entries.first { it.table == row.table })
+            tombstones.delete(row, target[row.id]?.clientUpdatedAt) { target.remove(row.id) }
+        }.mapTo(HashSet()) { it.id }
+        override suspend fun pullDeletions(after: String?, afterId: String?, limit: Int) = tombstones.pull(after, afterId, limit)
+    }
 
     override suspend fun pull(type: PartyType, after: String?, afterId: String?, limit: Int): List<RemoteParty> {
         pullCalls++
@@ -40,11 +57,13 @@ private class FakeCloud : CatalogCloudApi {
             .take(limit)
     }
 
-    override suspend fun push(type: PartyType, rows: List<PendingParty>): List<RemoteParty> = rows.map { row ->
+    override suspend fun push(type: PartyType, rows: List<PendingParty>): List<RemoteParty> = rows.mapNotNull { row ->
         val table = tables.getValue(type)
         val existing = table[row.party.id]
         if (existing != null && row.updatedAt < existing.clientUpdatedAt) {
             existing
+        } else if (!tombstones.admits(row.party.id, row.updatedAt)) {
+            null // dropped by the guard trigger: PostgREST returns nothing for it
         } else {
             RemoteParty(
                 party = row.party,
@@ -76,8 +95,19 @@ private class Phone(cloud: CatalogCloudApi, var now: Long, pageSize: Int = 500) 
     val catalog = CatalogRepository(db) { now }
     val cursors = MemoryCursors()
     val sync = CatalogSync(catalog, cloud, cursors, pageSize = pageSize, pushBatch = 2)
+    private val deletions = (cloud as? FakeCloud)?.let { fake ->
+        DeletionSync(
+            fake.deletionApi, MemoryCursorStore(),
+            pending = { LocalDeletions.pending(db.writableDatabase, it) },
+            markSent = { LocalDeletions.markSent(db.writableDatabase, it) },
+            apply = { mapOf("catalog" to catalog.applyDeletions(it)) },
+            resetTable = { table -> cursors.set(PartyType.entries.first { it.table == table }, null) },
+            pageSize = pageSize, pushBatch = 2
+        )
+    }
     fun buyers() = catalog.list(PartyType.BUYER)
-    fun syncNow() = runBlocking { sync.syncAll() }
+    fun pendingDeletes() = LocalDeletions.pendingCount(db.readableDatabase)
+    fun syncNow() = runBlocking { deletions?.syncAll(); sync.syncAll() }
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -149,14 +179,79 @@ class CatalogSyncTest {
         b.syncNow()
         assertEquals(1, b.buyers().size)
 
+        a.now = 20_000
         a.catalog.delete(PartyType.BUYER, ram.id)
+        // Gone here at once, with only a small note left to tell the cloud.
+        assertTrue(a.buyers().isEmpty())
+        assertEquals(0, rows(a, "buyers"))
+        assertEquals(1, a.pendingDeletes())
         a.syncNow()
-        assertTrue(cloud.tables.getValue(PartyType.BUYER).getValue(ram.id).deleted)
+        assertEquals(0, a.pendingDeletes())
+        assertNull(cloud.tables.getValue(PartyType.BUYER)[ram.id])
+        assertEquals(setOf(ram.id), cloud.tombstones.rows.keys)
 
         b.syncNow()
         assertTrue(b.buyers().isEmpty())
+        assertEquals(0, rows(b, "buyers"))
         assertNull(b.catalog.findByName(PartyType.BUYER, "Ram Textiles"))
     }
+
+    @Test
+    fun staleOfflineEditDoesNotBringADeletedEntryBack() {
+        val ram = a.catalog.save(Party(type = PartyType.BUYER, name = "Ram Textiles"))
+        a.syncNow(); b.syncNow()
+        // B edits offline before A's delete, and syncs after it.
+        b.now = 15_000
+        b.catalog.save(ram.copy(city = "Indore"))
+        a.now = 20_000
+        a.catalog.delete(PartyType.BUYER, ram.id)
+        a.syncNow()
+
+        b.syncNow()
+        assertTrue(b.buyers().isEmpty())
+        assertEquals(0, b.catalog.pendingCount())
+        assertNull(cloud.tables.getValue(PartyType.BUYER)[ram.id])
+        a.syncNow()
+        assertTrue(a.buyers().isEmpty())
+    }
+
+    @Test
+    fun editMadeAfterADeleteWins() {
+        val ram = a.catalog.save(Party(type = PartyType.BUYER, name = "Ram Textiles"))
+        a.syncNow(); b.syncNow()
+        a.now = 20_000
+        a.catalog.delete(PartyType.BUYER, ram.id)
+        a.syncNow()
+        // B's edit is newer than the delete: it stays and comes back to A.
+        b.now = 30_000
+        b.catalog.save(ram.copy(city = "Indore"))
+        b.syncNow()
+        assertEquals("Indore", b.buyers().single().city)
+        assertEquals("Indore", cloud.tables.getValue(PartyType.BUYER).getValue(ram.id).party.city)
+        assertTrue(cloud.tombstones.rows.isEmpty())
+        a.syncNow()
+        assertEquals("Indore", a.buyers().single().city)
+    }
+
+    @Test
+    fun deleteLosesToANewerEditAlreadyInTheCloud() {
+        val ram = a.catalog.save(Party(type = PartyType.BUYER, name = "Ram Textiles"))
+        a.syncNow(); b.syncNow()
+        b.now = 30_000
+        b.catalog.save(ram.copy(city = "Indore"))
+        b.syncNow()
+        // A deletes with an older clock, offline, then syncs: the cloud keeps B's edit and A gets it back.
+        a.now = 20_000
+        a.catalog.delete(PartyType.BUYER, ram.id)
+        a.syncNow()
+        a.syncNow()
+        assertEquals("Indore", a.buyers().single().city)
+        assertEquals(0, a.pendingDeletes())
+        assertTrue(cloud.tombstones.rows.isEmpty())
+    }
+
+    private fun rows(phone: Phone, table: String) =
+        phone.db.readableDatabase.rawQuery("SELECT COUNT(*) FROM $table", null).use { it.moveToFirst(); it.getInt(0) }
 
     @Test
     fun newerEditWinsWhenBothPhonesChangeTheSameEntry() {

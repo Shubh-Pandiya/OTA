@@ -334,18 +334,13 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
     }
 
     if (confirmClear) {
-        AlertDialog(
-            onDismissRequest = { confirmClear = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Clear all test data?") },
-            text = {
-                Text(
-                    "Deletes every order, bill, payment advice and catalog entry made with the test account, " +
-                        "in the cloud and on this phone, including their PDFs. Real business data is not touched. This can't be undone."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
+        ConfirmDeleteDialog(
+            what = "all test data",
+            detail = "Every order, bill, payment advice and catalog entry made with the test account is deleted, " +
+                "in the cloud and on this phone, including their PDFs. Real business data is not touched.",
+            confirm = "Clear",
+            onDismiss = { confirmClear = false },
+            onConfirm = {
                     confirmClear = false
                     clearing = true
                     clearResult = null
@@ -358,9 +353,7 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
                         }
                         clearing = false
                     }
-                }) { Text("Clear", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+            }
         )
     }
 

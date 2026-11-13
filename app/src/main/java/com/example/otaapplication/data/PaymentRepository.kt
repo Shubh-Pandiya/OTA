@@ -29,8 +29,8 @@ class PaymentRepository(
 
     /**
      * Saves a new advice (with [newNumber], or [AdviceNumber.PENDING] when the cloud couldn't number
-     * it yet) or replaces an existing one. Lines removed in the editor become tombstones so the
-     * removal reaches other phones.
+     * it yet) or replaces an existing one. Lines removed in the editor are deleted for good; the
+     * delete reaches the cloud and other phones on the next sync.
      */
     fun save(draft: AdviceDraft, newNumber: String? = null): PaymentAdvice {
         require(draft.lines.isNotEmpty()) { "Add at least one bill" }
@@ -96,7 +96,7 @@ class PaymentRepository(
                 db.execSQL("UPDATE bills SET sync_pending = 1 WHERE id = ?", arrayOf(billId))
             }
             for (removed in live) {
-                db.update("advice_lines", BillSql.tombstone(now), "id = ?", arrayOf(SyncIds.adviceLine(id, removed)))
+                LocalDeletions.delete(db, LINES, SyncIds.adviceLine(id, removed), now, queue = adviceNo.isNotEmpty())
             }
             removedImages = (oldImages - newImages.toSet()).map { AdviceImageFiles.path(id, it) }
             db.setTransactionSuccessful()
@@ -116,9 +116,10 @@ class PaymentRepository(
         val paths: List<String>
         try {
             paths = imagesOf(db, adviceId).map { AdviceImageFiles.path(adviceId, it) }
-            deleted = db.update("payment_advices", BillSql.tombstone(now), "id = ? AND is_deleted = 0", arrayOf(adviceId)) > 0
-            db.update("advice_lines", BillSql.tombstone(now), "advice_id = ? AND is_deleted = 0", arrayOf(adviceId))
-            if (deleted) db.execSQL("UPDATE payment_advices SET images = '' WHERE id = ?", arrayOf(adviceId))
+            val adviceNo = db.rawQuery("SELECT advice_no FROM payment_advices WHERE id = ?", arrayOf(adviceId))
+                .use { c -> if (c.moveToFirst()) c.getString(0) else null }
+            // An advice still waiting for its number never reached the cloud: nothing to tell it.
+            deleted = adviceNo != null && LocalDeletions.delete(db, ADVICES, adviceId, now, queue = adviceNo.isNotEmpty())
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -352,12 +353,12 @@ class PaymentRepository(
         }
     }
 
-    /** Every advice id on this phone, deleted ones included. */
+    /** Every advice id on this phone. */
     fun allAdviceIds(): List<String> =
         helper.readableDatabase.rawQuery("SELECT id FROM payment_advices", null)
             .use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
 
-    /** All advice numbers starting with [prefix], deleted ones included (they stay used). */
+    /** All advice numbers on this phone starting with [prefix]. */
     fun adviceNosWithPrefix(prefix: String): List<String> =
         helper.readableDatabase.rawQuery(
             "SELECT advice_no FROM payment_advices WHERE advice_no LIKE ? ESCAPE '\\'",
@@ -382,14 +383,14 @@ class PaymentRepository(
 
     // ---- Sync ----
 
-    /** Advices saved offline that still wait for their number from the cloud, oldest first: id, pay date, deleted, updated at. */
+    /** Advices saved offline that still wait for their number from the cloud, oldest first. */
     fun unnumberedAdvices(): List<UnnumberedAdvice> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, pay_date, is_deleted, updated_at FROM payment_advices WHERE advice_no = '' AND sync_pending = 1 ORDER BY created_at, id",
+            "SELECT id, pay_date, updated_at FROM payment_advices WHERE advice_no = '' AND sync_pending = 1 ORDER BY created_at, id",
             null
         ).use { c ->
             buildList {
-                while (c.moveToNext()) add(UnnumberedAdvice(c.getString(0), c.stringOrNull(1)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }, c.getInt(2) != 0, c.getLong(3)))
+                while (c.moveToNext()) add(UnnumberedAdvice(c.getString(0), c.stringOrNull(1)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }, c.getLong(2)))
             }
         }
 
@@ -409,19 +410,6 @@ class PaymentRepository(
             put("advice_no", adviceNo)
             put("search_text", SearchText.normalize(text.joinToString(" ")))
         }, "id = ? AND advice_no = ''", arrayOf(adviceId)) > 0
-    }
-
-    /** An advice deleted before it was numbered never reached the cloud: nothing of it needs uploading. */
-    fun dropUnnumbered(adviceId: String) {
-        val db = helper.writableDatabase
-        db.beginTransaction()
-        try {
-            db.execSQL("UPDATE advice_lines SET sync_pending = 0 WHERE advice_id = ? AND is_deleted = 1", arrayOf(adviceId))
-            db.execSQL("UPDATE payment_advices SET sync_pending = 0 WHERE id = ? AND advice_no = '' AND is_deleted = 1", arrayOf(adviceId))
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
     }
 
     fun pendingCount(): Int = helper.readableDatabase.rawQuery(
@@ -481,28 +469,20 @@ class PaymentRepository(
             for (row in rows) {
                 val meta = local[row.id]
                 val v = row.value
-                if (meta == null && row.deleted) {
-                    // Deleted elsewhere before this phone saw it: keep the number as used.
-                    db.insertWithOnConflict(ADVICES, null, ContentValues().apply {
-                        put("id", row.id); put("advice_no", v.adviceNo); put("pay_date", v.payDate)
-                        put("created_at", row.clientUpdatedAt); put("updated_at", row.clientUpdatedAt); put("is_deleted", 1); put("sync_pending", 0)
-                    }, SQLiteDatabase.CONFLICT_IGNORE)
+                if (row.deleted) {
+                    // An old app's deleted row: same as a tombstone.
+                    if (removeRemote(db, ADVICES, row.id, row.clientUpdatedAt, dropped)) changed++
                     continue
                 }
-                if (SyncMerge.onPulled(meta, row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
-                // Images never leave the phone; an advice deleted elsewhere takes its local ones along.
-                if (row.deleted) dropped += imagesOf(db, row.id).map { AdviceImageFiles.path(row.id, it) }
+                if (LocalDeletions.blocks(db, row.id, row.clientUpdatedAt)) continue
+                if (SyncMerge.onPulled(meta, false, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
                 val values = ContentValues().apply {
                     put("advice_no", v.adviceNo); put("pay_date", v.payDate)
-                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
-                    if (row.deleted) put("images", "")
-                    // A tombstone carries only the number and date; keep the local content.
-                    if (!row.deleted) {
-                        put("buyer", v.buyer); put("supplier", v.supplier); put("mode", PaymentMode.parse(v.mode).name)
-                        put("reference", v.reference); put("balance_amount", v.balanceAmount)
-                        put("balance_side", BalanceSide.parse(v.balanceSide)?.name); put("remarks", v.remarks)
-                        put("search_text", SearchText.normalize(listOf(AdviceNumber.searchTerms(v.adviceNo), v.buyer, v.supplier, PaymentMode.parse(v.mode).label, v.reference, v.remarks).joinToString(" ")))
-                    }
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", 0); put("sync_pending", 0)
+                    put("buyer", v.buyer); put("supplier", v.supplier); put("mode", PaymentMode.parse(v.mode).name)
+                    put("reference", v.reference); put("balance_amount", v.balanceAmount)
+                    put("balance_side", BalanceSide.parse(v.balanceSide)?.name); put("remarks", v.remarks)
+                    put("search_text", SearchText.normalize(listOf(AdviceNumber.searchTerms(v.adviceNo), v.buyer, v.supplier, PaymentMode.parse(v.mode).label, v.reference, v.remarks).joinToString(" ")))
                 }
                 if (db.update(ADVICES, values, "id = ?", arrayOf(row.id)) == 0) {
                     values.put("id", row.id); values.put("created_at", row.clientUpdatedAt)
@@ -526,13 +506,18 @@ class PaymentRepository(
         db.beginTransaction()
         try {
             for (row in rows) {
-                if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
+                if (row.deleted) {
+                    if (LocalDeletions.applyRemote(db, LINES, row.id, row.clientUpdatedAt)) changed++
+                    continue
+                }
+                if (LocalDeletions.blocks(db, row.id, row.clientUpdatedAt)) continue
+                if (SyncMerge.onPulled(local[row.id], false, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
                 val a = row.value.amounts
                 val values = ContentValues().apply {
                     put("paid", a.paid); put("cd_percent", a.cdPercent); put("cd_amount", a.cdAmount)
                     put("goods_return", a.goodsReturn); put("rate_diff", a.rateDiff)
                     put("claim", a.claim); put("claim_note", a.claimNote)
-                    put("updated_at", row.clientUpdatedAt); put("is_deleted", if (row.deleted) 1 else 0); put("sync_pending", 0)
+                    put("updated_at", row.clientUpdatedAt); put("is_deleted", 0); put("sync_pending", 0)
                 }
                 if (db.update(LINES, values, "id = ?", arrayOf(row.id)) == 0) {
                     val known = db.rawQuery(
@@ -551,6 +536,31 @@ class PaymentRepository(
             db.endTransaction()
         }
         return changed
+    }
+
+    /** Advices and advice lines deleted on other devices (cloud tombstones). Returns how many rows went here. */
+    fun applyDeletions(rows: List<Deletion>): Int {
+        if (rows.isEmpty()) return 0
+        val db = helper.writableDatabase
+        val dropped = ArrayList<String>()
+        var removed = 0
+        db.beginTransaction()
+        try {
+            for (row in rows) if (removeRemote(db, row.table, row.id, row.at, dropped)) removed++
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        dropped.forEach { images?.delete(it) }
+        return removed
+    }
+
+    /** Images never leave the phone; an advice deleted elsewhere takes its local ones along (into [dropped]). */
+    private fun removeRemote(db: SQLiteDatabase, table: String, id: String, at: Long, dropped: MutableList<String>): Boolean {
+        val paths = if (table == ADVICES) imagesOf(db, id).map { AdviceImageFiles.path(id, it) } else emptyList()
+        if (!LocalDeletions.applyRemote(db, table, id, at)) return false
+        dropped += paths
+        return true
     }
 
     private fun searchText(adviceNo: String, d: AdviceDraft) = SearchText.normalize(
@@ -597,4 +607,4 @@ class PaymentRepository(
 }
 
 /** An advice saved offline that waits for its number from the cloud. */
-data class UnnumberedAdvice(val id: String, val payDate: LocalDate?, val deleted: Boolean, val updatedAt: Long)
+data class UnnumberedAdvice(val id: String, val payDate: LocalDate?, val updatedAt: Long)

@@ -148,10 +148,6 @@ class OrderSync(
     private suspend fun numberPendingAdvices(payments: PaymentRepository, notices: MutableList<String>) {
         val refs = withContext(Dispatchers.IO) { payments.unnumberedAdvices() }
         for (ref in refs) {
-            if (ref.deleted) {
-                withContext(Dispatchers.IO) { payments.dropUnnumbered(ref.id) }
-                continue
-            }
             val number = try {
                 api.allocateAdviceNo(ref.payDate ?: LocalDate.now())
             } catch (e: AdviceLimitReached) {
@@ -259,7 +255,7 @@ class OrderSync(
         }
     }
 
-    private companion object {
+    internal companion object {
         const val OVERLAP_SECONDS = 60L
         const val MAX_PAGES = 100
     }

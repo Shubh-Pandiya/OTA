@@ -370,12 +370,11 @@ private fun TodoEditor(initial: Todo, today: LocalDate, onDismiss: () -> Unit, o
         TimeDialog(initial = minute, onDismiss = { pickTime = false }, onPick = { minute = it; pickTime = false })
     }
     if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete this to-do?") },
-            text = { Text(initial.title) },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete(initial) }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+        ConfirmDeleteDialog(
+            what = "this to-do",
+            detail = "\u201c${initial.title}\u201d and its reminder are deleted from this phone.",
+            onDismiss = { confirmDelete = false },
+            onConfirm = { confirmDelete = false; onDelete(initial) }
         )
     }
 }

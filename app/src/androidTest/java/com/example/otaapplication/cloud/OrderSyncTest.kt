@@ -9,6 +9,9 @@ import com.example.otaapplication.OrderItem
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.AdviceDraft
 import com.example.otaapplication.data.BillDetails
+import com.example.otaapplication.data.DeleteCascade
+import com.example.otaapplication.data.Deletion
+import com.example.otaapplication.data.LocalDeletions
 import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderHistoryStore
@@ -51,6 +54,20 @@ private class OrderCloudFake : OrderCloudApi {
     private val adviceNumberPattern = Regex("^PA[1-9]20[0-9]{6}[0-9]+$")
 
     private fun nextServerTime() = Instant.parse("2026-11-07T10:00:00Z").plusNanos(++tick * 1_000).toString()
+    val tombstones = FakeTombstones(::nextServerTime)
+
+    /** ota_delete_rows: removes the row and the rows that only make sense with it, like the SQL. */
+    override suspend fun deleteRows(rows: List<Deletion>): Set<String> = rows.filterNot { row ->
+        val target = tables.getValue(row.table)
+        tombstones.delete(row, target[row.id]?.getLong("client_updated_at")) {
+            target.remove(row.id)
+            for ((child, column) in DeleteCascade.children(row.table)) {
+                tables.getValue(child).values.removeAll { it.optString(column) == row.id }
+            }
+        }
+    }.mapTo(HashSet()) { it.id }
+
+    override suspend fun pullDeletions(after: String?, afterId: String?, limit: Int) = tombstones.pull(after, afterId, limit)
 
     override suspend fun <T> pull(table: OrderTable<T>, after: String?, afterId: String?, limit: Int): List<RemoteRow<T>> {
         val afterInstant = after?.let { Instant.parse(it.replace("+00:00", "Z")) }
@@ -86,6 +103,7 @@ private class OrderCloudFake : OrderCloudApi {
         for (json in incoming) {
             val existing = target[json.getString("id")]
             if (existing != null && json.getLong("client_updated_at") < existing.getLong("client_updated_at")) continue
+            if (!tombstones.admits(json.getString("id"), json.getLong("client_updated_at"))) continue
             target[json.getString("id")] = json.put("updated_at", nextServerTime())
         }
     }
@@ -120,10 +138,29 @@ private class OrderPhone(cloud: OrderCloudApi, var now: Long, val day: LocalDate
     val numbers = OrderNumberAllocator(prefs, local.history, repo) { day }
     val payments = PaymentRepository(db) { now }
     val adviceNumbers = AdviceNumberAllocator(prefs, payments) { day }
+    private val cursors = OrderCursors()
     val sync = OrderSync(
-        local, cloud, OrderCursors(), numbers::replacementFor,
+        local, cloud, cursors, numbers::replacementFor,
         payments = payments, renumberAdvice = adviceNumbers::replacementFor, pageSize = 2, pushBatch = 2
     )
+    private val deletions = DeletionSync(
+        cloud, cursors,
+        pending = { LocalDeletions.pending(db.writableDatabase, it) },
+        markSent = { LocalDeletions.markSent(db.writableDatabase, it) },
+        apply = { rows ->
+            // Same routing as CloudSync.
+            rows.groupBy { it.table }.mapValues { (table, list) ->
+                when (table) {
+                    "orders" -> local.applyDeletions(list)
+                    "bills", "order_bills" -> repo.applyDeletions(list)
+                    else -> payments.applyDeletions(list)
+                }
+            }
+        },
+        resetTable = { cursors.set(it, null) },
+        pageSize = 2, pushBatch = 2
+    )
+    fun pendingDeletes() = LocalDeletions.pendingCount(db.readableDatabase)
 
     /** Saves a new advice the way the editor does. */
     fun newAdvice(code: Int, lines: List<Pair<String, LineAmounts>>, reference: String = "CHQ 1"): String =
@@ -146,7 +183,7 @@ private class OrderPhone(cloud: OrderCloudApi, var now: Long, val day: LocalDate
         local.reindex()
     }
 
-    fun syncNow() = runBlocking { sync.syncAll() }
+    fun syncNow() = runBlocking { deletions.syncAll(); sync.syncAll() }
 
     fun close() {
         db.close()
@@ -250,12 +287,59 @@ class OrderSyncTest {
 
         a.now = 50_000
         a.local.delete(o1, "", null)
+        assertEquals(1, a.pendingDeletes())
         a.syncNow(); b.syncNow()
-        assertTrue(cloud.tables.getValue("orders").getValue(o1).getBoolean("deleted"))
+        assertNull(cloud.tables.getValue("orders")[o1])
+        assertEquals(setOf(o1), cloud.tombstones.rows.keys)
+        assertEquals(0, a.pendingDeletes())
         assertNull(b.local.get(o1))
         assertTrue(b.repo.search(OrderQuery()).isEmpty())
-        // The deleted number is never handed out again.
-        assertEquals("120261107002", b.numbers.peek(1))
+        // The hard-deleted legacy number leaves no local row behind, so the offline legacy preview
+        // may show it again; real numbers come from the cloud FY counter, which never reuses one.
+    }
+
+    @Test
+    fun billDeleteAndUnlinkReachTheOtherPhoneWithoutLeftovers() {
+        val o1 = a.newOrder(1, "Ram")
+        val o2 = a.newOrder(1, "Ram")
+        val inv1 = a.repo.attachBill(listOf(o1, o2), "INV 1", BillDetails(null, 1_000.0))
+        val inv2 = a.repo.attachBill(listOf(o2), "INV 2", BillDetails(null, 2_000.0))
+        a.syncNow(); b.syncNow()
+        assertEquals(listOf("INV 1", "INV 2"), billsOf(b, o2))
+
+        a.now = 20_000
+        a.repo.deleteBill(inv2.id)
+        a.repo.detachBill(o1, inv1.id)
+        assertEquals(2, a.pendingDeletes())
+        a.syncNow()
+        assertNull(cloud.tables.getValue("bills")[inv2.id])
+        assertEquals(1, cloud.tables.getValue("order_bills").size)
+
+        b.syncNow()
+        assertNull(b.repo.bill(inv2.id))
+        assertEquals(listOf("INV 1"), billsOf(b, o2))
+        assertTrue(billsOf(b, o1).isEmpty())
+        val links = b.db.readableDatabase.rawQuery("SELECT COUNT(*) FROM order_bills", null).use { it.moveToFirst(); it.getInt(0) }
+        assertEquals(1, links)
+    }
+
+    @Test
+    fun staleCopyPulledAfterADeleteDoesNotComeBack() {
+        val o1 = a.newOrder(1, "Ram")
+        val inv = a.repo.attachBill(listOf(o1), "INV 1", BillDetails(null, 1_000.0))
+        a.syncNow(); b.syncNow()
+        // B edits the bill offline before A deletes it; B's upload must not resurrect it.
+        b.now = 15_000
+        b.repo.saveBill(inv.id, "INV 1", BillDetails(null, 1_500.0), listOf(o1))
+        a.now = 20_000
+        a.repo.deleteBill(inv.id)
+        a.syncNow()
+        b.syncNow()
+        assertNull(b.repo.bill(inv.id))
+        assertNull(cloud.tables.getValue("bills")[inv.id])
+        assertEquals(0, b.repo.pendingCount())
+        a.syncNow()
+        assertNull(a.repo.bill(inv.id))
     }
 
     @Test

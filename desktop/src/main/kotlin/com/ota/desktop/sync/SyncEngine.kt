@@ -19,6 +19,7 @@ import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.SyncIds
 import com.example.otaapplication.data.SyncTime
 import com.ota.desktop.data.CatalogStore
+import com.ota.desktop.data.Deletions
 import com.ota.desktop.data.LocalSyncTable
 import com.ota.desktop.data.Numbers
 import com.ota.desktop.data.OrderStore
@@ -166,6 +167,7 @@ class SyncEngine(
     private fun wipeSynced(deleteTestFiles: Boolean) {
         db.tx { c ->
             for (t in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", "buyers", "suppliers")) c.update("delete from $t")
+            c.update("delete from pending_deletions")
             c.update("delete from kv where key like 'cursor.%'")
         }
         kv.remove(KEY_LAST_SYNC, KEY_USAGE)
@@ -197,7 +199,7 @@ class SyncEngine(
         _status.update { it.copy(pending = pendingCount()) }
     }
 
-    private fun pendingCount() = catalog.pendingCount() + orders.pendingCount()
+    private fun pendingCount() = catalog.pendingCount() + orders.pendingCount() + db.read { c -> Deletions.pendingCount(c) }
 
     /**
      * One sync round; with [maintenance] (admins only) also archives and purges. Single flight:
@@ -216,6 +218,7 @@ class SyncEngine(
                 if (e.authFailed) throw e
                 cachedStaff()
             }
+            syncDeletions()
             syncCatalog()
             syncOrders(notices)
             if (maintenance && isAdmin()) maintain()
@@ -250,6 +253,37 @@ class SyncEngine(
 
     /** True when maintenance has not run for [everyMillis]. */
     fun maintenanceDue(everyMillis: Long): Boolean = clock() - (kv.long(KEY_LAST_MAINTENANCE) ?: 0) >= everyMillis
+
+    // ------------------------------------------------------------------ deletes
+
+    /**
+     * Hard deletes, before any rows move: deletes made elsewhere (tombstones) are applied first, so a
+     * deleted row is never uploaded again; then this laptop's deletes go up. Where the cloud kept a
+     * row because it was edited after the delete, that table is pulled again from the start to bring
+     * the newer row back. Until the cloud has the hard-delete migration, deletes simply wait.
+     */
+    private suspend fun syncDeletions() {
+        try {
+            pullPages(DELETIONS_CURSOR, { after, afterId -> orderApi.pullDeletions(after, afterId, pageSize) }, { it.serverUpdatedAt }, { it.id }) { page ->
+                Deletions.applyPulled(db, page)
+            }
+            var previous: Set<Pair<String, Long>>? = null
+            var batches = 0
+            while (batches++ < MAX_PAGES) {
+                val batch = withContext(Dispatchers.IO) { Deletions.pending(db, pushBatch) }
+                val keys = batch.mapTo(HashSet()) { it.id to it.at }
+                if (batch.isEmpty() || keys == previous) break
+                previous = keys
+                val kept = orderApi.deleteRows(batch)
+                withContext(Dispatchers.IO) {
+                    Deletions.markSent(db, batch)
+                    batch.filter { it.id in kept }.mapTo(HashSet()) { it.table }.forEach { kv.remove("cursor.$it") }
+                }
+            }
+        } catch (e: CloudException) {
+            if (!e.missingInCloud) throw e
+        }
+    }
 
     // ------------------------------------------------------------------ catalog
 
@@ -505,6 +539,7 @@ class SyncEngine(
 
     companion object {
         private const val OVERLAP_SECONDS = 60L
+        private const val DELETIONS_CURSOR = "cursor.ota_deletions"
         private const val MAX_PAGES = 100
         private const val ARCHIVE_BATCH = 500
         const val STORAGE_FULL = "Cloud storage is full. Changes are kept on this laptop and upload once space is freed " +

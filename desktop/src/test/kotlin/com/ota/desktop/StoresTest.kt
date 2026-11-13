@@ -281,10 +281,14 @@ class StoresTest {
         assertEquals(0, db.read { c -> t.pendingCount(c) })
         assertTrue(t.toArchive(db, 10).isEmpty(), "pushed version is archived only after it is pulled back")
 
-        // A cloud tombstone keeps the content and marks it deleted.
+        // A deleted row from an app before hard deletes removes the local row; an older one does not.
+        val stale = v1.copy(deleted = true, clientUpdatedAt = 1, serverUpdatedAt = "2026-11-10T11:30:00+00:00")
+        assertEquals(0, t.applyPulled(db, listOf(stale)))
+        assertEquals(20.0, orders.bill(id)!!.amount)
         val dead = v1.copy(deleted = true, clientUpdatedAt = System.currentTimeMillis() + 10_000, serverUpdatedAt = "2026-11-10T12:00:00+00:00")
         assertEquals(1, t.applyPulled(db, listOf(dead)))
-        assertEquals(true, db.read { c -> c.one("select deleted from bills where id = ?::uuid", id) { it.getBoolean(1) } })
-        assertEquals(20.0, orders.bill(id)!!.amount)
+        assertNull(orders.bill(id))
+        assertEquals(0, t.applyPulled(db, listOf(dead)), "never stored again")
+        assertNull(orders.bill(id))
     }
 }

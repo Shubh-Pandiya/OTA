@@ -56,6 +56,7 @@ internal fun AdviceAttachments(
     val store = remember { AdviceImageFiles.forContext(context) }
     var importing by remember { mutableStateOf(false) }
     var viewing by remember { mutableStateOf<String?>(null) }
+    var toRemove by remember { mutableStateOf<Pair<String, Int>?>(null) }
 
     fun import(uri: Uri?) {
         if (uri == null) return
@@ -92,7 +93,7 @@ internal fun AdviceAttachments(
                             file = fileFor(id),
                             label = "Page ${index + 1}",
                             onOpen = { viewing = id },
-                            onRemove = if (editable) ({ images.remove(id) }) else null
+                            onRemove = if (editable) ({ toRemove = id to index + 1 }) else null
                         )
                     }
                 }
@@ -136,6 +137,14 @@ internal fun AdviceAttachments(
     }
 
     viewing?.let { id -> ImageViewer(fileFor(id), onDismiss = { viewing = null }) }
+    toRemove?.let { (id, page) ->
+        ConfirmDeleteDialog(
+            what = "photo page $page",
+            detail = "The photo is deleted from this advice when you save it.",
+            onDismiss = { toRemove = null },
+            onConfirm = { images.remove(id); toRemove = null }
+        )
+    }
 }
 
 @Composable

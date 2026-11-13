@@ -32,6 +32,8 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     var orderLimitReached = false
     /** The email the token endpoint answers with (follows the last password sign-in). */
     var lastEmail = "test@ota.com"
+    /** False = the cloud before the hard-delete migration (no ota_delete_rows / ota_deletions). */
+    var hardDeletes = true
     /** Times ota_clear_test_data was called. */
     var clearCalls = 0
     private var tick = 0L
@@ -69,6 +71,23 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
         table(name)[row.getString("id")] = row
     }
 
+    /** What ota_record_deletion does: unless the row was edited after [at], it goes with its children and a tombstone stays. */
+    fun recordDeletion(name: String, id: String, at: Long): Boolean {
+        val row = table(name)[id]
+        if (row != null && row.optLong("client_updated_at") > at) return false
+        for ((child, column) in com.example.otaapplication.data.DeleteCascade.children(name)) {
+            table(child).values.filter { it.optString(column) == id }.map { it.getString("id") }.forEach { cid ->
+                recordDeletion(child, cid, maxOf(at, table(child)[cid]!!.optLong("client_updated_at")))
+            }
+        }
+        table(name).remove(id)
+        val old = table("ota_deletions")[id]
+        if (old == null || old.optLong("client_updated_at") <= at) {
+            table("ota_deletions")[id] = JSONObject().put("id", id).put("tbl", name).put("client_updated_at", at).put("updated_at", now())
+        }
+        return true
+    }
+
     private fun handle(method: String, path: String, query: String, body: String): Pair<Int, String> {
         if (path.startsWith("/auth/v1/token")) {
             return 200 to JSONObject().put("access_token", "token").put("refresh_token", "refresh").put("expires_in", 3600)
@@ -81,7 +100,20 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
         if (method != "GET") failWrites?.let { (status, code) ->
             return status to JSONObject().put("message", "write refused").put("code", code ?: JSONObject.NULL).toString()
         }
+        if (!hardDeletes && (name == "ota_deletions" || name == "rpc/ota_delete_rows")) {
+            return 404 to JSONObject().put("code", if (name == "ota_deletions") "PGRST205" else "PGRST202").put("message", "not found").toString()
+        }
         return when {
+            name == "rpc/ota_delete_rows" -> {
+                val rows = JSONObject(body).getJSONArray("p_rows")
+                val kept = JSONArray()
+                var deleted = 0
+                for (i in 0 until rows.length()) {
+                    val r = rows.getJSONObject(i)
+                    if (recordDeletion(r.getString("table"), r.getString("id"), r.getLong("at"))) deleted++ else kept.put(r.getString("id"))
+                }
+                200 to JSONObject().put("deleted", deleted).put("kept", kept).toString()
+            }
             name == "staff" -> 200 to JSONArray().apply { staff?.let { put(it) } }.toString()
             name == "rpc/ota_cloud_status" -> 200 to usage.toString()
             name == "rpc/ota_allocate_order_no" -> {
@@ -128,7 +160,14 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
                 if (clash) return 409 to JSONObject().put("code", "23505").put("message", "duplicate key value violates unique constraint").toString()
             }
         }
-        val stored = incoming.map { r ->
+        val stored = incoming.mapNotNull { r ->
+            val id = r.getString("id")
+            // The tombstone guard: a row deleted at or after this copy's edit stays deleted.
+            val tomb = table("ota_deletions")[id]
+            if (tomb != null && tomb.optLong("client_updated_at") >= r.optLong("client_updated_at")) return@mapNotNull null
+            if (tomb != null) table("ota_deletions").remove(id)
+            // An app from before hard deletes still sends deleted = true: the cloud turns it into a delete.
+            if (r.optBoolean("deleted")) { recordDeletion(name, id, r.optLong("client_updated_at")); return@mapNotNull null }
             val existing = table(name)[r.getString("id")]
             // Last write wins: the server keeps a newer copy if it already has one.
             if (existing != null && existing.optLong("client_updated_at") > r.optLong("client_updated_at")) existing

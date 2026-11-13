@@ -829,30 +829,25 @@ private fun OrderDetailScreen(
     }
 
     if (showDeleteConfirmation && order != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmation = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Permanently Delete?") },
-            text = { Text("Are you absolutely sure you want to permanently delete Offer No ${OrderNumber.display(order.offerNo)}? This action will completely erase the sync record from your system storage.") },
-            confirmButton = { TextButton(onClick = { showDeleteConfirmation = false; onDelete() }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("PERMANENTLY DELETE") } },
-            dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text("CANCEL") } }
+        ConfirmDeleteDialog(
+            what = "order ${OrderNumber.display(order.offerNo)}",
+            detail = "The order, its PDF and its links to bills are deleted. The bills themselves stay. " +
+                if (OrderNumber.isPending(order.offerNo)) "It never reached the cloud." else DELETED_EVERYWHERE,
+            onDismiss = { showDeleteConfirmation = false },
+            onConfirm = { showDeleteConfirmation = false; onDelete() }
         )
     }
 
     billToRemove?.let { bill ->
-        AlertDialog(
-            onDismissRequest = { billToRemove = null },
-            icon = { Icon(Icons.Default.LinkOff, contentDescription = null) },
-            title = { Text("Remove bill ${bill.billNo}?") },
-            text = {
-                Text(
-                    (if (bill.orderCount > 1) "The bill stays attached to ${bill.orderCount - 1} other order${if (bill.orderCount == 2) "" else "s"}; only this order is unlinked."
-                    else "This order will go back to Pending if it has no other bills.") +
-                        (if (bill.adviceCount > 0) " Its payment advices keep their record of this bill." else "")
-                )
-            },
-            confirmButton = { TextButton(onClick = { billToRemove = null; onRemoveBill(bill) }) { Text("Remove") } },
-            dismissButton = { TextButton(onClick = { billToRemove = null }) { Text("Cancel") } }
+        ConfirmDeleteDialog(
+            what = "the link to bill ${bill.billNo}",
+            detail = "Only the link between this order and the bill is deleted; the bill stays. " +
+                (if (bill.orderCount > 1) "It stays attached to ${bill.orderCount - 1} other order${if (bill.orderCount == 2) "" else "s"}."
+                else "This order goes back to Pending if it has no other bills.") +
+                (if (bill.adviceCount > 0) " Its payment advices keep their record of this bill." else ""),
+            confirm = "Unlink",
+            onDismiss = { billToRemove = null },
+            onConfirm = { billToRemove = null; onRemoveBill(bill) }
         )
     }
 }

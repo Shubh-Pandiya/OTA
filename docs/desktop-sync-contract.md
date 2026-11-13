@@ -51,9 +51,10 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 
 ## Tables
 
-Every synced table has `id uuid` (generated on the device), `deleted boolean` (soft delete; there
-are no hard deletes from clients), `updated_at timestamptz` (set by the server on every write),
-and `client_updated_at bigint` (the editing device's clock in epoch ms).
+Every synced table has `id uuid` (generated on the device), `updated_at timestamptz` (set by the
+server on every write) and `client_updated_at bigint` (the editing device's clock in epoch ms).
+Deletes are hard deletes (see *Deleting* below). The old `deleted boolean` column is still there
+for older app versions but is always `false`.
 
 | Table | Columns (besides the sync columns) |
 |---|---|
@@ -66,6 +67,7 @@ and `client_updated_at bigint` (the editing device's clock in epoch ms).
 | `staff` | user_id, code (1–9, first digit of legacy order numbers and of legacy advice numbers), name, is_admin |
 | `order_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_order_no`; clients never read or write it. |
 | `advice_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_advice_no` (migration `20261116000000_fy_advice_numbers.sql`); separate from the order counter. |
+| `ota_deletions` | tombstones: id, tbl, client_updated_at (delete time on the device), updated_at, is_test. Read-only for clients; written by `ota_delete_rows`. See *Deleting*. |
 | `app_settings` | single row (`id = true`): retention_days (30), storage_limit_mb (500), warn_percent (80) |
 
 Bill and link ids are deterministic, so the same bill typed on two devices is one row:
@@ -128,7 +130,7 @@ names as `PA-26270001`.
   text (`60 + GST`) prints as typed.
 
 A bill's balance is `amount − Σ(paid + cd_amount + goods_return + rate_diff + claim)` over its
-non-deleted lines whose advice is not deleted. Status: no lines → Unpaid, balance ≤ 0 → Paid,
+lines. Status: no lines → Unpaid, balance ≤ 0 → Paid,
 otherwise Partly paid (a bill without an amount is Partly paid once it has a line).
 
 ### Bills
@@ -141,7 +143,7 @@ A bill can be added on its own from the Bills section, with zero or more orders.
 `supplier` are then stored on the bill and are required when no order is linked. When they are
 null, the parties come from the bill's orders (and a bill whose orders disagree is "mixed").
 Payment-advice eligibility uses the bill's own parties first. A bill with its own parties stays
-when its last order is detached; a bill without them is retired (soft-deleted) then.
+when its last order is detached; a bill without them is deleted then (unless it is on an advice).
 
 Party names are matched forgivingly (`data/PartyMatch.kt`, shared by both apps): only the first
 line counts, case, spacing, punctuation, `&`/"and", a leading "M/s" and trailing "Pvt / Ltd / Co"
@@ -152,6 +154,43 @@ parties differ, the app warns and asks before adding. An advice can hold many bi
 be paid by many advices; a bill's balance due subtracts every live advice line (paid + CD + goods
 return + rate difference + claim).
 
+## Deleting
+
+Every delete is a **hard delete**: the row is removed in the cloud, on every phone and in every
+desktop database. Both apps ask for confirmation first. To reach devices that were offline, the
+cloud keeps a tiny tombstone per deleted record in `ota_deletions` (about 100 bytes each).
+
+- Delete with `POST /rest/v1/rpc/ota_delete_rows` and
+  `{"p_rows": [{"table": "bills", "id": "…", "at": <delete time, epoch ms>}, …]}`. `table` is one
+  of `orders`, `bills`, `order_bills`, `payment_advices`, `advice_lines`, `buyers`, `suppliers`.
+  It returns `{"deleted": n, "kept": [ids]}`.
+- Last write wins: a row whose stored `client_updated_at` is newer than `at` is **kept** (an edit
+  made after the delete). The apps then drop the queued delete and re-pull that table, so the
+  newer row comes back on the deleting device too.
+- Children go with their parent in the same call: an order takes its `order_bills`, a bill its
+  `order_bills` and `advice_lines`, an advice its `advice_lines`. Every device cascades the same
+  way locally, so only the parent is queued. A link or advice line removed on its own is sent under
+  its own table.
+- An upload (`POST …?on_conflict=id`) of a row whose tombstone is as new or newer is silently
+  dropped by a trigger, so a stale offline device can't bring a deleted row back. An upload with a
+  newer `client_updated_at` (a re-created or later-edited row) wins and clears the tombstone.
+- An older client that still sends `deleted = true` is turned into the same hard delete on the
+  server.
+- Each sync round: pull `ota_deletions` (delta, same cursor rule as below, cursor name
+  `ota_deletions`) and delete those rows locally unless the local copy was edited after the
+  delete; then send the device's queued deletes; then the normal pull/push. A local delete waits in
+  a small queue until the cloud confirms it. A row that was never uploaded (no number yet) is just
+  removed, nothing is queued.
+- Tombstones older than 400 days are pruned. A device that has been offline longer than that
+  should re-pull everything.
+- **A retention purge is not a delete.** It writes no tombstones, and phones and laptops keep the
+  purged rows.
+
+Desktop: the queue is `pending_deletions`, created by local migration `V5__hard_deletes.sql`, which
+also removes any rows that were soft-deleted before. Phone: SQLite v8 does the same. Accounts
+vouchers are local only and are deleted completely; the audit log keeps one line (who deleted which
+voucher number, and when).
+
 ## Pulling (delta sync)
 
 For each table, keep a cursor `(updated_at, id)` of the last row received and page with:
@@ -161,7 +200,7 @@ GET /rest/v1/<table>?select=<cols>&order=updated_at.asc,id.asc&limit=500
     &or=(updated_at.gt."<cursor>",and(updated_at.eq."<cursor>",id.gt.<cursor id>))
 ```
 
-Pull `orders`, then `bills`, then `order_bills`, then `payment_advices`, then `advice_lines`. Store `updated_at` **exactly as returned**
+Pull `ota_deletions` first (see *Deleting*), then `orders`, then `bills`, then `order_bills`, then `payment_advices`, then `advice_lines`. Store `updated_at` **exactly as returned**
 (microseconds), because archiving needs it. Apply with last-write-wins on `client_updated_at`; a
 newer local edit that hasn't been uploaded yet is kept. Accept links whose order or bill you
 haven't seen yet: keep them, or retry them after the next pull.

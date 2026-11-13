@@ -254,9 +254,10 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
             }
         }
     }
-    if (confirmDelete) ConfirmDialog(
-        "Delete order ${OrderNumber.display(row.orderNo)}?", "The order is removed from this laptop and, after the next sync, from the phones. Its number is never reused.",
-        "Delete", danger = true, onDismiss = { confirmDelete = false }
+    if (confirmDelete) ConfirmDeleteDialog(
+        "order ${OrderNumber.display(row.orderNo)}",
+        "$EVERYWHERE Its bill links go with it; a bill that belongs only to this order and has no parties of its own is deleted too. Its number is never reused.",
+        onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
         scope.launch { withContext(Dispatchers.IO) { app.orders.delete(row.id) }; toast("Order ${OrderNumber.display(row.orderNo)} deleted"); onDeleted() }

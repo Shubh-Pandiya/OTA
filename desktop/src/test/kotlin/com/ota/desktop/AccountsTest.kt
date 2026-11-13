@@ -35,6 +35,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -111,29 +112,33 @@ class AccountsTest {
         assertEquals(v.no, edited.no)
         assertEquals(12500, edited.total)
 
-        // Deleting the bill removes its commission; adding it back restores the same voucher.
+        // Deleting the bill deletes its commission voucher completely (one audit line stays);
+        // adding the bill back posts a fresh one.
         orders.deleteBill(b.id)
         assertEquals(1, books.reconcileCommission(day).removed)
         assertEquals(1, commissionVouchers())
+        assertEquals(1, allCommissionRows())
+        assertNull(books.voucher(v.id))
+        assertEquals(listOf("auto-removed"), books.audit().filter { it.voucherId == v.id }.map { it.action })
         bill("SB-1", 4000.0)
-        assertEquals(1, books.reconcileCommission(day).updated)
-        val restored = books.voucherForBill(b.id)!!
-        assertEquals(v.id, restored.id)
-        assertFalse(restored.deleted)
-        assertEquals(10000, restored.total)
-        assertEquals(2, allCommissionRows(), "one voucher per bill, ever")
+        assertEquals(1, books.reconcileCommission(day).created)
+        val again = books.voucherForBill(b.id)!!
+        assertNotEquals(v.id, again.id)
+        assertEquals(10000, again.total)
+        assertEquals(2, allCommissionRows(), "one voucher per bill")
 
-        // % to zero removes commission; back again restores it.
+        // % to zero removes commission; back again posts it again.
         books.setCommission(shiv.id, 0.0)
         assertEquals(0, commissionVouchers())
+        assertEquals(0, allCommissionRows())
         books.setCommission(shiv.id, 2.0)
         assertEquals(2, commissionVouchers())
         assertEquals(2, allCommissionRows())
-        assertEquals(listOf("auto-posted", "auto-updated", "auto-removed", "auto-restored"), books.audit().filter { it.voucherId == v.id }.map { it.action }.reversed().take(4))
 
         // Commission vouchers are read-only by hand.
-        assertFailsWith<AccountsError> { books.deleteVoucher(v.id) }
-        assertFailsWith<AccountsError> { books.saveVoucher(VoucherDraft(v.id, VType.JOURNAL, day, "x", v.lines)) }
+        val live = books.voucherForBill(b.id)!!
+        assertFailsWith<AccountsError> { books.deleteVoucher(live.id) }
+        assertFailsWith<AccountsError> { books.saveVoucher(VoucherDraft(live.id, VType.JOURNAL, day, "x", live.lines)) }
     }
 
     @Test
@@ -181,15 +186,16 @@ class AccountsTest {
         val e2 = save(VType.JOURNAL, VoucherLine(rent, 1_600_000, 0), VoucherLine(cash, 0, 1_600_000), id = p1.id)
         assertEquals("JV/2627/0001", e2.no)
 
+        // Deleting removes the voucher and its lines completely; the audit keeps one line: which number, when.
         books.deleteVoucher(p2.id)
-        assertTrue(books.voucher(p2.id)!!.deleted)
+        assertNull(books.voucher(p2.id))
         assertEquals(3, books.vouchers().size)
-        assertEquals(4, books.vouchers(includeDeleted = true).size)
+        assertEquals(3, books.vouchers(includeDeleted = true).size)
+        assertEquals(0, db.read { c -> c.one("select count(*) from acc_voucher_lines where voucher_id = ?::uuid", p2.id) { it.getInt(1) } })
         assertEquals(1, books.vouchers(text = "jv/2627").size)
-        assertEquals(listOf("deleted", "edited", "edited", "created", "created", "created", "created"), books.audit().map { it.action })
-        val (before, after) = books.auditDetail(books.audit().first().id)
-        assertTrue(before!!.contains("PV/2627/0002"))
-        assertNull(after)
+        assertEquals(listOf("deleted", "edited", "edited", "created", "created", "created"), books.audit().map { it.action })
+        assertEquals("PV/2627/0002", books.audit().first().voucherNo)
+        assertEquals(null to null, books.auditDetail(books.audit().first().id))
     }
 
     @Test
@@ -277,10 +283,10 @@ class AccountsTest {
         // Back to a version 3 database with data in it, then upgrade.
         db.tx { c ->
             c.exec("drop table acc_audit, acc_voucher_lines, acc_vouchers, acc_accounts")
-            c.exec("delete from schema_version where version = 4")
+            c.exec("delete from schema_version where version >= 4")
         }
         Migrations.run(db)
-        assertEquals(listOf(1, 2, 3, 4), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
+        assertEquals(listOf(1, 2, 3, 4, 5), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
         assertEquals(20, books.accounts().size)
         assertEquals(1, db.read { c -> c.one("select count(*) from bills") { it.getInt(1) } })
         Migrations.run(db)

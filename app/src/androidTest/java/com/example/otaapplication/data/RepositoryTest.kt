@@ -47,8 +47,14 @@ class RepositoryTest {
             it.moveToFirst(); Triple(it.getLong(0), it.getInt(1), it.getInt(2))
         }
 
+    private fun exists(table: String, id: String): Boolean =
+        db.readableDatabase.rawQuery("SELECT 1 FROM $table WHERE id = ?", arrayOf(id)).use { it.moveToFirst() }
+
+    private fun queuedDelete(id: String): Boolean =
+        db.readableDatabase.rawQuery("SELECT 1 FROM pending_deletions WHERE id = ?", arrayOf(id)).use { it.moveToFirst() }
+
     @Test
-    fun catalogSaveSuggestEditAndSoftDelete() {
+    fun catalogSaveSuggestEditAndDelete() {
         val ram = catalog.save(Party(type = PartyType.BUYER, name = "Ram Textiles", address = "12 MG Road", city = "Indore", phone = "9876543210"))
         catalog.save(Party(type = PartyType.BUYER, name = "Shri Ram Cloth", city = "Ujjain"))
         catalog.save(Party(type = PartyType.SUPPLIER, name = "Raymond"))
@@ -72,7 +78,9 @@ class RepositoryTest {
 
         catalog.delete(PartyType.BUYER, ram.id)
         assertEquals(listOf("Shri Ram Cloth"), catalog.list(PartyType.BUYER).map { it.name })
-        assertEquals(1, syncColumns("buyers", ram.id).second)
+        // Gone for good; only a note for the cloud stays.
+        assertFalse(exists("buyers", ram.id))
+        assertTrue(queuedDelete(ram.id))
         assertEquals(1, catalog.count(PartyType.BUYER))
     }
 
@@ -133,7 +141,8 @@ class RepositoryTest {
         assertEquals(0, syncColumns("bills", shared.id).second)
 
         orders.detachBill("c", single.id)
-        assertEquals(1, syncColumns("bills", single.id).second)
+        assertFalse(exists("bills", single.id))
+        assertTrue(queuedDelete(single.id))
         assertEquals(listOf("c", "a"), orders.search(OrderQuery(status = BillStatusFilter.PENDING)).map { it.id })
 
         // Re-attaching a retired bill number brings the same bill back.
@@ -152,8 +161,8 @@ class RepositoryTest {
         assertTrue(orders.reconcile(edited))
         assertEquals(listOf("d", "c", "a"), orders.search(OrderQuery()).map { it.id })
         assertEquals(listOf("a"), orders.search(OrderQuery(text = "dewas")).map { it.id })
-        // Deleted order is tombstoned (kept for sync) and its bill link and orphaned bill are retired.
-        assertEquals(Triple(5_000L, 1, 1), syncColumns("orders", "b"))
+        // The deleted order is gone with its bill link, and the orphaned bill is retired.
+        assertFalse(exists("orders", "b"))
         assertTrue(orders.search(OrderQuery(text = "INV-9")).isEmpty())
         assertTrue(orders.suggestBills("INV-9").isEmpty())
         // Seq-only change doesn't mark the order dirty.
@@ -222,6 +231,9 @@ class RepositoryTest {
                 )
             }
             v1.execSQL("INSERT INTO buyers (id, name, name_key, city, search_key, created_at, updated_at) VALUES ('b1', 'Ram Textiles', 'ram textiles', 'Indore', 'ram textiles indore', 1, 1)")
+            // Soft-deleted rows from before hard deletes: one whose delete never reached the cloud, one that did.
+            v1.execSQL("INSERT INTO buyers (id, name, name_key, created_at, updated_at, is_deleted, sync_pending) VALUES ('b2', 'Gone', 'gone', 1, 7, 1, 1)")
+            v1.execSQL("INSERT INTO suppliers (id, name, name_key, created_at, updated_at, is_deleted, sync_pending) VALUES ('s1', 'Old', 'old', 1, 8, 1, 0)")
             v1.version = 1
         }
         val upgraded = OtaDatabase(context, name)
@@ -232,6 +244,11 @@ class RepositoryTest {
             repo.save(ram.copy(bank = BankDetails(bankName = "HDFC Bank", ifsc = "HDFC0001234")))
             assertEquals("HDFC0001234", repo.list(PartyType.BUYER, "hdfc").single().bank.ifsc)
             assertEquals(OtaDatabase.VERSION, upgraded.readableDatabase.version)
+            // v8: soft-deleted rows are removed; an unsent delete is queued for the cloud.
+            val db = upgraded.readableDatabase
+            assertEquals(1, db.rawQuery("SELECT COUNT(*) FROM buyers", null).use { it.moveToFirst(); it.getInt(0) })
+            assertEquals(0, db.rawQuery("SELECT COUNT(*) FROM suppliers", null).use { it.moveToFirst(); it.getInt(0) })
+            assertEquals(listOf(Deletion("buyers", "b2", 7)), LocalDeletions.pending(db, 10))
         } finally {
             upgraded.close()
             context.deleteDatabase(name)

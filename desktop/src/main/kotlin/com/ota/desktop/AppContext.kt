@@ -68,7 +68,9 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     ).also { it.loadDataMode() }
 
     /** The agency's own books: local only, so edits refresh the screens without waking sync. */
-    val accounts = AccountsStore(db, postingAllowed = engine::postingAllowed, onChange = ::localChanged)
+    val accounts = AccountsStore(
+        db, postingAllowed = engine::postingAllowed, actor = { auth.session.value?.email.orEmpty() }, onChange = ::localChanged
+    )
     val accountReports = AccountReports(db, accounts, payments)
 
     /** Admin (cloud clean-up, retention, Accounts): varun@ / shubham@, by sign-in email like the cloud's check. */

@@ -163,11 +163,15 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
     }
 
     fun delete(id: String) {
-        db.tx { c ->
-            val prev = c.one("select client_updated_at from orders where id = ?::uuid", id) { it.getLong(1) }
-            c.update("update orders set deleted = true, client_updated_at = ?, sync_pending = true where id = ?::uuid and not deleted", nextEditTime(prev), id)
+        val done = db.tx { c ->
+            // An order still waiting for its number never reached the cloud: nothing to tell it.
+            val numbered = c.one("select order_no <> '' from orders where id = ?::uuid", id) { it.getBoolean(1) } ?: return@tx false
+            val bills = c.query("select bill_id from order_bills where order_id = ?::uuid", id) { it.id("bill_id") }
+            Deletions.delete(c, "orders", id, queue = numbered)
+            retireOrphanBills(c, bills)
+            true
         }
-        onChange()
+        if (done) onChange()
     }
 
     // ------------------------------------------------------------------ bills
@@ -284,13 +288,7 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
                 billId
             }
             val live = c.query("select order_id from order_bills where bill_id = ?::uuid and not deleted", id) { it.id("order_id") }.toSet()
-            val now = System.currentTimeMillis()
-            for (orderId in live - wanted.toSet()) {
-                c.update(
-                    "update order_bills set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true " +
-                        "where order_id = ?::uuid and bill_id = ?::uuid and not deleted", now, orderId, id
-                )
-            }
+            for (orderId in live - wanted.toSet()) Deletions.delete(c, "order_bills", SyncIds.link(orderId, id))
             for (orderId in wanted.filterNot(live::contains)) linkOrder(c, orderId, id)
             BillSql.byId(c, id)!!
         }
@@ -303,15 +301,7 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
         val done = db.tx { c ->
             val bill = BillSql.byId(c, billId) ?: return@tx false
             require(bill.adviceCount == 0) { "Bill ${bill.billNo} is on a payment advice. Remove it from the advice first." }
-            val now = System.currentTimeMillis()
-            c.update(
-                "update order_bills set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true " +
-                    "where bill_id = ?::uuid and not deleted", now, billId
-            )
-            c.update(
-                "update bills set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true where id = ?::uuid and not deleted",
-                now, billId
-            )
+            Deletions.delete(c, "bills", billId)
             true
         }
         if (done) onChange()
@@ -344,18 +334,25 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
     /** Removes a wrong bill link from an order. A bill left with no orders (and no parties of its own) is retired too. */
     fun detachBill(orderId: String, billId: String) {
         db.tx { c ->
-            val now = System.currentTimeMillis()
-            c.update(
-                "update order_bills set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true " +
-                    "where order_id = ?::uuid and bill_id = ?::uuid and not deleted", now, orderId, billId
-            )
-            c.update(
-                "update bills b set deleted = true, client_updated_at = greatest(b.client_updated_at + 1, ?), sync_pending = true " +
-                    "where not b.deleted and (b.buyer = '' or b.supplier = '') " +
-                    "and not exists (select 1 from order_bills l where l.bill_id = b.id and not l.deleted)", now
-            )
+            Deletions.delete(c, "order_bills", SyncIds.link(orderId, billId))
+            retireOrphanBills(c, listOf(billId))
         }
         onChange()
+    }
+
+    /**
+     * Deletes bills left with no order and no parties of their own: nothing could find or pay them.
+     * A bill still on an advice stays (deleting it would take the advice's line with it).
+     */
+    private fun retireOrphanBills(c: Connection, billIds: Collection<String>) {
+        for (billId in billIds.distinct()) {
+            val orphan = c.one(
+                "select 1 from bills b where b.id = ?::uuid and (b.buyer = '' or b.supplier = '') " +
+                    "and not exists (select 1 from order_bills l where l.bill_id = b.id) " +
+                    "and not exists (select 1 from advice_lines a where a.bill_id = b.id)", billId
+            ) { true } ?: false
+            if (orphan) Deletions.delete(c, "bills", billId)
+        }
     }
 
     private fun writeDetails(c: Connection, billId: String, d: BillDetails, onlyGiven: Boolean) {

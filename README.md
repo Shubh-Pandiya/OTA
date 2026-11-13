@@ -98,8 +98,10 @@ Staff then open the app, sign in on the first screen, and everything syncs.
   so phone clocks don't matter for this), then uploads rows changed on the phone.
 - Conflicts: the most recent edit wins (`client_updated_at`). The server trigger refuses to replace a
   row with an older edit, so a phone that was offline cannot overwrite newer data.
-- Deleting an entry is a soft delete (`deleted = true`) and syncs to all phones. Rows are never
-  hard-deleted on the server.
+- Deleting is permanent. Both apps ask for confirmation, then the row is removed from the phone,
+  the cloud, the other phones and the laptops. The cloud keeps only a tiny tombstone (pruned after
+  400 days), so a phone that was offline can't bring the deleted row back. A newer edit made
+  elsewhere before the delete wins over it. See *Deleting* in `docs/desktop-sync-contract.md`.
 - Security: row-level security allows only signed-in staff to read, add and edit; anonymous requests
   with just the publishable key get nothing. Sign-in tokens are kept in app-private storage and
   excluded from Android backups.

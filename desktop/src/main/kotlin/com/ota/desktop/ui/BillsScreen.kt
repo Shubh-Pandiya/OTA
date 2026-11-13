@@ -246,11 +246,10 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
                 text = { Text("It is on ${b.adviceCount} payment advice${if (b.adviceCount == 1) "" else "s"}. Remove it from the advice first.") },
                 confirmButton = { TextButton(onClick = { confirmDelete = false }) { Text("OK") } }
             )
-        } else ConfirmDialog(
-            "Delete bill ${b.billNo}?",
-            if (orders.isNotEmpty()) "It will be removed from its ${orders.size} order${if (orders.size == 1) "" else "s"}, which go back to Pending if they have no other bill."
-            else "The bill will be removed from this laptop and, after the next sync, from the phones.",
-            "Delete", danger = true, onDismiss = { confirmDelete = false }
+        } else ConfirmDeleteDialog(
+            "bill ${b.billNo}",
+            EVERYWHERE + if (orders.isNotEmpty()) " It comes off its ${orders.size} order${if (orders.size == 1) "" else "s"}, which go back to Pending if they have no other bill." else "",
+            onDismiss = { confirmDelete = false }
         ) {
             confirmDelete = false
             scope.launch {
@@ -437,6 +436,7 @@ private fun LinkedOrders(linked: MutableList<OrderRow>, onLink: (OrderRow) -> Un
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf(emptyList<OrderRow>()) }
     var searchedFor by remember { mutableStateOf<String?>(null) }
+    var unlinking by remember { mutableStateOf<OrderRow?>(null) }
     LaunchedEffect(query) {
         if (query.isBlank()) { results = emptyList(); searchedFor = null; return@LaunchedEffect }
         delay(150)
@@ -449,8 +449,14 @@ private fun LinkedOrders(linked: MutableList<OrderRow>, onLink: (OrderRow) -> Un
         Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(o.orderNo, Modifier.width(ORDER_NO_W), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium.merge(Numeric))
             Text("${o.data.date} · ${SearchText.firstLine(o.data.buyer)} → ${SearchText.firstLine(o.data.supplier)}", Modifier.weight(1f), maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            IconButton(onClick = { linked.remove(o) }, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Close, "Unlink", Modifier.size(18.dp)) }
+            IconButton(onClick = { unlinking = o }, modifier = Modifier.size(30.dp)) { Icon(Icons.Default.Close, "Unlink", Modifier.size(18.dp)) }
         }
+    }
+    unlinking?.let { o ->
+        ConfirmDeleteDialog(
+            "the link to order ${OrderNumber.display(o.orderNo)}", "The order stays; only its link to this bill is deleted when you save.",
+            onDismiss = { unlinking = null }, confirm = "Unlink"
+        ) { linked.remove(o); unlinking = null }
     }
     Field(query, { query = it }, "Link an order: search number, buyer, supplier…", Modifier.fillMaxWidth(), trailing = { Icon(Icons.Default.Search, null) })
     val shown = results.filter { r -> !OrderNumber.isPending(r.orderNo) && linked.none { it.id == r.id } }

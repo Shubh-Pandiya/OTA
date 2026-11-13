@@ -12,6 +12,8 @@ import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OtaAccounts
+import com.example.otaapplication.data.Deletion
+import com.example.otaapplication.data.LocalDeletions
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentRepository
@@ -88,6 +90,16 @@ class CloudSync private constructor(private val context: Context) {
             payments.assignNumber(adviceId, adviceNo).also { numbered ->
                 if (numbered) payments.advice(adviceId)?.let { runCatching { AdvicePdf.write(context, it) } }
             }
+        }
+    )
+    private val deletions = DeletionSync(
+        orderApi, orderCursors,
+        pending = { LocalDeletions.pending(OtaDatabase.get(context).writableDatabase, it) },
+        markSent = { LocalDeletions.markSent(OtaDatabase.get(context).writableDatabase, it) },
+        apply = ::applyDeletions,
+        resetTable = { table ->
+            // The cloud kept a row edited after this phone deleted it: read that table again.
+            PartyType.entries.firstOrNull { it.table == table }?.let { cursors.set(it, null) } ?: orderCursors.set(table, null)
         }
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -187,6 +199,7 @@ class CloudSync private constructor(private val context: Context) {
             // Next sign-in pulls everything again; local rows and pending edits are kept.
             PartyType.entries.forEach { cursors.set(it, null) }
             ORDER_TABLES.forEach { orderCursors.set(it, null) }
+            orderCursors.set(DeletionSync.CURSOR, null)
             saveStaff(null)
             prefs.edit { remove(KEY_LAST_SYNC).remove(KEY_USAGE).remove(KEY_STORAGE_FULL) }
             StorageAlert.update(context, null, full = false)
@@ -245,6 +258,7 @@ class CloudSync private constructor(private val context: Context) {
         if (deleteFiles) AdviceImageFiles.forContext(context).clear()
         PartyType.entries.forEach { cursors.set(it, null) }
         ORDER_TABLES.forEach { orderCursors.set(it, null) }
+        orderCursors.set(DeletionSync.CURSOR, null)
         prefs.edit { remove(KEY_LAST_SYNC) }
         _catalogChanges.update { it + 1 }
         _orderChanges.update { it + 1 }
@@ -325,6 +339,9 @@ class CloudSync private constructor(private val context: Context) {
                     fullError = e
                     null
                 }
+                val removed = part { deletions.syncAll() }?.removed.orEmpty()
+                if (PartyType.entries.any { (removed[it.table] ?: 0) > 0 }) _catalogChanges.update { it + 1 }
+                if (removed.keys.any { it in ORDER_TABLES }) _orderChanges.update { it + 1 }
                 val result = part { engine.syncAll() }
                 if ((result?.pulledChanges ?: 0) > 0) _catalogChanges.update { it + 1 }
                 refreshStaff()
@@ -381,7 +398,19 @@ class CloudSync private constructor(private val context: Context) {
         _status.update { it.copy(pending = pending) }
     }
 
-    private fun pendingCount() = repository.pendingCount() + orders.index.pendingCount() + payments.pendingCount()
+    private fun pendingCount() = repository.pendingCount() + orders.index.pendingCount() + payments.pendingCount() +
+        LocalDeletions.pendingCount(OtaDatabase.get(context).readableDatabase)
+
+    /** Tombstones from the cloud, each handed to the store that owns its table. Removed rows per table. */
+    private fun applyDeletions(rows: List<Deletion>): Map<String, Int> =
+        rows.groupBy { it.table }.mapValues { (table, list) ->
+            when (table) {
+                OrderTable.ORDERS.name -> orders.applyDeletions(list)
+                OrderTable.BILLS.name, OrderTable.LINKS.name -> orders.index.applyDeletions(list)
+                OrderTable.ADVICES.name, OrderTable.ADVICE_LINES.name -> payments.applyDeletions(list)
+                else -> if (PartyType.entries.any { it.table == table }) repository.applyDeletions(list) else 0
+            }
+        }
 
     fun dismissNotice() = _status.update { it.copy(notice = null) }
 

@@ -83,8 +83,7 @@ class CatalogStore(private val db: Db, private val onChange: () -> Unit = {}) {
     }
 
     fun delete(type: PartyType, id: String) {
-        db.tx { c -> c.update("update ${type.table} set deleted = true, client_updated_at = ?, sync_pending = true where id = ?::uuid", editTime(c, type, id), id) }
-        onChange()
+        if (db.tx { c -> Deletions.delete(c, type.table, id) }) onChange()
     }
 
     // ------------------------------------------------------------------ sync
@@ -99,9 +98,11 @@ class CatalogStore(private val db: Db, private val onChange: () -> Unit = {}) {
         }
     }
 
-    /** Applies pulled rows; returns how many changed locally. The desktop keeps deleted rows too. */
+    /** Applies pulled rows; returns how many changed locally. A deleted row (from an older app) removes the local one. */
     fun mergePulled(type: PartyType, rows: List<RemoteParty>): Int = db.tx { c ->
         rows.count { remote ->
+            if (remote.deleted) return@count Deletions.applyRemote(c, type.table, remote.party.id, remote.clientUpdatedAt)
+            if (Deletions.blocks(c, remote.party.id, remote.clientUpdatedAt)) return@count false
             val local = meta(c, type, remote.party.id)
             when (SyncMerge.onPulled(local, remote)) {
                 SyncMerge.Decision.APPLY_REMOTE, SyncMerge.Decision.SKIP -> writeRemote(c, type, remote)
@@ -118,7 +119,8 @@ class CatalogStore(private val db: Db, private val onChange: () -> Unit = {}) {
                 SyncMerge.Decision.MARK_SYNCED -> c.update(
                     "update ${type.table} set sync_pending = false, server_updated_at = ? where id = ?::uuid", remote.serverUpdatedAt, remote.party.id
                 ) > 0
-                SyncMerge.Decision.APPLY_REMOTE -> writeRemote(c, type, remote)
+                SyncMerge.Decision.APPLY_REMOTE ->
+                    if (remote.deleted) Deletions.applyRemote(c, type.table, remote.party.id, remote.clientUpdatedAt) else writeRemote(c, type, remote)
                 else -> false
             }
         }

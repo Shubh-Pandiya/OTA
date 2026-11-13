@@ -7,6 +7,7 @@ import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceLineValue
 import com.example.otaapplication.data.AdviceValue
 import com.example.otaapplication.data.BillValue
+import com.example.otaapplication.data.Deletion
 import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.LinkValue
 import com.example.otaapplication.data.PendingRow
@@ -281,6 +282,16 @@ interface OrderCloudApi {
 
     /** Test account only: deletes all its cloud rows (ota_clear_test_data); returns rows removed per table. */
     suspend fun clearTestData(): Map<String, Int> = throw UnsupportedOperationException("clearTestData")
+
+    /**
+     * Hard-deletes rows in the cloud (ota_delete_rows): each row goes with its links / advice lines
+     * and leaves a small tombstone so other devices remove it too, unless the cloud copy was edited
+     * after the delete. Returns the ids the cloud kept for that reason.
+     */
+    suspend fun deleteRows(rows: List<Deletion>): Set<String> = throw UnsupportedOperationException("deleteRows")
+
+    /** Tombstones logged after the cursor (ota_deletions), oldest first. */
+    suspend fun pullDeletions(after: String?, afterId: String?, limit: Int): List<Deletion> = emptyList()
 }
 
 /** All 9999 payment advice numbers of a financial year are used. */
@@ -360,6 +371,29 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
     override suspend fun clearTestData(): Map<String, Int> {
         val json = JSONObject(client.call("POST", "rpc/ota_clear_test_data", body = "{}").trim())
         return json.keys().asSequence().associateWith { json.optInt(it) }
+    }
+
+    override suspend fun deleteRows(rows: List<Deletion>): Set<String> {
+        if (rows.isEmpty()) return emptySet()
+        val payload = JSONArray().apply {
+            rows.forEach { put(JSONObject().put("table", it.table).put("id", it.id).put("at", it.at)) }
+        }
+        val json = JSONObject(client.call("POST", "rpc/ota_delete_rows", body = JSONObject().put("p_rows", payload).toString()).trim())
+        val kept = json.optJSONArray("kept") ?: JSONArray()
+        return (0 until kept.length()).mapTo(HashSet()) { kept.getString(it) }
+    }
+
+    override suspend fun pullDeletions(after: String?, afterId: String?, limit: Int): List<Deletion> {
+        val filter = when {
+            after == null -> ""
+            afterId == null -> "&updated_at=gt.${Http.encode(after)}"
+            else -> "&or=" + Http.encode("(updated_at.gt.\"$after\",and(updated_at.eq.\"$after\",id.gt.$afterId))")
+        }
+        val array = JSONArray(client.call("GET", "ota_deletions?select=id,tbl,client_updated_at,updated_at&order=updated_at.asc,id.asc&limit=$limit$filter"))
+        return List(array.length()) { i ->
+            val json = array.getJSONObject(i)
+            Deletion(json.getString("tbl"), json.getString("id"), json.optLong("client_updated_at"), json.getString("updated_at"))
+        }
     }
 
     private companion object {

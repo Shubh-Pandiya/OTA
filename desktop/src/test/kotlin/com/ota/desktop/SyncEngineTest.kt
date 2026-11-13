@@ -32,6 +32,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -311,4 +312,104 @@ class SyncEngineTest {
         assertEquals(0, engine.status.value.pending)
         assertEquals(OtaAccounts.MODE_TEST, engine.dataMode(), "still the test laptop")
     }
+
+    /** A second device (another laptop) on the same cloud. */
+    private inner class Device {
+        val db = TestDb.fresh()
+        val kv = Kv(db)
+        val auth = SupabaseAuth(config, SessionStore(kv)).also { runBlocking { it.signIn("varun@ota.com", "x") } }
+        val catalog = CatalogStore(db)
+        val orders = OrderStore(db)
+        val payments = PaymentStore(db)
+        val engine = SyncEngine(db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, Numbers(db, kv) { day })
+    }
+
+    @Test
+    fun hardDeletesReachOtherDevicesAndNeverComeBack() = runBlocking {
+        val buyer = catalog.save(com.example.otaapplication.data.Party(type = com.example.otaapplication.data.PartyType.BUYER, name = "Ram Traders"))
+        val kept = orders.create(order(), engine.allocateOrderNo(day)!!)
+        val doomed = orders.create(order(), engine.allocateOrderNo(day)!!)
+        val bill = orders.attachBill(listOf(doomed.id), "B-77")
+        assertNull(engine.sync().error)
+        val other = Device()
+        assertNull(other.engine.sync().error)
+        assertNotNull(other.orders.get(doomed.id))
+        assertNotNull(other.orders.bill(bill.id))
+
+        // The other laptop edits the order offline, before this laptop deletes it: the later delete wins.
+        other.orders.update(doomed.id, order(buyer = "Edited offline"))
+        Thread.sleep(5)
+        orders.delete(doomed.id)
+        catalog.delete(com.example.otaapplication.data.PartyType.BUYER, buyer.id)
+        assertNull(orders.bill(bill.id), "a bill left with no order and no parties goes with it")
+        assertEquals(0, count("select count(*) from order_bills"))
+        engine.refreshPending()
+        assertEquals(3, engine.status.value.pending, "order, its bill and the buyer (the cloud removes the link with them)")
+        assertNull(engine.sync().error)
+        assertEquals(0, engine.status.value.pending)
+        // Gone from the cloud, with only a small tombstone each.
+        assertNull(cloud.table("orders")[doomed.id])
+        assertNull(cloud.table("bills")[bill.id])
+        assertNull(cloud.table("buyers")[buyer.id])
+        assertTrue(cloud.table("order_bills").isEmpty())
+        assertEquals(setOf(doomed.id, bill.id, buyer.id, SyncIds.link(doomed.id, bill.id)), cloud.table("ota_deletions").keys)
+
+        // The other laptop's next sync removes them there too, and its stale edit is not uploaded.
+        assertNull(other.engine.sync().error)
+        assertNull(other.orders.get(doomed.id))
+        assertNull(other.orders.bill(bill.id))
+        assertEquals(0, other.catalog.count(com.example.otaapplication.data.PartyType.BUYER))
+        assertNotNull(other.orders.get(kept.id))
+        assertNull(cloud.table("orders")[doomed.id], "no resurrection")
+        assertEquals(0, other.engine.status.value.pending)
+
+        // An old app pushing its stale copy (edited before the delete) is turned away by the cloud.
+        val staleRow = cloudOrder(doomed.id, doomed.orderNo).put("client_updated_at", 1L)
+        val code = java.net.http.HttpClient.newHttpClient().send(
+            java.net.http.HttpRequest.newBuilder(java.net.URI("${cloud.url}/rest/v1/orders?on_conflict=id"))
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(JSONArray().put(staleRow).toString())).build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString()
+        ).statusCode()
+        assertEquals(201, code)
+        assertNull(cloud.table("orders")[doomed.id])
+
+        // Re-created after the delete (same bill number = same id): the newer row wins everywhere.
+        Thread.sleep(5)
+        val again = orders.attachBill(listOf(kept.id), "B-77")
+        assertEquals(bill.id, again.id)
+        assertNull(engine.sync().error)
+        assertNotNull(cloud.table("bills")[bill.id])
+        assertNull(cloud.table("ota_deletions")[bill.id])
+        assertNull(other.engine.sync().error)
+        assertEquals(listOf("B-77"), other.orders.billsForOrder(kept.id).map { it.billNo })
+    }
+
+    @Test
+    fun deletesWaitUntilTheCloudHasHardDeletes() = runBlocking {
+        val o = orders.create(order(), engine.allocateOrderNo(day)!!)
+        assertNull(engine.sync().error)
+        cloud.hardDeletes = false
+        orders.delete(o.id)
+        val status = engine.sync()
+        assertNull(status.error, "an older cloud is not an error")
+        assertEquals(1, status.pending)
+        assertNotNull(cloud.table("orders")[o.id])
+        cloud.hardDeletes = true
+        assertEquals(0, engine.sync().pending)
+        assertNull(cloud.table("orders")[o.id])
+    }
+
+    @Test
+    fun anEditMadeAfterADeleteIsKept() = runBlocking {
+        val o = orders.create(order(), engine.allocateOrderNo(day)!!)
+        assertNull(engine.sync().error)
+        // Another device edits the order in the cloud after this laptop's delete time.
+        orders.delete(o.id)
+        val newer = JSONObject(cloud.table("orders")[o.id]!!.toString()).put("buyer", "Edited later").put("client_updated_at", System.currentTimeMillis() + 60_000)
+        cloud.put("orders", newer)
+        assertNull(engine.sync().error)
+        assertEquals("Edited later", orders.get(o.id)!!.data.buyer, "the cloud kept the newer edit and this laptop pulled it back")
+        assertTrue(cloud.table("ota_deletions").isEmpty())
+    }
+
 }

@@ -102,8 +102,4 @@ internal object BillSql {
             db.endTransaction()
         }
     }
-
-    fun tombstone(now: Long) = ContentValues().apply {
-        put("is_deleted", 1); put("updated_at", now); put("sync_pending", 1)
-    }
 }

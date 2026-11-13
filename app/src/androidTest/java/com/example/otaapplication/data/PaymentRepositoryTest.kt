@@ -42,6 +42,9 @@ class PaymentRepositoryTest {
     private fun draft(lines: List<Pair<String, LineAmounts>>, id: String? = null, mode: PaymentMode = PaymentMode.CHEQUE, reference: String = "000123") =
         AdviceDraft(id, day, "Ram Textiles", "Raymond", mode, reference, 5_000.0, BalanceSide.DR, "", lines)
 
+    private fun exists(table: String, id: String): Boolean =
+        db.readableDatabase.rawQuery("SELECT 1 FROM $table WHERE id = ?", arrayOf(id)).use { it.moveToFirst() }
+
     private fun pending(table: String, id: String) =
         db.readableDatabase.rawQuery("SELECT sync_pending FROM $table WHERE id = ?", arrayOf(id)).use { it.moveToFirst(); it.getInt(0) }
 
@@ -116,7 +119,7 @@ class PaymentRepositoryTest {
     }
 
     @Test
-    fun editRemovesLinesAsTombstonesAndDeleteFreesTheBills() {
+    fun editDeletesRemovedLinesAndDeleteFreesTheBills() {
         val b1 = orders.attachBill(listOf("a"), "B1", BillDetails(day, 1_000.0))
         val b2 = orders.attachBill(listOf("a"), "B2", BillDetails(day, 1_000.0))
         val advice = payments.save(draft(listOf(b1.id to LineAmounts(paid = 1_000.0), b2.id to LineAmounts(paid = 1_000.0))), newNumber = "PA120261108001")
@@ -129,15 +132,19 @@ class PaymentRepositoryTest {
         assertEquals("PA120261108001", edited.adviceNo)
         assertEquals(listOf("B1"), edited.lines.map { it.bill.billNo })
         assertEquals(PaymentStatus.UNPAID, orders.bill(b2.id)!!.status)
-        assertEquals(1, pending("advice_lines", SyncIds.adviceLine(advice.id, b2.id))) // tombstone to upload
+        val removedLine = SyncIds.adviceLine(advice.id, b2.id)
+        assertFalse(exists("advice_lines", removedLine))
+        assertEquals(listOf(removedLine), LocalDeletions.pending(db.readableDatabase, 10).map { it.id }) // delete to upload
         assertEquals(1, pending("bills", b1.id)) // re-uploaded with its line
 
         assertTrue(payments.delete(advice.id))
         assertNull(payments.advice(advice.id))
         assertEquals(PaymentStatus.UNPAID, orders.bill(b1.id)!!.status)
         assertTrue(payments.search("").isEmpty())
-        // Deleted numbers stay used.
-        assertEquals(listOf("PA120261108001"), payments.adviceNosWithPrefix("PA120261108"))
+        // Nothing of it is left but the note for the cloud (which never hands its number out again).
+        assertFalse(exists("payment_advices", advice.id))
+        assertFalse(exists("advice_lines", SyncIds.adviceLine(advice.id, b1.id)))
+        assertTrue(LocalDeletions.pending(db.readableDatabase, 10).any { it.id == advice.id && it.table == "payment_advices" })
     }
 
     @Test

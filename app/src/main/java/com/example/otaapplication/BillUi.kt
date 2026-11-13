@@ -706,23 +706,13 @@ private fun BillDetailPage(
 
 @Composable
 private fun DeleteBillDialog(bill: Bill, onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-        title = { Text("Delete bill ${bill.billNo}?") },
-        text = {
-            Text(
-                if (bill.adviceCount > 0) "This bill is on ${bill.adviceCount} payment advice${if (bill.adviceCount == 1) "" else "s"}. Remove it from the advice first."
-                else if (bill.orderCount > 0) "It will be removed from its ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}, which go back to Pending if they have no other bill."
-                else "The bill will be removed from every phone and the laptop."
-            )
-        },
-        confirmButton = {
-            if (bill.adviceCount == 0) {
-                TextButton(onClick = onConfirm, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(if (bill.adviceCount == 0) "Cancel" else "OK") } }
+    ConfirmDeleteDialog(
+        what = "bill ${bill.billNo}",
+        detail = if (bill.adviceCount > 0) "This bill is on ${bill.adviceCount} payment advice${if (bill.adviceCount == 1) "" else "s"}. Remove it from the advice first."
+            else (if (bill.orderCount > 0) "It's unlinked from its ${bill.orderCount} order${if (bill.orderCount == 1) "" else "s"}, which go back to Pending if they have no other bill. " else "") +
+                DELETED_EVERYWHERE,
+        onDismiss = onDismiss,
+        onConfirm = if (bill.adviceCount == 0) onConfirm else null
     )
 }
 
@@ -899,6 +889,7 @@ private fun LinkedOrdersSection(linked: MutableList<OrderSummary>, orders: Order
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<OrderSummary>>(emptyList()) }
     var searchedFor by remember { mutableStateOf("") }
+    var toUnlink by remember { mutableStateOf<OrderSummary?>(null) }
     val resultsView = remember { BringIntoViewRequester() }
     LaunchedEffect(query, linked.size) {
         if (query.isBlank()) { results = emptyList(); searchedFor = ""; return@LaunchedEffect }
@@ -925,7 +916,7 @@ private fun LinkedOrdersSection(linked: MutableList<OrderSummary>, orders: Order
                 subtitle = listOf(order.date, SearchText.firstLine(order.buyer), SearchText.firstLine(order.supplier)).filter { it.isNotBlank() }.joinToString(" · "),
                 onClick = null,
                 trailing = {
-                    IconButton(onClick = { linked.remove(order) }) {
+                    IconButton(onClick = { toUnlink = order }) {
                         Icon(Icons.Default.Close, contentDescription = "Unlink order ${OrderNumber.display(order.offerNo)}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -958,6 +949,15 @@ private fun LinkedOrdersSection(linked: MutableList<OrderSummary>, orders: Order
                 Text("No matching order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+    toUnlink?.let { order ->
+        ConfirmDeleteDialog(
+            what = "the link to order ${OrderNumber.display(order.offerNo)}",
+            detail = "Only the link goes, when you save the bill; the order stays.",
+            confirm = "Unlink",
+            onDismiss = { toUnlink = null },
+            onConfirm = { linked.remove(order); toUnlink = null }
+        )
     }
 }
 

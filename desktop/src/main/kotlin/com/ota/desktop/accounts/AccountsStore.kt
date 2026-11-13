@@ -34,6 +34,8 @@ class AccountsStore(
     private val db: Db,
     /** False while the laptop holds the test account's data: test bills never reach the books. */
     private val postingAllowed: () -> Boolean = { true },
+    /** Who is signed in, for the audit note left by a deleted voucher. */
+    private val actor: () -> String = { "" },
     private val onChange: () -> Unit = {}
 ) {
     private val reconcileLock = Any()
@@ -219,20 +221,29 @@ class AccountsStore(
         db.tx { c ->
             val v = load(c, id) ?: return@tx
             if (v.automatic) throw AccountsError("Commission vouchers are posted from bills; delete the bill or set the supplier's % to 0 instead")
-            if (v.deleted) return@tx
-            c.update("update acc_vouchers set deleted = true, updated_at = now() where id = ?", UUID.fromString(id))
-            val accounts = c.query("select $ACC from acc_accounts") { it.toAccount() }.associateBy { it.id }
-            audit(c, "deleted", v.id, v.no, json(v, accounts), null)
+            removeVoucher(c, v, "deleted", actor())
         }
         onChange()
     }
 
+    /**
+     * Deletes a voucher completely (its lines go with it). Its audit history is replaced by one line:
+     * who deleted which voucher number and when; nothing of the voucher itself is kept.
+     */
+    private fun removeVoucher(c: Connection, v: Voucher, action: String, by: String) {
+        val id = UUID.fromString(v.id)
+        c.update("delete from acc_vouchers where id = ?", id)
+        c.update("delete from acc_audit where voucher_id = ?", id)
+        c.update("insert into acc_audit (action, voucher_id, voucher_no, by_user) values (?, ?, ?, ?)", action, id, v.no, by)
+    }
+
     fun audit(limit: Int = 1000): List<AuditEntry> = db.read { c ->
-        c.query("select id, at, action, voucher_id, voucher_no, before, after from acc_audit order by id desc limit $limit") {
+        c.query("select id, at, action, voucher_id, voucher_no, before, after, by_user from acc_audit order by id desc limit $limit") {
             val doc = (it.getString("after") ?: it.getString("before"))?.let(::JSONObject)
+            val by = it.str("by_user")
             AuditEntry(
                 it.getLong("id"), it.getObject("at", java.time.OffsetDateTime::class.java), it.str("action"), it.strOrNull("voucher_id"),
-                it.str("voucher_no"), doc?.let(::describe).orEmpty()
+                it.str("voucher_no"), doc?.let(::describe) ?: if (by.isNotBlank()) "by $by" else ""
             )
         }
     }
@@ -295,20 +306,19 @@ class AccountsStore(
                         val v = load(c, id.toString())!!
                         audit(c, "auto-posted", v.id, v.no, null, json(v, accounts))
                         created++
-                    } else if (old.deleted || old.date != date || old.narration != narration || old.lines.map { it.copy(note = "") } != lines) {
+                    } else if (old.date != date || old.narration != narration || old.lines.map { it.copy(note = "") } != lines) {
                         val id = UUID.fromString(old.id)
-                        c.update("update acc_vouchers set vdate = ?, narration = ?, deleted = false, updated_at = now() where id = ?", date, narration, id)
+                        c.update("update acc_vouchers set vdate = ?, narration = ?, updated_at = now() where id = ?", date, narration, id)
                         c.update("delete from acc_voucher_lines where voucher_id = ?", id)
                         writeLines(c, id, lines)
                         val v = load(c, old.id)!!
-                        audit(c, if (old.deleted) "auto-restored" else "auto-updated", v.id, v.no, json(old, accounts), json(v, accounts))
+                        audit(c, "auto-updated", v.id, v.no, json(old, accounts), json(v, accounts))
                         updated++
                     }
                 }
                 for ((billId, old) in existing) {
-                    if (billId in wanted || old.deleted) continue
-                    c.update("update acc_vouchers set deleted = true, updated_at = now() where id = ?", UUID.fromString(old.id))
-                    audit(c, "auto-removed", old.id, old.no, json(old, accounts), null)
+                    if (billId in wanted) continue
+                    removeVoucher(c, old, "auto-removed", "")
                     removed++
                 }
                 ReconcileResult(created, updated, removed, added)

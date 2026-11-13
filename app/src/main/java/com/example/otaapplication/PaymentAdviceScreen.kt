@@ -479,25 +479,19 @@ internal fun AdviceDetailPage(
     }
 
     if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Delete ${advice?.let { AdviceNumber.display(it.adviceNo) }}?") },
-            text = { Text("The payments on this advice are removed from its bills' balances. The advice number is not reused.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmDelete = false
-                        scope.launch {
-                            withContext(Dispatchers.IO) { deps.payments.delete(adviceId) }
-                            Toast.makeText(context, "Advice deleted", Toast.LENGTH_SHORT).show()
-                            onDeleted()
-                        }
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+        ConfirmDeleteDialog(
+            what = "advice ${advice?.let { AdviceNumber.display(it.adviceNo) }.orEmpty()}".trim(),
+            detail = "The advice, its bill lines, photos and PDF are deleted, and its payments come off the bills' balances. " +
+                "The advice number is not reused. $DELETED_EVERYWHERE",
+            onDismiss = { confirmDelete = false },
+            onConfirm = {
+                confirmDelete = false
+                scope.launch {
+                    withContext(Dispatchers.IO) { deps.payments.delete(adviceId) }
+                    Toast.makeText(context, "Advice deleted", Toast.LENGTH_SHORT).show()
+                    onDeleted()
+                }
+            }
         )
     }
 }
@@ -635,6 +629,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
     }
     // A picked bill whose names don't match this advice's buyer and supplier waits here for the user's choice.
     var confirmPick by remember { mutableStateOf<PairBill?>(null) }
+    var lineToRemove by remember { mutableStateOf<LineState?>(null) }
     fun addLine(pair: PairBill) { if (lines.none { it.billId == pair.bill.id }) lines += LineState.fresh(pair) }
     fun pick(pair: PairBill) {
         when {
@@ -663,6 +658,16 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         if (referenceNeeded) add("Enter the ${mode.referenceLabel.lowercase()}.")
     }
     val canSave = ready && problems.isEmpty() && payDay != null
+
+    lineToRemove?.let { line ->
+        ConfirmDeleteDialog(
+            what = "bill ${line.pair.bill.billNo} from this advice",
+            detail = "Its payment line goes when you save the advice; the bill itself stays.",
+            confirm = "Remove",
+            onDismiss = { lineToRemove = null },
+            onConfirm = { lines.remove(line); lineToRemove = null }
+        )
+    }
 
     confirmPick?.let { pair ->
         AlertDialog(
@@ -793,7 +798,7 @@ internal fun AdviceEditorPage(page: PaymentPage.AdviceEdit, deps: PaymentDeps, o
         ) {
             lines.forEach { line ->
                 key(line.billId) {
-                    LineEditor(line, partyNote(line.pair, buyer, supplier), onRemove = { lines.remove(line) })
+                    LineEditor(line, partyNote(line.pair, buyer, supplier), onRemove = { lineToRemove = line })
                 }
             }
             val addable = available?.filter { p -> lines.none { it.billId == p.bill.id } }

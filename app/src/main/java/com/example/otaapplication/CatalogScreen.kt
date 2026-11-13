@@ -446,14 +446,11 @@ fun PartyEditDialog(
     }
 
     if (confirmDelete && onDelete != null) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Remove ${initial.name}?") },
-            text = { Text("It will no longer be suggested on the order form. Existing orders are not changed.") },
-            confirmButton = {
-                TextButton(onClick = { confirmDelete = false; onDelete() }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Remove") }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+        ConfirmDeleteDialog(
+            what = "${initial.type.label.lowercase()} ${initial.name}",
+            detail = "It's no longer suggested on the forms; existing orders, bills and advices keep the name. $DELETED_EVERYWHERE",
+            onDismiss = { confirmDelete = false },
+            onConfirm = { confirmDelete = false; onDelete() }
         )
     }
 }

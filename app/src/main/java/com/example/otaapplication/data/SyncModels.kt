@@ -81,6 +81,25 @@ data class RemoteRow<T>(
     val serverUpdatedAt: String
 )
 
+/**
+ * A hard delete: [table] is the cloud table name, [at] the delete time on the deleting device's
+ * clock (it beats any edit made before it). [serverUpdatedAt] is the tombstone's pull cursor.
+ */
+data class Deletion(val table: String, val id: String, val at: Long, val serverUpdatedAt: String = "")
+
+/** Which rows go with a deleted row, so every device removes the same set. */
+object DeleteCascade {
+    /** (child table, column pointing at the parent) for rows deleted along with a row of [table]. */
+    fun children(table: String): List<Pair<String, String>> = when (table) {
+        "orders" -> listOf("order_bills" to "order_id")
+        "bills" -> listOf("order_bills" to "bill_id", "advice_lines" to "bill_id")
+        "payment_advices" -> listOf("advice_lines" to "advice_id")
+        else -> emptyList()
+    }
+
+    val TABLES = setOf("buyers", "suppliers", "orders", "bills", "order_bills", "payment_advices", "advice_lines")
+}
+
 /** A local row waiting to be pushed, with the edit time it had when read. */
 data class PendingRow<T>(val id: String, val value: T, val deleted: Boolean, val updatedAt: Long)
 

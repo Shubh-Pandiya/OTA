@@ -116,26 +116,14 @@ class PaymentStore(private val db: Db, private val onChange: () -> Unit = {}) {
             // Re-upload the bill too: the cloud may have purged it since it was last sent.
             c.update("update bills set sync_pending = true where id = ?::uuid", billId)
         }
-        for (removed in live) {
-            c.update(
-                "update advice_lines set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true where id = ?::uuid",
-                System.currentTimeMillis(), SyncIds.adviceLine(id, removed)
-            )
-        }
+        val numbered = c.one("select advice_no <> '' from payment_advices where id = ?::uuid", id) { it.getBoolean(1) } ?: false
+        for (removed in live) Deletions.delete(c, "advice_lines", SyncIds.adviceLine(id, removed), queue = numbered)
     }
 
     fun delete(adviceId: String): Boolean {
         val deleted = db.tx { c ->
-            val now = System.currentTimeMillis()
-            val n = c.update(
-                "update payment_advices set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true where id = ?::uuid and not deleted",
-                now, adviceId
-            )
-            c.update(
-                "update advice_lines set deleted = true, client_updated_at = greatest(client_updated_at + 1, ?), sync_pending = true where advice_id = ?::uuid and not deleted",
-                now, adviceId
-            )
-            n > 0
+            val numbered = c.one("select advice_no <> '' from payment_advices where id = ?::uuid", adviceId) { it.getBoolean(1) } ?: return@tx false
+            Deletions.delete(c, "payment_advices", adviceId, queue = numbered)
         }
         if (deleted) onChange()
         return deleted

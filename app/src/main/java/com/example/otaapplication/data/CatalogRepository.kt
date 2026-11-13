@@ -85,15 +85,18 @@ class CatalogRepository(
 
     fun delete(type: PartyType, id: String) {
         val db = helper.writableDatabase
-        db.inTransaction {
-            val values = ContentValues().apply {
-                put("is_deleted", 1)
-                put("updated_at", nextEditTime(db, type, id))
-                put("sync_pending", 1)
-            }
-            db.update(type.table, values, "id = ?", arrayOf(id))
-        }
+        // Gone for good here; the cloud and other devices are told on the next sync.
+        db.inTransaction { LocalDeletions.delete(db, type.table, id, nextEditTime(db, type, id)) }
         onLocalChange?.invoke()
+    }
+
+    /** Buyers and suppliers deleted on other devices (cloud tombstones). Returns how many rows went here. */
+    fun applyDeletions(rows: List<Deletion>): Int {
+        if (rows.isEmpty()) return 0
+        val db = helper.writableDatabase
+        val removed = db.inTransaction { rows.count { LocalDeletions.applyRemote(db, it.table, it.id, it.at) } }
+        if (removed > 0) onLocalChange?.invoke()
+        return removed
     }
 
     // ------------------------------------------------------------------ cloud sync support
@@ -103,7 +106,7 @@ class CatalogRepository(
             .use { c -> if (c.moveToFirst()) c.getInt(0) else 0 }
     }
 
-    /** Rows with unpushed changes, including soft-deleted ones (their deletion must sync too). */
+    /** Rows with unpushed changes (deletes travel separately, see [LocalDeletions]). */
     fun pendingRows(type: PartyType, limit: Int): List<PendingParty> =
         helper.readableDatabase.rawQuery(
             "SELECT $COLUMNS, is_deleted, created_at, updated_at FROM ${type.table} WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
@@ -122,6 +125,9 @@ class CatalogRepository(
         val db = helper.writableDatabase
         return db.inTransaction {
             rows.count { remote ->
+                // An old app's deleted row is a delete; a copy older than a delete made here stays out.
+                if (remote.deleted) return@count LocalDeletions.applyRemote(db, type.table, remote.party.id, remote.clientUpdatedAt)
+                if (LocalDeletions.blocks(db, remote.party.id, remote.clientUpdatedAt)) return@count false
                 when (SyncMerge.onPulled(syncMeta(db, type, remote.party.id), remote)) {
                     SyncMerge.Decision.APPLY_REMOTE -> writeRemote(db, type, remote)
                     else -> false
@@ -142,7 +148,8 @@ class CatalogRepository(
                         db.update(type.table, ContentValues().apply { put("sync_pending", 0) }, "id = ? AND updated_at = ?", arrayOf(row.party.id, row.updatedAt.toString()))
                         false
                     }
-                    SyncMerge.Decision.APPLY_REMOTE -> writeRemote(db, type, remote)
+                    SyncMerge.Decision.APPLY_REMOTE ->
+                        if (remote.deleted) LocalDeletions.applyRemote(db, type.table, remote.party.id, remote.clientUpdatedAt) else writeRemote(db, type, remote)
                     else -> false
                 }
             }
@@ -161,18 +168,18 @@ class CatalogRepository(
             "SELECT $COLUMNS, is_deleted, updated_at, sync_pending FROM ${type.table} WHERE id = ?", arrayOf(id)
         ).use { c -> if (c.moveToFirst()) Triple(c.toParty(type) to (c.getInt(12) == 1), c.getLong(13), c.getInt(14) == 1) else null }
         val incoming = remote.party.copy(type = type)
-        if (current != null && current.first == (incoming to remote.deleted) && current.second == remote.clientUpdatedAt && !current.third) {
+        if (current != null && current.first == (incoming to false) && current.second == remote.clientUpdatedAt && !current.third) {
             return false
         }
         val values = partyValues(incoming).apply {
             put("id", id)
             put("created_at", remote.createdAt)
             put("updated_at", remote.clientUpdatedAt)
-            put("is_deleted", if (remote.deleted) 1 else 0)
+            put("is_deleted", 0)
             put("sync_pending", 0)
         }
         db.insertWithOnConflict(type.table, null, values, SQLiteDatabase.CONFLICT_REPLACE)
-        return current == null || current.first != (incoming to remote.deleted)
+        return current == null || current.first != (incoming to false)
     }
 
     /**

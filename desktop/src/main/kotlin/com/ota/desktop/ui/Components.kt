@@ -35,7 +35,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -541,6 +543,39 @@ fun ConfirmDialog(
         containerColor = Color.White
     )
 }
+
+/**
+ * The one confirmation every delete goes through: names what goes, says it can't be undone, and
+ * offers Cancel or a red Delete. Deletes are permanent everywhere (docs/desktop-sync-contract.md).
+ */
+@Composable
+fun ConfirmDeleteDialog(
+    what: String,
+    detail: String,
+    onDismiss: () -> Unit,
+    confirm: String = "Delete",
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Delete, null, tint = Brand.Red) },
+        title = { Text("Delete $what?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (detail.isNotBlank()) Text(detail)
+                Text("This can't be undone.", fontWeight = FontWeight.SemiBold, color = Brand.Red)
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, colors = ButtonDefaults.buttonColors(containerColor = Brand.Red, contentColor = Color.White)) { Text(confirm) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        containerColor = Color.White
+    )
+}
+
+/** Synced rows: gone from this laptop now, from the cloud and the phones after the next sync. */
+const val EVERYWHERE = "It's deleted from this laptop now, and from the cloud and the phones at the next sync."
 
 @Composable
 fun IconText(icon: ImageVector, text: String) {

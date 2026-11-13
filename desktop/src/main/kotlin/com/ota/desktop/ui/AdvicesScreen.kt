@@ -238,8 +238,8 @@ private fun AdviceDetail(id: String, onEdit: () -> Unit, onDeleted: () -> Unit) 
             Totals(t)
         }
     }
-    if (confirmDelete) ConfirmDialog(
-        "Delete advice ${AdviceNumber.display(a.adviceNo)}?", "Its payments come off the bills' balances. The number is never reused.", "Delete", danger = true,
+    if (confirmDelete) ConfirmDeleteDialog(
+        "advice ${AdviceNumber.display(a.adviceNo)}", "$EVERYWHERE Its payments come off the bills' balances. The number is never reused.",
         onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
@@ -632,7 +632,12 @@ private fun LineEditor(line: LineState, note: PartyNote?, onRemove: () -> Unit) 
                     "Settles ${moneyFull(settled)}" + (after?.let { " · after ${moneyFull(it)}" } ?: ""),
                     style = MaterialTheme.typography.labelLarge, color = if (after != null && after < -0.005) Brand.Red else Brand.SaffronDark
                 )
-                IconButton(onClick = onRemove) { Icon(Icons.Default.Close, "Remove bill ${bill.billNo}") }
+                var confirmRemove by remember { mutableStateOf(false) }
+                IconButton(onClick = { confirmRemove = true }) { Icon(Icons.Default.Close, "Remove bill ${bill.billNo}") }
+                if (confirmRemove) ConfirmDeleteDialog(
+                    "bill ${bill.billNo} from this advice", "The bill stays; its payment line on this advice is deleted when you save.",
+                    onDismiss = { confirmRemove = false }, confirm = "Remove"
+                ) { confirmRemove = false; onRemove() }
             }
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

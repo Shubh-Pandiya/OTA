@@ -20,7 +20,7 @@ class LocalOrders(val history: OrderHistoryStore, val index: OrderRepository) {
 
     fun get(uuid: String): OrderFormData? = history.find(uuid)?.let(OrderJson::parse)
 
-    /** Removes an order and its files on this phone; the deletion syncs as a tombstone. */
+    /** Removes an order and its files on this phone for good; the delete reaches the cloud on the next sync. */
     fun delete(uuid: String?, syncFilePath: String, pdfName: String?): Boolean {
         val ok = runCatching { history.locked { uuid?.let(history::remove); reindex() } }
             .onFailure { it.printStackTrace() }.isSuccess
@@ -46,14 +46,9 @@ class LocalOrders(val history: OrderHistoryStore, val index: OrderRepository) {
             }
             val remote = HashMap<String, Long>()
             val removed = HashSet<Int>()
-            var tombstones = 0
             for (row in rows) {
-                if (row.deleted && local[row.id] == null && row.id !in positions) {
-                    // Never seen here: remember it so its number is never handed out again.
-                    index.recordRemoteTombstone(row.id, row.value.offerNo, row.value.date, row.clientUpdatedAt)
-                    tombstones++
-                    continue
-                }
+                // Deleted here after this copy was made: the delete wins and goes up on the next sync.
+                if (!row.deleted && index.deletedHere(row.id, row.clientUpdatedAt)) continue
                 if (SyncMerge.onPulled(local[row.id], row.deleted, row.clientUpdatedAt) != SyncMerge.Decision.APPLY_REMOTE) continue
                 val pos = positions[row.id]
                 val existing = pos?.let { array.getJSONObject(it) }
@@ -79,11 +74,15 @@ class LocalOrders(val history: OrderHistoryStore, val index: OrderRepository) {
                 history.write(kept)
                 index.reconcile(HistoryIndex.parse(kept.toString()), remote)
             }
-            remote.size + tombstones
+            remote.size
         }
         staleFiles.forEach { (path, pdf) -> deleteFiles(path, pdf) }
         return changed
     }
+
+    /** Orders deleted on other devices (cloud tombstones). Returns how many were removed here. */
+    fun applyDeletions(rows: List<Deletion>): Int =
+        applyPulled(rows.map { RemoteRow(it.id, OrderFormData(date = "", offerNo = "", items = emptyList()), true, it.at, it.serverUpdatedAt) })
 
     /** Content of the orders waiting to be uploaded, read from the history file. */
     fun contentOf(uuids: Collection<String>): Map<String, OrderFormData> = history.locked {

@@ -19,7 +19,7 @@ class EmbeddedDbTest {
         val tables = db.read { c ->
             c.one("select count(*) from information_schema.tables where table_schema = 'public'") { it.getInt(1) }
         }
-        assertEquals(13, tables) // kv, schema_version, buyers, suppliers, the 5 order tables and the 4 acc_ tables
+        assertEquals(14, tables) // kv, schema_version, buyers, suppliers, the 5 order tables, pending_deletions and the 4 acc_ tables
         val kv = Kv(db)
         kv["a"] = "1"; kv["a"] = "2"
         assertEquals("2", kv["a"])

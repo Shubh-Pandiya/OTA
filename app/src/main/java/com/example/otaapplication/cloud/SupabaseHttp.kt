@@ -33,6 +33,9 @@ class CloudException(message: String, val status: Int = 0, val authFailed: Boole
      * the disk is full (53100) or the plan's database quota is exceeded (HTTP 402).
      */
     val storageFull: Boolean get() = status == 402 || code == "25006" || code == "53100"
+
+    /** The function or table isn't in the cloud yet (its migration hasn't been run). */
+    val missingInCloud: Boolean get() = code == "PGRST202" || code == "PGRST205" || code == "42P01" || code == "42883"
 }
 
 internal class HttpResponse(val status: Int, val body: String) {

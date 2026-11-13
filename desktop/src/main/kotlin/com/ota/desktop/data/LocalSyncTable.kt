@@ -31,8 +31,9 @@ import java.time.format.DateTimeFormatter
  * How one synced order table maps between the cloud row ([OrderTable]) and the local table.
  * The cloud rules (docs/desktop-sync-contract.md) are applied generically here:
  * - pulled rows win unless the local row has a newer unpushed edit (last write wins);
- * - a cloud tombstone keeps the local content and only marks the row deleted;
- * - rows pulled for the first time are stored even when deleted (numbers stay used, history stays complete);
+ * - deletes are hard: a row pulled with deleted = true (only an app from before hard deletes sends one)
+ *   removes the local row like a tombstone ([Deletions]) and is never stored;
+ * - a row this laptop deleted (still in pending_deletions) does not come back unless edited after the delete;
  * - server_updated_at is the cloud's updated_at as last seen; it is cleared on push, because the
  *   cloud gives the row a new updated_at that only the next pull reveals (archiving needs the exact value).
  */
@@ -61,17 +62,13 @@ class LocalSyncTable<T>(
         val mine = c.one("select client_updated_at, sync_pending, server_updated_at from $local where id = ?::uuid", r.id) {
             Triple(it.getLong(1), it.getBoolean(2), it.getString(3))
         }
+        if (r.deleted) return mine != null && Deletions.applyRemote(c, local, r.id, r.clientUpdatedAt)
         if (mine != null && !mine.second && mine.third == r.serverUpdatedAt) return false
-        val decision = SyncMerge.onPulled(mine?.let { LocalSyncMeta(it.first, it.second) }, r.deleted, r.clientUpdatedAt)
+        if (Deletions.blocks(c, r.id, r.clientUpdatedAt)) return false
+        val decision = SyncMerge.onPulled(mine?.let { LocalSyncMeta(it.first, it.second) }, false, r.clientUpdatedAt)
         if (decision == SyncMerge.Decision.KEEP_LOCAL) return false
-        if (r.deleted && mine != null) {
-            return c.update(
-                "update $local set deleted = true, client_updated_at = ?, server_updated_at = ?, sync_pending = false where id = ?::uuid",
-                r.clientUpdatedAt, r.serverUpdatedAt, r.id
-            ) > 0
-        }
         val cols = writeColumns + listOf("deleted", "client_updated_at", "server_updated_at", "sync_pending")
-        val values = bind(r.value) + listOf(r.deleted, r.clientUpdatedAt, r.serverUpdatedAt, false)
+        val values = bind(r.value) + listOf(false, r.clientUpdatedAt, r.serverUpdatedAt, false)
         val placeholders = cols.joinToString(", ") { "?" }
         val updates = cols.joinToString(", ") { "$it = excluded.$it" }
         return c.update(

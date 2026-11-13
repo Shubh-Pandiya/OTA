@@ -3,7 +3,6 @@ package com.ota.desktop
 import com.ota.desktop.accounts.AccountsExport
 import com.ota.desktop.accounts.PartyKind
 import com.ota.desktop.accounts.ReportKind
-import com.ota.desktop.accounts.VType
 import com.ota.desktop.ui.AccTab
 import java.time.LocalDate
 import androidx.compose.runtime.Composable
@@ -18,6 +17,12 @@ import com.ota.desktop.data.AdviceFilter
 import com.ota.desktop.db.Kv
 import com.ota.desktop.ui.AppShell
 import com.ota.desktop.ui.ClearTestDataDialog
+import com.ota.desktop.ui.ConfirmDeleteDialog
+import com.ota.desktop.ui.EVERYWHERE
+import com.example.otaapplication.OrderNumber
+import com.example.otaapplication.AdviceNumber
+import com.example.otaapplication.data.PartyType
+import com.ota.desktop.accounts.VType
 import com.ota.desktop.ui.LocalApp
 import com.ota.desktop.ui.Navigator
 import com.ota.desktop.ui.OtaTheme
@@ -127,6 +132,13 @@ fun main(args: Array<String>) {
     shot("23-accounts-parties-commission", acc(AccTab.PARTIES))
     shot("24-accounts-chart", acc(AccTab.CHART))
     shot("25-accounts-audit", acc(AccTab.AUDIT))
+    shot("45-confirm-delete-voucher") {
+        AppShell(app, acc(AccTab.VOUCHERS, voucherId = payment.id))
+        ConfirmDeleteDialog("voucher ${payment.no}", "The voucher and all its lines are deleted completely and stop counting in every ledger and report. " +
+            "The audit log keeps only one line: who deleted ${payment.no} and when.", {}) {}
+    }
+    app.accounts.deleteVoucher(payment.id)
+    shot("46-audit-after-voucher-delete", acc(AccTab.AUDIT))
     File(out, "exports").mkdirs()
     val reports = ReportKind.entries.map { k -> if (k.asOf) app.accountReports.report(k, null, LocalDate.now()) else app.accountReports.report(k, LocalDate.of(2026, 4, 1), LocalDate.of(2027, 3, 31)) }
     AccountsExport.xlsx(File(out, "exports/OTA accounts.xlsx"), reports)
@@ -171,6 +183,29 @@ fun main(args: Array<String>) {
     shot("32-test-user-sync", at(Section.SYNC), ctx = testApp, height = 1350)
     shot("33-test-user-clear-confirm", ctx = testApp) { AppShell(testApp, at(Section.SYNC)); ClearTestDataDialog({}) {} }
     shot("34-test-user-home", at(Section.HOME), ctx = testApp)
+    // Every delete asks first (hard deletes: nothing can be restored).
+    shot("40-confirm-delete-order") {
+        AppShell(app, at(Section.ORDERS, Target.Order(order.id)))
+        ConfirmDeleteDialog("order ${OrderNumber.display(order.orderNo)}",
+            "$EVERYWHERE Its bill links go with it; a bill that belongs only to this order and has no parties of its own is deleted too. Its number is never reused.", {}) {}
+    }
+    shot("41-confirm-delete-bill") {
+        AppShell(app, at(Section.BILLS, Target.Bill(handBill.id)))
+        ConfirmDeleteDialog("bill ${handBill.billNo}", EVERYWHERE, {}) {}
+    }
+    shot("42-confirm-delete-advice") {
+        AppShell(app, at(Section.ADVICES, Target.Advice(advice.id)))
+        ConfirmDeleteDialog("advice ${AdviceNumber.display(advice.adviceNo)}", "$EVERYWHERE Its payments come off the bills' balances. The number is never reused.", {}) {}
+    }
+    shot("43-confirm-remove-advice-line") {
+        AppShell(app, at(Section.ADVICES, Target.Advice(twoBillAdvice.id)))
+        ConfirmDeleteDialog("bill ${bill.billNo} from this advice", "The bill stays; its payment line on this advice is deleted when you save.", {}, confirm = "Remove") {}
+    }
+    val buyer = app.catalog.list(PartyType.BUYER).first()
+    shot("44-confirm-delete-buyer") {
+        AppShell(app, at(Section.CATALOG))
+        ConfirmDeleteDialog("buyer ${buyer.name}", "$EVERYWHERE Orders and bills that mention it are not changed.", {}) {}
+    }
     com.example.otaapplication.data.SyncIds.testMode = false
     app.close()
     exitProcess(0)
