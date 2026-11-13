@@ -57,7 +57,7 @@ same_data() {
 
 e2e_data() { ./gradlew e2eData "--args=$*" -PpgPlatform=darwin-arm64v8 --console=plain -q; }
 
-backups() { find "$data/backups" -name 'ota-backup-*.zip' 2>/dev/null | wc -l | tr -d ' '; }
+backups() { { find "$data/backups" -name 'ota-backup-*.zip' 2>/dev/null || true; } | wc -l | tr -d ' '; }
 
 rm -rf "$data"
 
@@ -114,7 +114,7 @@ grep -q '^update ok' "$report" || fail "The app did not report a successful upda
 [ ! -e "$app.old" ] && [ ! -e "$app.new" ] || fail "The update left a spare app bundle behind"
 same_data "$report" "In-app update"
 after_backups=$(backups)
-ls -la "$data/backups"
+ls -la "$data/backups" || true
 [ "$after_backups" -eq $((before_backups + 1)) ] || fail "Expected one new backup from the update, found $before_backups -> $after_backups"
 e2e_data duplicates
 
