@@ -24,7 +24,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 
@@ -83,7 +88,7 @@ fun UpdateDialog(
                             Text("Version ${s.release.version} is ready. You have $currentVersion.", fontWeight = FontWeight.SemiBold)
                             if (s.release.notes.isNotBlank()) {
                                 Text(
-                                    s.release.notes,
+                                    releaseNotesText(s.release.notes),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())
@@ -140,4 +145,47 @@ fun UpdateDialog(
             }
         }
     )
+}
+
+/**
+ * The release notes are Markdown written for GitHub; show them as plain text with the little
+ * formatting they use: **bold**, `code` and "- " bullets. Headings lose their #s, and the signing
+ * certificate line CI appends for the admin is left out.
+ */
+internal fun releaseNotesText(markdown: String): AnnotatedString = buildAnnotatedString {
+    val lines = markdown.replace("\r\n", "\n").lines()
+        .filterNot { it.trimStart().startsWith("Signing certificate SHA-256") }
+        .dropLastWhile { it.isBlank() }
+    lines.forEachIndexed { i, raw ->
+        val line = raw.trimEnd()
+        val heading = Regex("^#{1,6}\\s+").find(line)
+        val bullet = Regex("^\\s*[-*]\\s+").find(line)
+        when {
+            heading != null -> withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { inline(line.substring(heading.range.last + 1)) }
+            bullet != null -> { append("•  "); inline(line.substring(bullet.range.last + 1)) }
+            else -> inline(line)
+        }
+        if (i < lines.lastIndex) append('\n')
+    }
+}
+
+private fun AnnotatedString.Builder.inline(text: String) {
+    var i = 0
+    while (i < text.length) {
+        val bold = text.startsWith("**", i) && text.indexOf("**", i + 2) > i + 2
+        val code = text[i] == '`' && text.indexOf('`', i + 1) > i + 1
+        when {
+            bold -> {
+                val end = text.indexOf("**", i + 2)
+                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(text.substring(i + 2, end)) }
+                i = end + 2
+            }
+            code -> {
+                val end = text.indexOf('`', i + 1)
+                withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(text.substring(i + 1, end)) }
+                i = end + 1
+            }
+            else -> { append(text[i]); i++ }
+        }
+    }
 }

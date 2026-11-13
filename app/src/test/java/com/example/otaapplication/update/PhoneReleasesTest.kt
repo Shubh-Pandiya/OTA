@@ -67,4 +67,13 @@ class PhoneReleasesTest {
         assertNotNull(PhoneReleases.verify(f, 3, "0".repeat(64)))
         assertNotNull(PhoneReleases.verify(f, 3, null))
     }
+
+    @Test
+    fun releaseNotesShowWithoutMarkdownOrTheCertificateLine() {
+        val notes = releaseNotesText(
+            "## What's new\n- Offers **Update now** or **Later**.\n* Install `OTA-Business-1.1.0.apk` by hand.\n\n\nSigning certificate SHA-256: `23d8`\n"
+        )
+        assertEquals("What's new\n•  Offers Update now or Later.\n•  Install OTA-Business-1.1.0.apk by hand.", notes.text)
+        assertEquals(4, notes.spanStyles.size)
+    }
 }

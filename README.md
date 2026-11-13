@@ -69,9 +69,9 @@ matches a phone, compare the release's certificate SHA-256 with
 `keytool -list -v -keystore ~/.android/debug.keystore -storepass android` on that computer. If they
 differ, Android refuses the update and nothing on the phone changes.
 
-**Phones on the first version (1.0, no updater):** install the 1.1.0 APK from the
-[release](https://github.com/Shubh-Pandiya/OTA/releases?q=android-v) once by hand, over the existing
-app (do not uninstall). Later versions update themselves.
+**Phones on the first version (1.0, no updater):** install the APK of the
+[newest `android-v*` release](https://github.com/Shubh-Pandiya/OTA/releases?q=android-v) once by hand,
+over the existing app (do not uninstall). Later versions update themselves.
 
 ## Cloud (Supabase) setup
 
