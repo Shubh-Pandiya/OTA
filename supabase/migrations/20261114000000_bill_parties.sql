@@ -10,7 +10,7 @@
 --   2. Removes the test order made while checking the dashless format (26270001, already deleted
 --      in the apps) and restarts the FY 2026-27 counter from the highest number still used, so
 --      the first real order of the year is 26270001.
--- Safe to run more than once.
+-- Safe to run more than once; a re-run never moves the counter back.
 
 -- ---------------------------------------------------------------- 1. bill parties
 alter table public.bills
@@ -30,6 +30,8 @@ update public.order_counters c
                                  from public.orders o
                                 where o.order_no ~ '^2627[0-9]{4}$'), 0),
        updated_at = now()
- where c.fy = '2627';
+ where c.fy = '2627'
+   -- Only the first run could lower it; numbers are never reused (20261119000000).
+   and not exists (select 1 from pg_trigger where tgname = 'order_counters_forward_only');
 
 notify pgrst, 'reload schema';

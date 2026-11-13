@@ -310,11 +310,15 @@ class SyncEngine(
     private suspend fun syncOrders(notices: MutableList<String>) {
         pullAll()
         numberPendingOrders(notices)
-        pushNumbered(LocalSyncTable.ORDERS, notices) { row -> resolveDuplicate(row, row.value.offerNo, Numbers.Kind.ORDER, LocalSyncTable.ORDERS) }
+        pushNumbered(LocalSyncTable.ORDERS, notices) { row ->
+            resolveDuplicate(row, row.value.offerNo, Numbers.Kind.ORDER, LocalSyncTable.ORDERS) { OrderNumber.parseOrderDate(row.value.date) }
+        }
         push(LocalSyncTable.BILLS)
         push(LocalSyncTable.LINKS)
         numberPendingAdvices(notices)
-        pushNumbered(LocalSyncTable.ADVICES, notices) { row -> resolveDuplicate(row, row.value.adviceNo, Numbers.Kind.ADVICE, LocalSyncTable.ADVICES) }
+        pushNumbered(LocalSyncTable.ADVICES, notices) { row ->
+            resolveDuplicate(row, row.value.adviceNo, Numbers.Kind.ADVICE, LocalSyncTable.ADVICES) { row.value.payDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } }
+        }
         push(LocalSyncTable.ADVICE_LINES)
     }
 
@@ -457,7 +461,7 @@ class SyncEngine(
     }
 
     /** Same as the phone: on a duplicate number, rows go one by one and the clashing one is renumbered. */
-    private suspend fun <T> pushNumbered(t: LocalSyncTable<T>, notices: MutableList<String>, resolve: (PendingRow<T>) -> Pair<String?, Boolean>): Int {
+    private suspend fun <T> pushNumbered(t: LocalSyncTable<T>, notices: MutableList<String>, resolve: suspend (PendingRow<T>) -> Pair<String?, Boolean>): Int {
         var sent = 0
         var batches = 0
         var progress = true
@@ -480,7 +484,7 @@ class SyncEngine(
                         progress = true
                     } catch (e: CloudException) {
                         if (!e.duplicateKey) throw e
-                        val (notice, renumbered) = withContext(Dispatchers.IO) { resolve(row) }
+                        val (notice, renumbered) = resolve(row)
                         notice?.let(notices::add)
                         if (renumbered) progress = true
                     }
@@ -490,18 +494,42 @@ class SyncEngine(
         return sent
     }
 
-    private fun <T> resolveDuplicate(row: PendingRow<T>, old: String, kind: Numbers.Kind, t: LocalSyncTable<T>): Pair<String?, Boolean> {
+    /**
+     * The cloud already has another row with [old]'s number. A per-staff number is replaced locally;
+     * an FY number (26270001) gets a fresh one from the cloud counter, which never hands one out twice.
+     */
+    private suspend fun <T> resolveDuplicate(
+        row: PendingRow<T>, old: String, kind: Numbers.Kind, t: LocalSyncTable<T>, date: () -> LocalDate?
+    ): Pair<String?, Boolean> {
         if (row.deleted) {
             // Deleted before it ever reached the cloud; there is nothing to keep there.
-            t.markPushed(db, listOf(row))
+            withContext(Dispatchers.IO) { t.markPushed(db, listOf(row)) }
             return null to true
         }
         val isOrder = kind == Numbers.Kind.ORDER
         val label = if (isOrder) "Order" else "Payment advice"
-        val parsable = if (isOrder) OrderNumber.prefixOf(old) != null else AdviceNumber.prefixOf(old) != null
-        val replacement = if (parsable) numbers.replacementFor(kind, old) else null
-        val done = replacement != null && (if (isOrder) orders.renumber(row.id, replacement) else payments.renumber(row.id, replacement))
-        return if (done) "$label $old was also used on another device; this copy is now $replacement." to true
+        val replacement = if (OrderNumber.isFy(old)) {
+            val day = date() ?: LocalDate.now()
+            try {
+                if (isOrder) orderApi.allocateOrderNo(day) else orderApi.allocateAdviceNo(day)
+            } catch (e: CloudException) {
+                if (e.authFailed || e.storageFull) throw e
+                null
+            } catch (e: OrderLimitReached) {
+                null
+            } catch (e: AdviceLimitReached) {
+                null
+            }
+        } else {
+            val parsable = if (isOrder) OrderNumber.prefixOf(old) != null else AdviceNumber.prefixOf(old) != null
+            if (parsable) withContext(Dispatchers.IO) { numbers.replacementFor(kind, old) } else null
+        }
+        val done = replacement != null && withContext(Dispatchers.IO) {
+            if (isOrder) orders.renumber(row.id, replacement) else payments.renumber(row.id, replacement)
+        }
+        if (done && !isOrder) withContext(Dispatchers.IO) { payments.advice(row.id)?.let { a -> runCatching { onAdviceNumbered(a) } } }
+        val shown = { no: String -> if (isOrder) no else AdviceNumber.display(no) }
+        return if (done) "$label ${shown(old)} was also used on another device; this copy is now ${shown(replacement!!)}." to true
         else "$label $old could not be uploaded: the cloud already has another one with that number." to false
     }
 

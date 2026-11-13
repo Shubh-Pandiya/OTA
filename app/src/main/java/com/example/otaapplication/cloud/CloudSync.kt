@@ -90,6 +90,9 @@ class CloudSync private constructor(private val context: Context) {
             payments.assignNumber(adviceId, adviceNo).also { numbered ->
                 if (numbered) payments.advice(adviceId)?.let { runCatching { AdvicePdf.write(context, it) } }
             }
+        },
+        adviceRenumbered = { adviceId ->
+            payments.advice(adviceId)?.let { runCatching { AdvicePdf.write(context, it) } }
         }
     )
     private val deletions = DeletionSync(

@@ -453,7 +453,8 @@ begin
 
   -- Only on the run that removed them: put each production counter back to the highest real
   -- serial still in use (0 when none), so the first real order of 2026-27 is 26270001.
-  if gone > 0 then
+  -- Counters only move forward once 20261119000000 is in (numbers are never reused).
+  if gone > 0 and not exists (select 1 from pg_trigger where tgname = 'order_counters_forward_only') then
     update public.order_counters k
        set last_serial = coalesce((
              select max(right(o.order_no, 4)::integer) from public.orders o

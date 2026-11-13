@@ -40,7 +40,8 @@ data class OrderSyncResult(val pulledChanges: Int, val pushed: Int, val notices:
  * staff member made orders offline on two phones); null when the number can't be replaced.
  * [payments] adds payment advices and their lines; [renumberAdvice] does the same for advices.
  * [numberOrder] stores the number the cloud gave an order saved offline (and makes its PDF);
- * [numberAdvice] does the same for advices.
+ * [numberAdvice] does the same for advices; [adviceRenumbered] remakes an advice's PDF after a clash.
+ * A clashing FY number (26270001) always gets a fresh number from the cloud counter.
  */
 class OrderSync(
     private val orders: LocalOrders,
@@ -51,6 +52,7 @@ class OrderSync(
     private val renumberAdvice: (String) -> String? = { null },
     private val numberOrder: (uuid: String, offerNo: String) -> Boolean = orders::renumber,
     private val numberAdvice: (adviceId: String, adviceNo: String) -> Boolean = { id, no -> payments?.assignNumber(id, no) == true },
+    private val adviceRenumbered: (adviceId: String) -> Unit = {},
     private val pageSize: Int = 500,
     private val pushBatch: Int = 200
 ) {
@@ -221,9 +223,12 @@ class OrderSync(
                 return@withContext null to true
             }
             val old = row.value.adviceNo
-            val replacement = if (AdviceNumber.prefixOf(old) != null) renumberAdvice(old) else null
+            val replacement = if (AdviceNumber.isFy(old)) {
+                freshNumber { api.allocateAdviceNo(row.value.payDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: LocalDate.now()) }
+            } else if (AdviceNumber.prefixOf(old) != null) renumberAdvice(old) else null
             if (replacement != null && payments.renumber(row.id, replacement)) {
-                "Payment advice $old was also used on another phone; this copy is now $replacement." to true
+                runCatching { adviceRenumbered(row.id) }
+                "Payment advice ${AdviceNumber.display(old)} was also used on another device; this copy is now ${AdviceNumber.display(replacement)}." to true
             } else {
                 "Payment advice $old could not be uploaded: the cloud already has another advice with that number." to false
             }
@@ -246,6 +251,15 @@ class OrderSync(
             return@withContext null to true
         }
         val old = row.value.offerNo
+        if (OrderNumber.isFy(old)) {
+            val fresh = freshNumber { api.allocateOrderNo(OrderNumber.parseOrderDate(row.value.date) ?: LocalDate.now()) }
+            // Saved again under the new number, which also remakes its PDF.
+            return@withContext if (fresh != null && numberOrder(row.id, fresh)) {
+                "Order $old was also used on another device; this copy is now order $fresh." to true
+            } else {
+                "Order $old could not be uploaded: the cloud already has another order with that number." to false
+            }
+        }
         val replacement = if (OrderNumber.prefixOf(old) != null) renumber(old) else null
         if (replacement != null && orders.renumber(row.id, replacement)) {
             // The order stays pending and goes up with its new number in the next batch.
@@ -253,6 +267,18 @@ class OrderSync(
         } else {
             "Order $old could not be uploaded: the cloud already has another order with that number." to false
         }
+    }
+
+    /** A new number from the cloud counter, or null when it can't give one right now. */
+    private suspend fun freshNumber(allocate: suspend () -> String): String? = try {
+        allocate()
+    } catch (e: CloudException) {
+        if (e.authFailed || e.storageFull) throw e
+        null
+    } catch (e: OrderLimitReached) {
+        null
+    } catch (e: AdviceLimitReached) {
+        null
     }
 
     internal companion object {
