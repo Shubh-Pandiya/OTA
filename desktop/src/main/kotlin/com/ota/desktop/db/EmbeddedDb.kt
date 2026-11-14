@@ -107,6 +107,10 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
                 throw e
             } catch (_: OverlappingFileLockException) {
                 throw AlreadyRunning()
+            } catch (e: java.io.IOException) {
+                // zonky only says it gave up waiting; the reason is in the server's log.
+                val tail = runCatching { logFile.readLines().takeLast(25).joinToString("\n") }.getOrDefault("")
+                throw java.io.IOException("${e.message}\n--- end of ${logFile.name} ---\n$tail", e)
             }
             val db = EmbeddedDb(pg, pg.port, lock)
             removeOldBinaries(pg, binDir)
