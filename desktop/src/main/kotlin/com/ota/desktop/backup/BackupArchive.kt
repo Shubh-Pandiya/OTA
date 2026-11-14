@@ -241,6 +241,7 @@ object BackupArchive {
      */
     fun restore(zip: File, pgData: File, password: CharArray?): File? {
         val staging = File(pgData.parentFile, "${pgData.name}.restoring").apply { deleteRecursively(); mkdirs() }
+        LocalSettings.grantCurrentUser(staging)
         try {
             ZipFile(zip, password).use { z ->
                 val root = staging.canonicalPath + File.separator

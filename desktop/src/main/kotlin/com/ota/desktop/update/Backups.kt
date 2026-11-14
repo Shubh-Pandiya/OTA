@@ -89,7 +89,8 @@ object Backups {
      * `pgdata-before-restore-<time>`, never deleted. Returns that folder, or null if there was none.
      */
     fun restore(zip: File, pgData: File): File? {
-        val staging = File(pgData.parentFile, "${pgData.name}.restoring").apply { deleteRecursively() }
+        val staging = File(pgData.parentFile, "${pgData.name}.restoring").apply { deleteRecursively(); mkdirs() }
+        com.ota.desktop.backup.LocalSettings.grantCurrentUser(staging)
         ZipFile(zip).use { z ->
             for (e in z.entries()) {
                 val out = File(staging, e.name).canonicalFile

@@ -44,5 +44,24 @@ class LocalSettings(val file: File) {
         fun ownerOnly(f: File) {
             runCatching { Files.setPosixFilePermissions(f.toPath(), PosixFilePermissions.fromString(if (f.isDirectory) "rwx------" else "rw-------")) }
         }
+
+        /**
+         * Windows: gives the current user full control of [dir] and everything later created in it. PostgreSQL
+         * drops the Administrators group from its token, so files an administrator's process writes (owned by
+         * that group) can otherwise be read but not opened for writing by the server.
+         */
+        fun grantCurrentUser(dir: File) {
+            val view = Files.getFileAttributeView(dir.toPath(), java.nio.file.attribute.AclFileAttributeView::class.java) ?: return
+            runCatching {
+                val user = dir.toPath().fileSystem.userPrincipalLookupService.lookupPrincipalByName(System.getProperty("user.name"))
+                val entry = java.nio.file.attribute.AclEntry.newBuilder()
+                    .setType(java.nio.file.attribute.AclEntryType.ALLOW)
+                    .setPrincipal(user)
+                    .setPermissions(java.util.EnumSet.allOf(java.nio.file.attribute.AclEntryPermission::class.java))
+                    .setFlags(java.nio.file.attribute.AclEntryFlag.FILE_INHERIT, java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT)
+                    .build()
+                view.acl = listOf(entry) + view.acl
+            }
+        }
     }
 }
