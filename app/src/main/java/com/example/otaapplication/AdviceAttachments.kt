@@ -63,7 +63,9 @@ internal fun AdviceAttachments(
         importing = true
         scope.launch {
             val id = AdviceImageFiles.newId()
-            val ok = withContext(Dispatchers.IO) { runCatching { AdviceImageImport.compress(context, uri, store.staging(id)) }.getOrDefault(false) }
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { AdviceImageImport.compress(context, uri)?.let { store.writeFile(store.staging(id), it) } != null }.getOrDefault(false)
+            }
             importing = false
             if (ok) images += id else Toast.makeText(context, "Could not read that picture", Toast.LENGTH_SHORT).show()
         }
@@ -150,8 +152,9 @@ internal fun AdviceAttachments(
 @Composable
 private fun Thumbnail(file: File, label: String, onOpen: () -> Unit, onRemove: (() -> Unit)?) {
     val edgePx = with(LocalDensity.current) { 240.dp.roundToPx() }
+    val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(null, file) {
-        value = withContext(Dispatchers.IO) { runCatching { AdviceImageImport.thumbnail(file, edgePx) }.getOrNull() }
+        value = withContext(Dispatchers.IO) { runCatching { AdviceImageImport.thumbnail(AdviceImageFiles.forContext(context).readFile(file), edgePx) }.getOrNull() }
     }
     Box(Modifier.size(width = 92.dp, height = 120.dp)) {
         Surface(
@@ -187,8 +190,9 @@ private fun Thumbnail(file: File, label: String, onOpen: () -> Unit, onRemove: (
 @Composable
 private fun ImageViewer(file: File, onDismiss: () -> Unit) {
     val edgePx = with(LocalDensity.current) { 900.dp.roundToPx() }
+    val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(null, file) {
-        value = withContext(Dispatchers.IO) { runCatching { AdviceImageImport.thumbnail(file, edgePx) }.getOrNull() }
+        value = withContext(Dispatchers.IO) { runCatching { AdviceImageImport.thumbnail(AdviceImageFiles.forContext(context).readFile(file), edgePx) }.getOrNull() }
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(

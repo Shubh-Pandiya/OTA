@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,7 +71,7 @@ class CloudSync private constructor(private val context: Context) {
     private val auth = SupabaseAuth(config, SessionStore(prefs))
     private val cursors = PrefsSyncCursors(prefs)
     private val client = PostgrestClient(config, auth)
-    private val engine = CatalogSync(repository, PostgrestCatalogApi(client), cursors)
+    private val engine = CatalogSync(repository, PostgrestCatalogApi(client), cursors, serverTime = client::serverTime)
     private val orders = LocalOrders.get(context)
     private val payments = PaymentRepository.get(context)
     private val orderApi = PostgrestOrderApi(client)
@@ -204,7 +205,7 @@ class CloudSync private constructor(private val context: Context) {
             ORDER_TABLES.forEach { orderCursors.set(it, null) }
             orderCursors.set(DeletionSync.CURSOR, null)
             saveStaff(null)
-            prefs.edit { remove(KEY_LAST_SYNC).remove(KEY_USAGE).remove(KEY_STORAGE_FULL) }
+            prefs.edit { remove(KEY_LAST_SYNC).remove(KEY_USAGE).remove(KEY_USAGE_CHECKED).remove(KEY_STORAGE_FULL) }
             StorageAlert.update(context, null, full = false)
         }
         _status.update {
@@ -324,6 +325,9 @@ class CloudSync private constructor(private val context: Context) {
         return withTimeoutOrNull(ALLOCATE_TIMEOUT_MS) { orderApi.allocateAdviceNo(payDate) } ?: throw SocketTimeoutException("No answer from the cloud")
     }
 
+    /** Runs [block] while no sync round can start (e.g. copying the database files). */
+    suspend fun <T> whileSyncPaused(block: suspend () -> T): T = syncLock.withLock { block() }
+
     suspend fun syncNow(): SyncOutcome {
         if (!config.isConfigured || auth.session.value == null) return SyncOutcome.SKIPPED
         return syncLock.withLock {
@@ -342,17 +346,29 @@ class CloudSync private constructor(private val context: Context) {
                     fullError = e
                     null
                 }
-                val removed = part { deletions.syncAll() }?.removed.orEmpty()
+                val deleted = part { deletions.syncAll() }
+                val removed = deleted?.removed.orEmpty()
                 if (PartyType.entries.any { (removed[it.table] ?: 0) > 0 }) _catalogChanges.update { it + 1 }
                 if (removed.keys.any { it in ORDER_TABLES }) _orderChanges.update { it + 1 }
-                val result = part { engine.syncAll() }
-                if ((result?.pulledChanges ?: 0) > 0) _catalogChanges.update { it + 1 }
-                refreshStaff()
-                val orderResult = part { orderEngine.syncAll() }
+                val (result, orderResult) = coroutineScope {
+                    // Deletes are done: now every table's changes are read in parallel and applied in order.
+                    val ahead = PullAhead(this, client.serverTime())
+                    try {
+                        engine.readAhead(ahead)
+                        orderEngine.readAhead(ahead)
+                        val result = part { engine.syncAll(ahead) }
+                        if ((result?.pulledChanges ?: 0) > 0) _catalogChanges.update { it + 1 }
+                        refreshStaff()
+                        result to part { orderEngine.syncAll(ahead) }
+                    } finally {
+                        ahead.stop()
+                    }
+                }
                 if (orderResult != null && (orderResult.pulledChanges > 0 || orderResult.notices.isNotEmpty())) {
                     _orderChanges.update { it + 1 }
                 }
-                refreshUsage(full = fullError != null)
+                val wrote = (deleted?.pushed ?: 0) + (result?.pushed ?: 0) + (orderResult?.pushed ?: 0) > 0
+                refreshUsage(full = fullError != null, wrote = wrote)
                 fullError?.let { throw it }
                 val now = System.currentTimeMillis()
                 prefs.edit { putLong(KEY_LAST_SYNC, now) }
@@ -417,16 +433,27 @@ class CloudSync private constructor(private val context: Context) {
 
     fun dismissNotice() = _status.update { it.copy(notice = null) }
 
-    /** Reads storage use and retention (one small RPC per sync) and raises or clears the alert. */
-    private suspend fun refreshUsage(full: Boolean) {
-        val usage = try {
+    /**
+     * Reads storage use and retention and raises or clears the alert. The small RPC runs when this
+     * round uploaded something, the cloud is (nearly) full, or it hasn't run for [USAGE_RECHECK_MS];
+     * otherwise the last reading stands (only uploads grow the database).
+     */
+    private suspend fun refreshUsage(full: Boolean, wrote: Boolean) {
+        val cached = _status.value.usage
+        val due = wrote || full || cached == null || cached.warning || _status.value.storageFull ||
+            System.currentTimeMillis() - prefs.getLong(KEY_USAGE_CHECKED, 0) !in 0 until USAGE_RECHECK_MS
+        val fresh = if (!due) null else try {
             orderApi.usage()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             null
-        } ?: _status.value.usage
-        prefs.edit { if (usage != null) putString(KEY_USAGE, usage.toJson()) }
+        }
+        val usage = fresh ?: cached
+        prefs.edit {
+            if (usage != null) putString(KEY_USAGE, usage.toJson())
+            if (fresh != null) putLong(KEY_USAGE_CHECKED, System.currentTimeMillis())
+        }
         _status.update { it.copy(usage = usage) }
         setStorageFull(full)
         StorageAlert.update(context, usage, full)
@@ -476,18 +503,21 @@ class CloudSync private constructor(private val context: Context) {
         private const val KEY_STAFF_USER = "staff_user_id"
         private const val KEY_STAFF_CHECKED = "staff_checked_at"
         private const val KEY_USAGE = "cloud_usage"
+        private const val KEY_USAGE_CHECKED = "cloud_usage_checked_at"
         private const val KEY_STORAGE_FULL = "cloud_storage_full"
         /** "production" or "test": whose data this phone holds ([OtaAccounts.dataMode]). */
         private const val KEY_DATA_MODE = "data_mode"
         /** How often a known staff code is checked again (codes rarely change). */
         private const val ALLOCATE_TIMEOUT_MS = 10_000L
         private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L
+        /** How often storage use is read when this phone uploaded nothing. */
+        private const val USAGE_RECHECK_MS = 10 * 60 * 1000L
         private val ORDER_TABLES = listOf(
             OrderTable.ORDERS.name, OrderTable.BILLS.name, OrderTable.LINKS.name, OrderTable.ADVICES.name, OrderTable.ADVICE_LINES.name
         )
         /** A foreground sync is skipped if any sync started less than this long ago. */
         private const val FOREGROUND_MIN_GAP_MS = 5_000L
-        /** Pull interval while the app is on screen (two small requests when nothing changed). */
+        /** Pull interval while the app is on screen (one request per table, mostly in parallel, when nothing changed). */
         private const val FOREGROUND_POLL_MS = 30_000L
 
         @Volatile private var instance: CloudSync? = null

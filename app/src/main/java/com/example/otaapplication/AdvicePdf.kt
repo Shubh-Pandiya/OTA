@@ -64,11 +64,11 @@ object AdvicePdf {
     fun write(context: Context, advice: PaymentAdvice): File {
         val file = fileFor(advice).let { it.parentFile?.mkdirs(); PublicFiles.writable(it) }
         val store = AdviceImageFiles.forContext(context)
-        val images = advice.images.map { store.file(advice.id, it) }.filter { it.isFile }
+        val images = advice.images.mapNotNull { store.read(AdviceImageFiles.path(advice.id, it)) }
         val base = render(context, advice, if (images.isEmpty()) emptyList() else null)
         val bytes = if (images.isEmpty()) base else try {
             PdfAppend.appendJpegPages(base, images.mapIndexed { i, img ->
-                PdfAppend.Page(img.readBytes(), caption(advice, i, images.size))
+                PdfAppend.Page(img, caption(advice, i, images.size))
             })
         } catch (e: IllegalArgumentException) {
             // Unexpected PDF structure: draw the images instead (bigger file, same pages).
@@ -84,7 +84,7 @@ object AdvicePdf {
             (if (advice.reference.isNotBlank()) " ${advice.reference}" else "") + ")"
 
     /** The advice pages, plus [drawnImages] drawn as pages (null = none, appended later). */
-    private fun render(context: Context, advice: PaymentAdvice, drawnImages: List<File>?): ByteArray {
+    private fun render(context: Context, advice: PaymentAdvice, drawnImages: List<ByteArray>?): ByteArray {
         val doc = PdfDocument()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         var pageNo = 1
@@ -286,7 +286,7 @@ object AdvicePdf {
         }
     }
 
-    private fun drawImagePage(canvas: android.graphics.Canvas, image: File, caption: String) {
+    private fun drawImagePage(canvas: android.graphics.Canvas, image: ByteArray, caption: String) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f; color = Color.BLACK }
         canvas.drawText(caption, LEFT, 51f, paint)
         val bitmap = AdviceImageImport.thumbnail(image, AdviceImageImport.MAX_EDGE) ?: return

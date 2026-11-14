@@ -104,6 +104,14 @@ object Backups {
             staging.deleteRecursively()
             throw IOException("${zip.name} is not a database backup")
         }
+        return install(staging, pgData)
+    }
+
+    /**
+     * Moves an unpacked data folder [staging] in as [pgData] (PostgreSQL must be stopped), keeping the
+     * current folder aside as `pgdata-before-restore-<time>`. Returns that folder, or null.
+     */
+    fun install(staging: File, pgData: File): File? {
         // PostgreSQL refuses a data folder other users can read (only matters off Windows).
         runCatching { java.nio.file.Files.setPosixFilePermissions(staging.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
         val aside = if (pgData.exists()) File(pgData.parentFile, "${pgData.name}-before-restore-${LocalDateTime.now().format(stamp)}") else null

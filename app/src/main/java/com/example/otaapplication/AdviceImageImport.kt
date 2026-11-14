@@ -21,20 +21,20 @@ object AdviceImageImport {
     private const val TARGET_BYTES = 200 * 1024
     private val QUALITIES = intArrayOf(82, 74, 66, 58)
 
-    /** Writes the compressed image to [target]; false if the picture couldn't be read. */
-    fun compress(context: Context, source: Uri, target: File): Boolean {
+    /** The compressed JPEG of [source], or null if the picture couldn't be read. */
+    fun compress(context: Context, source: Uri): ByteArray? {
         val resolver = context.contentResolver
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        val input = resolver.openInputStream(source) ?: return false
+        val input = resolver.openInputStream(source) ?: return null
         input.use { BitmapFactory.decodeStream(it, null, bounds) }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         // Decode at the smallest power-of-two size still at least MAX_EDGE, then scale exactly.
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_EDGE) sample *= 2
         val decoded = resolver.openInputStream(source)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-        } ?: return false
+        } ?: return null
 
         val orientation = runCatching {
             resolver.openInputStream(source)?.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
@@ -69,11 +69,7 @@ object AdviceImageImport {
                 opaque.compress(Bitmap.CompressFormat.JPEG, quality, bytes)
                 if (bytes.size() <= TARGET_BYTES) break
             }
-            target.parentFile?.mkdirs()
-            val temp = File(target.parentFile, target.name + ".part")
-            temp.writeBytes(bytes.toByteArray())
-            if (!temp.renameTo(target)) { temp.delete(); return false }
-            return true
+            return bytes.toByteArray()
         } finally {
             opaque.recycle()
         }
@@ -88,11 +84,12 @@ object AdviceImageImport {
     }
 
     /** A thumbnail-sized decode for previews (never the full image). */
-    fun thumbnail(file: File, edgePx: Int): Bitmap? {
+    fun thumbnail(jpeg: ByteArray?, edgePx: Int): Bitmap? {
+        if (jpeg == null) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.path, bounds)
+        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
         if (bounds.outWidth <= 0) return null
         val sample = max(1, (max(bounds.outWidth, bounds.outHeight) / edgePx.toFloat()).roundToInt().takeHighestOneBit())
-        return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+        return BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, BitmapFactory.Options().apply { inSampleSize = sample })
     }
 }

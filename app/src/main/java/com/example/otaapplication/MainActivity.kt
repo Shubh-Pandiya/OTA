@@ -68,6 +68,14 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
+import com.example.otaapplication.security.AppLock
+import com.example.otaapplication.migration.AppMove
+import com.example.otaapplication.migration.MoveDialog
+import com.example.otaapplication.migration.MovePrompt
+import com.example.otaapplication.migration.MoveSection
+import com.example.otaapplication.migration.MovedScreen
+import com.example.otaapplication.security.LockScreen
+import com.example.otaapplication.security.SecuritySection
 import com.example.otaapplication.cloud.OrderLimitReached
 import com.example.otaapplication.data.BillQuery
 import com.example.otaapplication.data.CatalogRepository
@@ -176,6 +184,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startMove() {
+        lifecycleScope.launch { move.start(cloud) }
+    }
+
     private fun startUpdate(release: com.example.otaapplication.update.PhoneRelease) {
         lifecycleScope.launch { updater.update(release, ::syncBeforeUpdate) }
     }
@@ -210,14 +222,25 @@ class MainActivity : ComponentActivity() {
         takeHomeRequest(intent)
     }
 
+    private val appLock by lazy { AppLock.get(this) }
+
+    private val move by lazy { AppMove.get(this) }
+    private val movedOut get() = BuildConfig.IS_BRIDGE && move.moved.value
+
     override fun onStart() {
         super.onStart()
+        if (movedOut) return
+        appLock.onForeground()
+        // Keep the Recents thumbnail blank while the app lock is on.
+        setRecentsScreenshotEnabled(!appLock.enabled)
         // Catalog sync whenever the app becomes visible, then a light poll while it stays visible.
         cloud.onAppForeground()
     }
 
     override fun onStop() {
         super.onStop()
+        if (movedOut) return
+        if (!isChangingConfigurations) appLock.onBackground()
         cloud.onAppBackground()
     }
 
@@ -229,11 +252,18 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
+        if (movedOut) {
+            // The old app after the move: nothing but the way to the new app.
+            setContent { OTAApplicationTheme { MovedScreen(move) } }
+            return
+        }
         // Index existing orders (including ones saved before search existed) in the background.
         lifecycleScope.launch(Dispatchers.IO) { syncOrderIndex(); shrinkOldOrderPdfs() }
         // Alarms are cleared when the app is force-stopped; setting them again on launch is cheap.
         lifecycleScope.launch(Dispatchers.IO) { Reminders.rescheduleAll(this@MainActivity) }
         lifecycleScope.launch(Dispatchers.IO) { runCatching { updater.cleanUp() } }
+        // Pictures saved by versions before 1.2 were plain JPEGs; encrypt them once.
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { com.example.otaapplication.data.AdviceImageFiles.forContext(this@MainActivity).sealExisting() } }
         // New phone releases on GitHub: looked for when the app comes to the front, then every few hours.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -246,6 +276,11 @@ class MainActivity : ComponentActivity() {
         takeHomeRequest(intent)
         setContent {
             OTAApplicationTheme {
+                if (BuildConfig.IS_BRIDGE && move.moved.collectAsState().value) {
+                    LaunchedEffect(Unit) { cloud.onAppBackground() }
+                    MovedScreen(move)
+                    return@OTAApplicationTheme
+                }
                 val authStatus by cloud.status.collectAsState()
                 // Staff must sign in before anything else is shown. Once signed in the app opens offline
                 // too; only signing out or the server rejecting the session brings this screen back.
@@ -256,8 +291,22 @@ class MainActivity : ComponentActivity() {
                 ) { signedIn ->
                     if (signedIn) SignedInApp() else SignInScreen(cloud = cloud, status = authStatus)
                 }
+                val locked by appLock.locked.collectAsState()
+                val showLock = locked && authStatus.configured && authStatus.signedIn
+                AnimatedVisibility(visible = showLock, enter = fadeIn(tween(150)), exit = fadeOut(tween(220))) {
+                    LockScreen(lock = appLock, email = authStatus.email, verifyPassword = { password ->
+                        val email = authStatus.email
+                        if (email == null) "Not signed in" else runCatching { cloud.signIn(email, password) }
+                            .exceptionOrNull()?.let { it.message ?: "Could not check the password. Check the internet." }
+                    })
+                }
+                if (BuildConfig.IS_BRIDGE && !showLock) {
+                    var asked by rememberSaveable { mutableStateOf(false) }
+                    if (!asked && authStatus.signedIn) MovePrompt(onMove = { asked = true; startMove() }, onLater = { asked = true })
+                    MoveDialog(move, onAllowInstalls = { runCatching { startActivity(move.permissionIntent()) } })
+                }
                 val updateState by updater.state.collectAsState()
-                UpdateDialog(
+                if (!showLock) UpdateDialog(
                     state = updateState,
                     currentVersion = updater.currentName,
                     onUpdate = ::startUpdate,
@@ -479,7 +528,9 @@ class MainActivity : ComponentActivity() {
                             SyncControlScreen(
                                 totalOrders = totalOrders, cloud = cloud,
                                 appVersion = updater.currentName,
-                                onCheckUpdates = { scope.launch { updater.check(manual = true) } }
+                                onCheckUpdates = { scope.launch { updater.check(manual = true) } },
+                                lock = appLock,
+                                onMove = if (BuildConfig.IS_BRIDGE) ::startMove else null
                             )
                         }
                     }
@@ -705,7 +756,7 @@ private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigat
 }
 
 @Composable
-fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null, appVersion: String? = null, onCheckUpdates: (() -> Unit)? = null) {
+fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null, appVersion: String? = null, onCheckUpdates: (() -> Unit)? = null, lock: AppLock? = null, onMove: (() -> Unit)? = null) {
     val context = LocalContext.current
     val sharedPrefs = remember { context.getSharedPreferences("OTA_Prefs", Context.MODE_PRIVATE) }
     var deviceId by remember { mutableStateOf(sharedPrefs.getString("device_id", "") ?: "") }
@@ -761,6 +812,10 @@ fun SyncControlScreen(totalOrders: Int?, cloud: CloudSync? = null, appVersion: S
                 imeAction = androidx.compose.ui.text.input.ImeAction.Done
             )
         }
+
+        if (onMove != null) MoveSection(onMove)
+
+        if (lock != null) SecuritySection(lock)
 
         if (onCheckUpdates != null) {
             FormSection(title = "App updates", icon = Icons.Default.Refresh) {

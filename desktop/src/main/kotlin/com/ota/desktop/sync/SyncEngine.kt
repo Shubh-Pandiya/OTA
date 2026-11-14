@@ -6,18 +6,19 @@ import com.example.otaapplication.cloud.AdviceLimitReached
 import com.example.otaapplication.cloud.CatalogCloudApi
 import com.example.otaapplication.cloud.CloudException
 import com.example.otaapplication.cloud.CloudUsage
+import com.example.otaapplication.cloud.DeltaPull
 import com.example.otaapplication.cloud.OrderCloudApi
 import com.example.otaapplication.cloud.OrderLimitReached
 import com.example.otaapplication.cloud.PostgrestCatalogApi
 import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.PostgrestOrderApi
+import com.example.otaapplication.cloud.PullAhead
 import com.example.otaapplication.cloud.SupabaseAuth
 import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentAdvice
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.SyncIds
-import com.example.otaapplication.data.SyncTime
 import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.Deletions
 import com.ota.desktop.data.LocalSyncTable
@@ -29,6 +30,7 @@ import com.ota.desktop.db.Kv
 import com.ota.desktop.db.one
 import com.ota.desktop.db.update
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,7 +75,7 @@ class SyncEngine(
     private val numbers: Numbers,
     private val orderApi: OrderCloudApi = PostgrestOrderApi(client),
     private val catalogApi: CatalogCloudApi = PostgrestCatalogApi(client),
-    private val pageSize: Int = 500,
+    private val pageSize: Int = DeltaPull.PAGE_SIZE,
     private val pushBatch: Int = 200,
     private val clock: () -> Long = System::currentTimeMillis,
     /** Called once an offline advice gets its number (the app writes its PDF then). */
@@ -87,6 +89,8 @@ class SyncEngine(
         )
     )
     val status: StateFlow<SyncStatus> = _status.asStateFlow()
+    /** Pages being read ahead during a round's pulls (after its deletes); null otherwise. */
+    @Volatile private var ahead: PullAhead? = null
 
     fun cachedStaff(): StaffProfile? {
         val code = kv.int(KEY_STAFF_CODE) ?: return null
@@ -158,12 +162,23 @@ class SyncEngine(
                 kv[KEY_STAFF_CODE] = profile.code.toString()
                 kv[KEY_STAFF_NAME] = profile.name
                 kv[KEY_STAFF_ADMIN] = profile.admin.toString()
+                kv[KEY_STAFF_USER] = userId
+                kv[KEY_STAFF_CHECKED] = clock().toString()
             }
         }
         return profile
     }
 
-    fun clearStaff() = kv.remove(KEY_STAFF_CODE, KEY_STAFF_NAME, KEY_STAFF_ADMIN)
+    /** The staff row for a sync round: the cached one when it is this user's and was read within [STAFF_RECHECK_MS]. */
+    private suspend fun staffForRound(): StaffProfile? {
+        val userId = auth.session.value?.userId
+        val fresh = withContext(Dispatchers.IO) {
+            kv[KEY_STAFF_USER] == userId && clock() - (kv.long(KEY_STAFF_CHECKED) ?: 0) in 0 until STAFF_RECHECK_MS
+        }
+        return cachedStaff()?.takeIf { fresh } ?: refreshStaff()
+    }
+
+    fun clearStaff() = kv.remove(KEY_STAFF_CODE, KEY_STAFF_NAME, KEY_STAFF_ADMIN, KEY_STAFF_USER, KEY_STAFF_CHECKED)
 
     fun refreshPending() {
         _status.update { it.copy(pending = pendingCount()) }
@@ -181,16 +196,34 @@ class SyncEngine(
         val notices = ArrayList<String>()
         var full = false
         var error: String? = null
+        // Only uploads grow the cloud database, so storage use is read again when there are any.
+        val hadPending = withContext(Dispatchers.IO) { pendingCount() } > 0
         try {
-            val staff = try {
-                refreshStaff()
+            try {
+                staffForRound()
             } catch (e: CloudException) {
                 if (e.authFailed) throw e
                 cachedStaff()
             }
             syncDeletions()
-            syncCatalog()
-            syncOrders(notices)
+            coroutineScope {
+                // Deletes are done: now every table's changes are read in parallel and applied in order.
+                val pulls = PullAhead(this, client.serverTime())
+                ahead = pulls
+                try {
+                    withContext(Dispatchers.IO) {
+                        for (type in PartyType.entries) {
+                            pulls.start("cursor.${type.table}", kv["cursor.${type.table}"], pageSize, { after, afterId -> catalogApi.pull(type, after, afterId, pageSize) }, { it.serverUpdatedAt }, { it.party.id })
+                        }
+                        for (t in LocalSyncTable.ALL) readAhead(pulls, t)
+                    }
+                    syncCatalog()
+                    syncOrders(notices)
+                } finally {
+                    ahead = null
+                    pulls.stop()
+                }
+            }
             if (maintenance && isAdmin()) maintain()
         } catch (e: CloudException) {
             full = e.storageFull
@@ -204,15 +237,18 @@ class SyncEngine(
         } catch (e: Exception) {
             error = e.message ?: e.javaClass.simpleName
         }
-        val usage = if (auth.session.value != null) runCatching { orderApi.usage() }.getOrNull() else null
         val now = clock()
+        val cached = _status.value.usage
+        val due = hadPending || maintenance || error != null || cached == null || cached.warning || _status.value.storageFull ||
+            now - (withContext(Dispatchers.IO) { kv.long(KEY_USAGE_CHECKED) } ?: 0) !in 0 until USAGE_RECHECK_MS
+        val usage = if (auth.session.value != null && due) runCatching { orderApi.usage() }.getOrNull() else null
         withContext(Dispatchers.IO) {
-            usage?.let { kv[KEY_USAGE] = it.toJson() }
+            usage?.let { kv[KEY_USAGE] = it.toJson(); kv[KEY_USAGE_CHECKED] = now.toString() }
             if (error == null) kv[KEY_LAST_SYNC] = now.toString()
         }
         _status.update {
             it.copy(
-                running = false, error = error, storageFull = full || (usage != null && usage.percent >= 100.0),
+                running = false, error = error, storageFull = full || ((usage ?: it.usage)?.let { u -> u.percent >= 100.0 } ?: false),
                 usage = usage ?: it.usage, lastSyncAt = if (error == null) now else it.lastSyncAt,
                 notices = (notices + it.notices).take(20), pending = pendingCount(),
                 lastMaintenanceAt = kv.long(KEY_LAST_MAINTENANCE), lastPurge = kv[KEY_LAST_PURGE]
@@ -388,6 +424,10 @@ class SyncEngine(
             t.applyPulled(db, page)
         }
 
+    private fun <T> readAhead(pulls: PullAhead, t: LocalSyncTable<T>) =
+        pulls.start("cursor.${t.cloud.name}", kv["cursor.${t.cloud.name}"], pageSize, { after, afterId -> orderApi.pull(t.cloud, after, afterId, pageSize) }, { it.serverUpdatedAt }, { it.id })
+
+    /** A delta pull of one table (see [DeltaPull]); its cursor is saved after each page is committed. */
     private suspend fun <R> pullPages(
         cursorKey: String,
         fetch: suspend (String?, String?) -> List<R>,
@@ -395,23 +435,17 @@ class SyncEngine(
         id: (R) -> String,
         apply: (List<R>) -> Int
     ): Int {
-        val saved = withContext(Dispatchers.IO) { kv[cursorKey] }
-        var after = saved?.let { SyncTime.minusSeconds(it, OVERLAP_SECONDS) }
-        var afterId: String? = null
-        var newest = saved
-        var changed = 0
-        var pages = 0
-        while (pages++ < MAX_PAGES) {
-            val page = fetch(after, afterId)
-            changed += withContext(Dispatchers.IO) { apply(page) }
-            newest = page.fold(newest) { acc, row -> SyncTime.later(acc, updatedAt(row)) }
-            if (page.size < pageSize) break
-            after = updatedAt(page.last())
-            afterId = id(page.last())
-        }
-        // Saved only after the rows were committed, so a failed round reads them again next time.
-        if (newest != saved) withContext(Dispatchers.IO) { kv[cursorKey] = newest }
-        return changed
+        val pulls = ahead
+        return DeltaPull.run(
+            saved = withContext(Dispatchers.IO) { kv[cursorKey] },
+            serverStart = pulls?.serverStart ?: client.serverTime(),
+            pageSize = pageSize,
+            fetch = { after, afterId -> pulls?.fetch(cursorKey, after, afterId, fetch) ?: fetch(after, afterId) },
+            updatedAt = updatedAt,
+            id = id,
+            apply = { page -> withContext(Dispatchers.IO) { apply(page) } },
+            save = { cursor -> withContext(Dispatchers.IO) { kv[cursorKey] = cursor } }
+        )
     }
 
     private suspend fun <T> push(t: LocalSyncTable<T>): Int {
@@ -536,7 +570,6 @@ class SyncEngine(
     }
 
     companion object {
-        private const val OVERLAP_SECONDS = 60L
         private const val DELETIONS_CURSOR = "cursor.ota_deletions"
         private const val MAX_PAGES = 100
         private const val ARCHIVE_BATCH = 500
@@ -545,6 +578,13 @@ class SyncEngine(
         private const val KEY_STAFF_CODE = "staff.code"
         private const val KEY_STAFF_NAME = "staff.name"
         private const val KEY_STAFF_ADMIN = "staff.admin"
+        private const val KEY_STAFF_USER = "staff.user"
+        private const val KEY_STAFF_CHECKED = "staff.checked"
+        /** How often a sync round reads the staff row again (it rarely changes; sign-in always reads it). */
+        private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L
+        /** How often storage use is read when nothing was uploaded. */
+        private const val USAGE_RECHECK_MS = 10 * 60 * 1000L
+        private const val KEY_USAGE_CHECKED = "cloud.usage.checked"
         private const val KEY_LAST_SYNC = "sync.last"
         private const val KEY_LAST_MAINTENANCE = "maintenance.last"
         private const val KEY_LAST_PURGE = "maintenance.summary"

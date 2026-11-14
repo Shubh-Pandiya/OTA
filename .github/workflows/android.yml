@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
     paths: ["app/**", "gradle/**", "build.gradle.kts", "settings.gradle.kts", "gradle.properties", "supabase.properties", ".github/workflows/android.yml"]
-    tags: ["android-v*"]
+    # android-v…: the last build of the old app (com.example.otaapplication, old key) that moves
+    # phones to the new app. phone-v…: the new app (com.ota.business, OTA release key).
+    tags: ["android-v*", "phone-v*"]
   pull_request:
     paths: ["app/**", "gradle/**", "build.gradle.kts", "settings.gradle.kts", "gradle.properties", ".github/workflows/android.yml"]
   workflow_dispatch:
@@ -58,33 +60,51 @@ jobs:
         id: version
         run: |
           version=$(sed -n 's/^otaAndroidVersion=//p' gradle.properties | tr -d '[:space:]')
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/android-v* && "${GITHUB_REF_NAME#android-v}" != "$version" ]]; then
+          flags=""; cert=860a577393efcfa6a48dbb305b2f4531688a32a29de337244beae72f8f55c3f0
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            # The bridge release keeps the old app's version line, so it comes from the tag.
+            version="${GITHUB_REF_NAME#android-v}"
+            flags="-PotaAndroidVersion=$version -PotaLegacyBridge=true"
+            cert=23d8484a257a568371341c78d8b75707dfdb57533e73f69c7f48257e6ef890fc
+          elif [[ "$GITHUB_REF" == refs/tags/phone-v* && "${GITHUB_REF_NAME#phone-v}" != "$version" ]]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match otaAndroidVersion=$version in gradle.properties"
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "cert=$cert" >> "$GITHUB_OUTPUT"
 
-      # Releases must be signed with the key of the app already on the phones (see README, "Phone
-      # updates"), or Android refuses to install them over it. Builds that aren't releases use the
-      # runner's throwaway debug key.
+      # Releases must be signed with the key of the app already on the phones (README, "Phone
+      # updates"), or Android refuses to install them over it: the old key for android-v…, the OTA
+      # release key for phone-v…. Builds that aren't releases use the runner's throwaway debug key.
       - name: Release signing key
-        if: startsWith(github.ref, 'refs/tags/android-v')
+        if: startsWith(github.ref, 'refs/tags/')
         env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          OLD_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          NEW_KEYSTORE_B64: ${{ secrets.OTA_RELEASE_KEYSTORE_BASE64 }}
+          NEW_PASSWORD: ${{ secrets.OTA_RELEASE_KEYSTORE_PASSWORD }}
+          NEW_KEY_PASSWORD: ${{ secrets.OTA_RELEASE_KEY_PASSWORD }}
+          NEW_KEY_ALIAS: ${{ secrets.OTA_RELEASE_KEY_ALIAS }}
         run: |
-          if [ -z "$KEYSTORE_B64" ]; then
-            echo "::error::Add the ANDROID_KEYSTORE_BASE64 repository secret (README, Phone updates) before releasing."
+          if [[ "$GITHUB_REF" == refs/tags/phone-v* ]]; then
+            b64="$NEW_KEYSTORE_B64"; secret=OTA_RELEASE_KEYSTORE_BASE64
+            {
+              echo "ANDROID_KEYSTORE_PASSWORD=$NEW_PASSWORD"
+              echo "ANDROID_KEY_PASSWORD=${NEW_KEY_PASSWORD:-$NEW_PASSWORD}"
+              echo "ANDROID_KEY_ALIAS=${NEW_KEY_ALIAS:-ota-release}"
+            } >> "$GITHUB_ENV"
+          else
+            b64="$OLD_KEYSTORE_B64"; secret=ANDROID_KEYSTORE_BASE64
+          fi
+          if [ -z "$b64" ]; then
+            echo "::error::Add the $secret repository secret (README, Phone updates) before releasing."
             exit 1
           fi
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          printf '%s' "$b64" | base64 -d > "$RUNNER_TEMP/release.keystore"
           echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
       - name: Test and build
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --console=plain
+        run: ./gradlew ${{ steps.version.outputs.flags }} :app:testDebugUnitTest :app:assembleRelease --console=plain
 
       - name: Collect APK
         run: |
@@ -93,6 +113,10 @@ jobs:
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk "out/OTA-Business-$version.apk"
           "$apksigner" verify --print-certs "out/OTA-Business-$version.apk" | tee out/signer.txt
+          if [[ "$GITHUB_REF" == refs/tags/* ]] && ! grep -qi "certificate SHA-256 digest: ${{ steps.version.outputs.cert }}" out/signer.txt; then
+            echo "::error::The APK is not signed with the expected key (${{ steps.version.outputs.cert }})."
+            exit 1
+          fi
           ls -la out
           rm -f "$RUNNER_TEMP/release.keystore"
 
@@ -111,7 +135,7 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/android-v')
+    if: startsWith(github.ref, 'refs/tags/android-v') || startsWith(github.ref, 'refs/tags/phone-v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -126,13 +150,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="$GITHUB_REF_NAME"
-          version="${tag#android-v}"
+          version="${tag#*-v}"
           mkdir -p out
           cp "dist/OTA-Business-$version.apk" out/
           (cd out && sha256sum OTA-Business-*.apk > SHA256SUMS.txt)
           cat out/SHA256SUMS.txt
           cert=$(sed -n 's/.*certificate SHA-256 digest: //p' dist/signer.txt | head -n 1)
           notes=$(mktemp)
+          if [[ "$tag" == phone-v* ]]; then title="OTA Business phone app $version"; else title="OTA Business Android $version (move to the new app)"; fi
           if [ -f "app/release-notes/$version.md" ]; then cat "app/release-notes/$version.md" > "$notes"; else echo "OTA Business phone app $version." > "$notes"; fi
           printf '\n\n%s\n' "Signing certificate SHA-256: \`$cert\`" >> "$notes"
           files=(out/*)
@@ -140,5 +165,5 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" "${files[@]}" --title "OTA Business Android $version" --notes-file "$notes" --target "$GITHUB_SHA" --latest=false
+            gh release create "$tag" "${files[@]}" --title "$title" --notes-file "$notes" --target "$GITHUB_SHA" --latest=false
           fi

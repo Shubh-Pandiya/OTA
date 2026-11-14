@@ -1,6 +1,6 @@
 package com.example.otaapplication.data
 
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 
 /**
  * Hard deletes on this phone (docs/desktop-sync-contract.md, "Deleting"). A delete removes the row

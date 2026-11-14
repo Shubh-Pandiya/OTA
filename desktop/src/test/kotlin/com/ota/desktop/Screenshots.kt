@@ -9,6 +9,7 @@ import com.ota.desktop.ui.ExportPreset
 import com.ota.desktop.accounts.PartyKind
 import com.ota.desktop.accounts.ReportKind
 import com.ota.desktop.ui.AccTab
+import com.ota.desktop.ui.LockScreen
 import java.time.LocalDate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -69,7 +70,17 @@ fun main(args: Array<String>) {
         this["weather.city"] = surat.toJson().toString()
         this["weather.now"] = WeatherNow(surat.name, 31.4, 1, true, 34.0, 22.0, surat.latitude, surat.longitude, System.currentTimeMillis() - 12 * 60_000).toJson().toString()
     }
-    val app = AppContext(TestDb.server, db)
+    // This laptop's backup and lock settings for the shots (never the real data folder's).
+    val shotHome = File(out.absoluteFile.parentFile, "screenshot-home").apply { deleteRecursively(); mkdirs() }
+    val backupDir = File(shotHome, "Google Drive/My Drive/OTA Backups").apply { mkdirs() }
+    com.ota.desktop.backup.LocalSettings.at(shotHome).update(
+        "backup.folder" to backupDir.absolutePath,
+        "backup.password" to "K7QM-3XPA-W9RT-HB4E-2NVD",
+        "backup.last.at" to System.currentTimeMillis().minus(2 * 3_600_000).toString(),
+        "backup.last.file" to File(backupDir, "OTA-Business-backup_2025-07-14_101502_OFFICE-PC_daily.zip").absolutePath
+    )
+    val app = AppContext(TestDb.server, db, shotHome)
+    app.lock.setPin("2580")
 
     val bill = demo.payments.bills(BillFilter()).first { it.buyer != null }.bill
     val advice = demo.payments.search(AdviceFilter()).first()
@@ -179,10 +190,16 @@ fun main(args: Array<String>) {
     shot("11b-updating") { UpdatingScreen(app.updates.state.value) {} }
     app.updates.preview(UpdateState.Idle)
     shot("11c-sync-updates-panel", at(Section.SYNC), height = 1350)
+    shot("12-sync-backups-security", at(Section.SYNC), height = 1750)
+    shot("13-lock-screen", height = 900) { LockScreen(app.lock, "shubham@ota.com") {} }
+    val paused = com.ota.desktop.security.PinLock(com.ota.desktop.backup.LocalSettings.at(File(shotHome, "paused")).apply {
+        update("lock.pin" to com.ota.desktop.security.PinHash.hash("2580"), "lock.wait.until" to (System.currentTimeMillis() + 4 * 60_000 + 30_000).toString())
+    })
+    shot("13b-lock-screen-paused", height = 900) { LockScreen(paused, "shubham@ota.com") {} }
 
     // A staff laptop (not an admin): no Accounts, no clean-up or retention controls.
     Kv(db)["auth.session"] = session("staff@ota.com")
-    val staffApp = AppContext(TestDb.server, db)
+    val staffApp = AppContext(TestDb.server, db, shotHome)
     shot("30-non-admin-home", at(Section.HOME), ctx = staffApp)
     shot("31-non-admin-sync", at(Section.SYNC), ctx = staffApp, height = 1350)
 
@@ -197,7 +214,7 @@ fun main(args: Array<String>) {
         this["sync.last"] = System.currentTimeMillis().minus(2 * 60_000).toString()
         this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 30, 12.2).toJson()
     }
-    val testApp = AppContext(TestDb.server, testDb)
+    val testApp = AppContext(TestDb.server, testDb, shotHome)
     shot("32-test-user-sync", at(Section.SYNC), ctx = testApp, height = 1350)
     shot("33-test-user-clear-confirm", ctx = testApp) { AppShell(testApp, at(Section.SYNC)); ClearTestDataDialog({}) {} }
     shot("34-test-user-home", at(Section.HOME), ctx = testApp)

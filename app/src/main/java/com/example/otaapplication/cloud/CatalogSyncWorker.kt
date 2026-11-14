@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 class CatalogSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result =
-        when (CloudSync.get(applicationContext).syncNow()) {
+        if (com.example.otaapplication.migration.AppMove.isMovedOut(applicationContext)) Result.success() else when (CloudSync.get(applicationContext).syncNow()) {
             SyncOutcome.OFFLINE, SyncOutcome.FAILED ->
                 if (runAttemptCount < MAX_RETRIES) Result.retry() else Result.success()
             SyncOutcome.SUCCESS, SyncOutcome.SKIPPED, SyncOutcome.SIGNED_OUT -> Result.success()

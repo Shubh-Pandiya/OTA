@@ -109,6 +109,7 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
                 throw AlreadyRunning()
             }
             val db = EmbeddedDb(pg, pg.port, lock)
+            removeOldBinaries(pg, binDir)
             pg.postgresDatabase.connection.use { c ->
                 val exists = c.prepareStatement("select 1 from pg_database where datname = ?").use { st ->
                     st.setString(1, DB_NAME); st.executeQuery().use { it.next() }
@@ -116,6 +117,24 @@ class EmbeddedDb private constructor(private val pg: EmbeddedPostgres, val port:
                 if (!exists) c.createStatement().use { it.execute("create database $DB_NAME") }
             }
             return db
+        }
+
+        /**
+         * The binaries are unpacked into [binDir]/PG-<archive digest>, so an app version with a different
+         * PostgreSQL archive unpacks a new folder and the old one (up to a few hundred MB) stays behind.
+         * Once the server runs, other PG-* folders are unused: delete them in the background. If one is
+         * ever needed again (an older version reinstalled), it is simply unpacked again. Only the app's own
+         * folder is cleaned (it's covered by the single-instance lock); a folder shared by tests is not.
+         */
+        private fun removeOldBinaries(pg: EmbeddedPostgres, binDir: File) {
+            if (binDir.absoluteFile != AppPaths.pgBinaries.absoluteFile) return
+            val current = runCatching {
+                EmbeddedPostgres::class.java.getDeclaredField("pgDir").apply { isAccessible = true }.get(pg) as File
+            }.getOrNull()?.absoluteFile ?: return
+            if (current.parentFile != binDir.absoluteFile) return
+            val old = binDir.listFiles { f -> f.isDirectory && f.name.startsWith("PG-") && f.absoluteFile != current }.orEmpty()
+            if (old.isEmpty()) return
+            Thread({ old.forEach { runCatching { it.deleteRecursively() } } }, "remove-old-postgres").apply { isDaemon = true }.start()
         }
 
         /** A first launch that was interrupted halfway leaves a cluster without its config: start over. */

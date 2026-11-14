@@ -2,7 +2,7 @@ package com.example.otaapplication.data
 
 import android.content.ContentValues
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import com.example.otaapplication.data.BillSql.stringOrNull
 import com.example.otaapplication.data.BillSql.toBills
 import java.security.MessageDigest

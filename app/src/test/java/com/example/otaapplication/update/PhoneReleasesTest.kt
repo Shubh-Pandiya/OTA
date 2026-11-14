@@ -35,7 +35,7 @@ class PhoneReleasesTest {
 
     @Test
     fun picksTheNewestPublishedPhoneReleaseWithAnApk() {
-        val r = PhoneReleases.newer(feed, currentCode = 10100)
+        val r = PhoneReleases.newer(feed, currentCode = 10100, prefix = PhoneReleases.LEGACY_PREFIX)
         assertNotNull(r)
         assertEquals("android-v1.2.0", r!!.tag)
         assertEquals("OTA-Business-1.2.0.apk", r.apk.name)
@@ -46,10 +46,16 @@ class PhoneReleasesTest {
 
     @Test
     fun neverOffersTheSameOrAnOlderVersion() {
-        assertNull(PhoneReleases.newer(feed, currentCode = 10200))
-        assertNull(PhoneReleases.newer(feed, currentCode = 20000))
+        assertNull(PhoneReleases.newer(feed, currentCode = 10200, prefix = PhoneReleases.LEGACY_PREFIX))
+        assertNull(PhoneReleases.newer(feed, currentCode = 20000, prefix = PhoneReleases.LEGACY_PREFIX))
         // Drafts, pre-releases, desktop tags and releases without an APK are ignored.
-        assertEquals(listOf("android-v1.2.0", "android-v1.1.5"), PhoneReleases.parse(feed).map { it.tag })
+        assertEquals(listOf("android-v1.2.0", "android-v1.1.5"), PhoneReleases.parse(feed, PhoneReleases.LEGACY_PREFIX).map { it.tag })
+    }
+
+    @Test
+    fun newAppOnlyFollowsItsOwnTags() {
+        assertNull(PhoneReleases.newer(feed, currentCode = 0, prefix = PhoneReleases.PREFIX))
+        assertEquals(setOf("a".repeat(64)), PhoneReleases.pins("AA:" + "a".repeat(62) + ", short,"))
     }
 
     @Test

@@ -13,10 +13,18 @@ import com.example.otaapplication.data.LinkValue
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.SyncTime
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.time.LocalDate
+import java.util.concurrent.ConcurrentHashMap
 
 /** The staff member's order number digit, read from the cloud `staff` table. */
 data class StaffInfo(val code: Int, val name: String)
@@ -292,6 +300,150 @@ interface OrderCloudApi {
 
     /** Tombstones logged after the cursor (ota_deletions), oldest first. */
     suspend fun pullDeletions(after: String?, afterId: String?, limit: Int): List<Deletion> = emptyList()
+
+    /** The cloud's clock, no later than when the next call is served; null when unknown. See [DeltaPull]. */
+    fun serverTime(): String? = null
+}
+
+/**
+ * One table's delta pull, page by page in (updated_at, id) order, so a slow link makes progress
+ * and memory stays bounded. The cursor is saved after every applied page: an interrupted pull
+ * resumes there instead of starting over.
+ *
+ * A saved cursor C means every row changed at or before C minus [OVERLAP_SECONDS] has been read
+ * (the next pull starts there; the overlap covers transactions that commit out of order, up to a
+ * minute, and rows sharing a timestamp across a page boundary). With [serverStart], the cloud's
+ * clock before the first page was asked for, a finished pull moves C up to that time (less
+ * [CLOCK_SLACK_SECONDS]) instead of to the newest row read: then a bulk change (an import, archive
+ * marking) isn't downloaded again by every later round. Without it, C is the newest row read.
+ */
+object DeltaPull {
+    const val OVERLAP_SECONDS = 60L
+    /** Allowance for the HTTP `Date` clock running ahead of the database's. */
+    const val CLOCK_SLACK_SECONDS = 60L
+    const val MAX_PAGES = 100
+    /**
+     * Rows per pull request. Never above the cloud API's "max rows" (1000 on this project): a shorter
+     * page than asked for means the end of the table.
+     */
+    const val PAGE_SIZE = 1000
+
+    /** Where a pull from [saved] starts. */
+    fun firstAfter(saved: String?): String? = saved?.let { SyncTime.minusSeconds(it, OVERLAP_SECONDS) }
+
+    /** Pulls, applies and saves page by page; returns what [apply] reported changed. */
+    suspend fun <R> run(
+        saved: String?,
+        serverStart: String?,
+        pageSize: Int,
+        fetch: suspend (after: String?, afterId: String?) -> List<R>,
+        updatedAt: (R) -> String,
+        id: (R) -> String,
+        apply: suspend (List<R>) -> Int,
+        save: suspend (String) -> Unit
+    ): Int {
+        val settled = serverStart?.let { SyncTime.minusSeconds(it, CLOCK_SLACK_SECONDS) }
+        var after = firstAfter(saved)
+        var afterId: String? = null
+        var cursor = saved
+        var changed = 0
+        var pages = 0
+        while (pages++ < MAX_PAGES) {
+            val page = fetch(after, afterId)
+            changed += apply(page)
+            val complete = page.size < pageSize
+            val newest = page.fold(null as String?) { acc, row -> SyncTime.later(acc, updatedAt(row)) }
+            val reach = when {
+                settled != null && complete -> settled
+                newest == null -> null
+                // Rows up to the settled time were all committed before the first page, so none is missed below it.
+                settled != null -> if (SyncTime.later(newest, settled) == settled) newest else settled
+                else -> newest
+            }
+            val next = reach?.let { SyncTime.later(cursor, it) }
+            // Saved only after the page's rows were applied, so a failed round reads them again.
+            if (next != null && next != cursor) {
+                save(next)
+                cursor = next
+            }
+            if (complete) break
+            after = updatedAt(page.last())
+            afterId = id(page.last())
+        }
+        return changed
+    }
+}
+
+/**
+ * Reads tables' pages ahead while a sync round applies them one table at a time, so on a slow
+ * link the round trips overlap instead of queuing (at most [parallel] at once, within the
+ * keep-alive pool). Each table streams its pages in order; [fetch] hands over a page read ahead
+ * when it is the one asked for, otherwise (the cursor changed meanwhile) drops the stream and
+ * reads directly. A failed read surfaces when its page is asked for, as a direct read would.
+ * Start it only after the round's deletes are done, so a row pulled ahead can't bring back one
+ * that was just deleted. [serverStart] is the cloud's clock before anything was read ahead.
+ */
+class PullAhead(private val scope: CoroutineScope, val serverStart: String?, parallel: Int = 4) {
+    private class Page(val after: String?, val afterId: String?, val rows: Result<List<Any?>>)
+    private class Stream(val pages: Channel<Page>, val job: Job)
+
+    private val gate = Semaphore(parallel)
+    private val streams = ConcurrentHashMap<String, Stream>()
+
+    fun <R> start(
+        key: String,
+        saved: String?,
+        pageSize: Int,
+        read: suspend (after: String?, afterId: String?) -> List<R>,
+        updatedAt: (R) -> String,
+        id: (R) -> String
+    ) {
+        // Rendezvous: at most one page per table waits in memory.
+        val pages = Channel<Page>(Channel.RENDEZVOUS)
+        val job = scope.launch {
+            var after = DeltaPull.firstAfter(saved)
+            var afterId: String? = null
+            try {
+                repeat(DeltaPull.MAX_PAGES) {
+                    val rows = try {
+                        Result.success(gate.withPermit { read(after, afterId) })
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
+                    pages.send(Page(after, afterId, rows))
+                    val list = rows.getOrNull() ?: return@launch
+                    if (list.size < pageSize) return@launch
+                    after = updatedAt(list.last())
+                    afterId = id(list.last())
+                }
+            } finally {
+                pages.close()
+            }
+        }
+        streams.put(key, Stream(pages, job))?.cancel()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    suspend fun <R> fetch(key: String, after: String?, afterId: String?, read: suspend (after: String?, afterId: String?) -> List<R>): List<R> {
+        val stream = streams[key] ?: return read(after, afterId)
+        val page = stream.pages.receiveCatching().getOrNull()
+        if (page != null && page.after == after && page.afterId == afterId) return page.rows.getOrThrow() as List<R>
+        streams.remove(key)?.cancel()
+        return read(after, afterId)
+    }
+
+    /** Cancels whatever is still being read ahead. */
+    fun stop() {
+        streams.values.forEach { it.cancel() }
+        streams.clear()
+    }
+
+    private fun Stream.cancel() {
+        job.cancel()
+        pages.cancel()
+    }
 }
 
 /** All 9999 payment advice numbers of a financial year are used. */
@@ -395,6 +547,8 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
             Deletion(json.getString("tbl"), json.getString("id"), json.optLong("client_updated_at"), json.getString("updated_at"))
         }
     }
+
+    override fun serverTime(): String? = client.serverTime()
 
     private companion object {
         const val ORDER_LIMIT_CODE = "ORDER_LIMIT_REACHED"

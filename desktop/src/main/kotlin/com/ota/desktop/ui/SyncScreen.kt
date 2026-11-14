@@ -126,6 +126,11 @@ fun SyncScreen() {
         Spacer(Modifier.height(14.dp))
         UpdatesPanel(Modifier.fillMaxWidth())
         Spacer(Modifier.height(14.dp))
+        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            BackupPanel(Modifier.weight(3f).fillMaxHeight())
+            SecurityPanel(Modifier.weight(2f).fillMaxHeight())
+        }
+        Spacer(Modifier.height(14.dp))
         if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent)
         else Panel(Modifier.fillMaxWidth(), title = "Cloud settings") {
             Text("Cloud clean-up and the retention days are managed by the admins (Varun and Shubham).", color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -3,7 +3,7 @@ package com.example.otaapplication.data
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.BillSql.doubleOrNull
 import com.example.otaapplication.data.BillSql.stringOrNull

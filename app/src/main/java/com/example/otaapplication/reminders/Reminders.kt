@@ -55,9 +55,16 @@ object Reminders {
 
     /** After a reboot, app update, clock change or force stop, alarms are gone: set them again. */
     fun rescheduleAll(context: Context) {
+        // The old app hands reminders to the new one when the phone moves; it must not ring twice.
+        if (com.example.otaapplication.migration.AppMove.isMovedOut(context)) return
         val store = TodoStore.get(context)
         store.pruneDone(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(TodoLists.KEEP_DONE_DAYS))
         store.all().forEach { schedule(context, it) }
+    }
+
+    /** Silences every reminder this app set (it moved to the new app). */
+    fun cancelAll(context: Context) {
+        TodoStore.get(context).all().forEach { cancelAlarm(context, it.id); cancelNotification(context, it.id) }
     }
 
     fun canNotify(context: Context): Boolean =

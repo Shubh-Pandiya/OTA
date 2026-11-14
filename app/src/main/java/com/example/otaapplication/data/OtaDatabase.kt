@@ -2,8 +2,9 @@ package com.example.otaapplication.data
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteOpenHelper
+import com.example.otaapplication.security.EncryptedDb
 
 /**
  * Local-first store for the catalog, bills, payment advices and the order search index.
@@ -16,7 +17,7 @@ import android.database.sqlite.SQLiteOpenHelper
  * Orders themselves remain stored as the existing JSON/PDF files; `orders` is an index of them.
  */
 class OtaDatabase(context: Context, name: String? = DB_NAME) :
-    SQLiteOpenHelper(context.applicationContext, name, null, VERSION) {
+    SQLiteOpenHelper(context.applicationContext, name, EncryptedDb.keyFor(context, name), null, VERSION, 0, null, null, false) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)

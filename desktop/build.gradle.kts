@@ -1,5 +1,26 @@
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.archivers.tar.TarConstants
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.tukaani.xz.LZMA2Options
+import org.tukaani.xz.XZInputStream
+import org.tukaani.xz.XZOutputStream
+import java.security.MessageDigest
 import java.util.Properties
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
+
+buildscript {
+    repositories { mavenCentral() }
+    dependencies {
+        // Re-packing the embedded PostgreSQL archive (trimPostgres below).
+        classpath("org.apache.commons:commons-compress:1.28.0")
+        classpath("org.tukaani:xz:1.11")
+    }
+}
 
 plugins {
     kotlin("jvm") version "2.2.20"
@@ -23,6 +44,178 @@ val pgPlatform: String = providers.gradleProperty("pgPlatform").orNull ?: run {
         else -> if (arm) "linux-arm64v8" else "linux-amd64"
     }
 }
+val pgBinariesVersion = "17.11.0"
+
+// ---------------------------------------------------------------- installer size
+// zonky's PostgreSQL archive carries the whole distribution: every contrib extension, message
+// translations, client libraries, pgAdmin's wxWidgets DLLs on Windows and, on macOS, two or three
+// byte-identical copies of each shared library (ICU's 55 MB data library three times). trimPostgres
+// re-packs it with only what the app's server runs: initdb, pg_ctl and postgres, the libraries they
+// link, PL/pgSQL, the text-search dictionaries and encoding conversions initdb/the catalog refer to.
+// Same PostgreSQL build and version, so existing database folders open unchanged. The unit tests
+// boot the server from this trimmed archive too, so a missing piece fails `test` on each OS.
+val postgresBinaries by configurations.creating {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+
+/** Server-loadable modules kept: PL/pgSQL, snowball dictionaries, encoding conversions, replication plumbing. */
+val pgModulesKept = Regex("""plpgsql|dict_snowball|libpqwalreceiver|pgoutput|euc2004_sjis2004|\w+_and_\w+""")
+/** Executables the app runs (EmbeddedDb via zonky: initdb, pg_ctl, postgres). No pg_dump/psql: backups copy the data folder. */
+val pgProgramsKept = setOf("initdb", "pg_ctl", "postgres")
+/** Shared libraries nothing kept links (client tools, ecpg, pgAdmin/StackBuilder's wxWidgets, curl, ICU io/tools). */
+val pgLibsDropped = Regex("""(lib)?(edit|ecpg|ecpg_compat|pgtypes|uuid|curl|xslt|testplug|icuio\d*|icutu\d*|wx\w+)([.-].*)?\.(dll|dylib|so)(\..*)?""")
+
+fun keepPgEntry(path: String, windows: Boolean): Boolean {
+    val p = path.removePrefix("./").trimEnd('/')
+    val name = p.substringAfterLast('/')
+    val dir = p.substringBeforeLast('/', "")
+    return when {
+        p.startsWith("include") || p.startsWith("doc") || p.startsWith("share/doc") -> false
+        // Message translations: clusters are created with lc_messages=C, so they are never read.
+        p.startsWith("share/locale") -> false
+        "/extension/" in "/$p/" && !p.endsWith("/extension") -> name.startsWith("plpgsql")
+        p.startsWith("lib/pkgconfig") || p.startsWith("lib/postgresql/pgxs") -> false
+        name.endsWith(".a") || (dir == "lib" && name.endsWith(".lib")) -> false
+        // Loadable server modules: lib/*.dll on Windows, lib/postgresql/*.dylib|so elsewhere.
+        (windows && dir == "lib" && name.endsWith(".dll")) || dir == "lib/postgresql" ->
+            name.substringBefore('.').matches(pgModulesKept)
+        name.matches(pgLibsDropped) -> false
+        dir == "bin" && !name.endsWith(".dll") -> name.removeSuffix(".exe") in pgProgramsKept
+        else -> true
+    }
+}
+
+/** Re-packs the binaries jar's .txz (same entry name, which zonky looks up) into [outDir]. */
+fun trimPgArchive(jar: File, outDir: File, windows: Boolean, log: (String) -> Unit) {
+    ZipFile(jar).use { zip ->
+        val txz = zip.entries().asSequence().single { it.name.endsWith(".txz") }
+        class Item(val entry: TarArchiveEntry, val data: ByteArray?)
+        val items = mutableListOf<Item>()
+        var before = 0L
+        TarArchiveInputStream(XZInputStream(zip.getInputStream(txz).buffered())).use { tar ->
+            while (true) {
+                val e = tar.nextEntry ?: break
+                val data = if (e.isFile) tar.readAllBytes() else null
+                before += data?.size ?: 0
+                if (keepPgEntry(e.name, windows)) items += Item(e, data)
+            }
+        }
+        // Byte-identical shared libraries (libfoo.dylib, libfoo.1.dylib, libfoo.1.2.dylib) become one
+        // file plus relative symlinks, which zonky extracts as symlinks. Not on Windows (no copies there,
+        // and creating symlinks needs extra rights).
+        val links = mutableListOf<TarArchiveEntry>()
+        if (!windows) {
+            fun sha(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
+            items.filter { it.data != null && it.entry.name.removePrefix("./").let { n -> n.startsWith("lib/") && n.count { c -> c == '/' } == 1 } }
+                .groupBy { sha(it.data!!) }.values.filter { it.size > 1 }
+                .forEach { same ->
+                    val keep = same.maxWith(compareBy<Item> { it.entry.name.length }.thenBy { it.entry.name })
+                    (same - keep).forEach { dup ->
+                        items.remove(dup)
+                        links += TarArchiveEntry(dup.entry.name, TarConstants.LF_SYMLINK).apply {
+                            linkName = keep.entry.name.substringAfterLast('/')
+                            modTime = dup.entry.modTime
+                        }
+                    }
+                }
+        }
+        outDir.deleteRecursively()
+        val out = File(outDir.apply { mkdirs() }, txz.name.substringAfterLast('/'))
+        TarArchiveOutputStream(XZOutputStream(out.outputStream().buffered(), LZMA2Options(9))).use { tar ->
+            tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+            tar.setBigNumberMode(TarArchiveOutputStream.BIGNUMBER_POSIX)
+            // Real files first: a symlink's directory must exist when zonky creates it.
+            for (it in items) {
+                tar.putArchiveEntry(it.entry)
+                it.data?.let(tar::write)
+                tar.closeArchiveEntry()
+            }
+            for (link in links.sortedBy { it.name }) {
+                tar.putArchiveEntry(link)
+                tar.closeArchiveEntry()
+            }
+        }
+        val after = items.sumOf { it.data?.size?.toLong() ?: 0L }
+        log("PostgreSQL $pgPlatform: ${before / 1_048_576} MB -> ${after / 1_048_576} MB unpacked, " +
+            "archive ${txz.compressedSize / 1_048_576} MB -> ${out.length() / 1_048_576} MB (${links.size} duplicate libraries as symlinks)")
+    }
+}
+
+val trimPostgres by tasks.registering {
+    val source = postgresBinaries
+    val windows = pgPlatform.startsWith("windows")
+    val outDir = layout.buildDirectory.dir("postgres/$pgPlatform")
+    inputs.files(source)
+    inputs.property("windows", windows)
+    // Bump when the keep/drop rules above change.
+    inputs.property("rules", 1)
+    outputs.dir(outDir)
+    doLast { trimPgArchive(source.singleFile, outDir.get().asFile, windows) { logger.lifecycle(it) } }
+}
+
+val postgresJar by tasks.registering(Jar::class) {
+    from(trimPostgres)
+    archiveFileName.set("embedded-postgres-binaries-$pgPlatform-$pgBinariesVersion-trimmed.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("postgres"))
+    entryCompression = ZipEntryCompression.STORED // already xz-compressed
+    isPreserveFileTimestamps = false
+}
+
+// skiko-awt-runtime-macos-arm64 carries the Intel library too. Compose copies the build machine's
+// library next to the app and leaves the rest inside the jar, so the Mac app shipped an unusable
+// 21 MB x64 library. This transform drops other platforms' skiko libraries from the runtime jar.
+val skikoTarget: String = run {
+    val os = System.getProperty("os.name").lowercase()
+    val arm = System.getProperty("os.arch").lowercase().let { it == "aarch64" || it.startsWith("arm") }
+    (if (os.contains("win")) "windows" else if (os.contains("mac")) "macos" else "linux") + "-" + (if (arm) "arm64" else "x64")
+}
+val skikoTrimmed: Attribute<Boolean> = Attribute.of("ota.skikoTrimmed", Boolean::class.javaObjectType)
+
+abstract class TrimSkiko : TransformAction<TrimSkiko.Params> {
+    interface Params : TransformParameters {
+        @get:Input val target: Property<String>
+    }
+
+    @get:InputArtifact
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val input: Provider<FileSystemLocation>
+
+    override fun transform(outputs: TransformOutputs) {
+        val jar = input.get().asFile
+        if (!jar.name.startsWith("skiko-awt-runtime-")) {
+            outputs.file(jar)
+            return
+        }
+        val native = Regex("""(lib)?skiko-(\w+-\w+)\.(dylib|dll|so)(\.sha256)?""")
+        val target = parameters.target.get()
+        // Same file name: Compose recognises the runtime jar by it.
+        val out = outputs.file(jar.name)
+        ZipInputStream(jar.inputStream().buffered()).use { zin ->
+            ZipOutputStream(out.outputStream().buffered()).use { zout ->
+                while (true) {
+                    val e = zin.nextEntry ?: break
+                    val m = native.matchEntire(e.name.substringAfterLast('/'))
+                    if (m != null && m.groupValues[2] != target) continue
+                    zout.putNextEntry(ZipEntry(e.name).apply { time = e.time })
+                    zin.copyTo(zout)
+                    zout.closeEntry()
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+    attributesSchema { attribute(skikoTrimmed) }
+    artifactTypes.getByName("jar") { attributes.attribute(skikoTrimmed, false) }
+    registerTransform(TrimSkiko::class) {
+        from.attribute(skikoTrimmed, false)
+        to.attribute(skikoTrimmed, true)
+        parameters { target.set(skikoTarget) }
+    }
+}
+configurations.named("runtimeClasspath") { attributes.attribute(skikoTrimmed, true) }
 
 dependencies {
     implementation(compose.desktop.currentOs)
@@ -33,14 +226,15 @@ dependencies {
     implementation("io.zonky.test:embedded-postgres:2.2.2") {
         exclude(group = "io.zonky.test.postgres") // it pulls binaries for every OS; keep only ours below
     }
-    implementation(enforcedPlatform("io.zonky.test.postgres:embedded-postgres-binaries-bom:17.11.0"))
-    implementation("io.zonky.test.postgres:embedded-postgres-binaries-$pgPlatform")
+    postgresBinaries("io.zonky.test.postgres:embedded-postgres-binaries-$pgPlatform:$pgBinariesVersion")
+    implementation(files(postgresJar)) // the same binaries without what the app never runs (trimPostgres)
     implementation("org.slf4j:slf4j-nop:2.0.17")
     implementation("org.postgresql:postgresql:42.7.8")
 
     implementation("org.json:json:20250517")
     implementation("org.apache.pdfbox:pdfbox:3.0.5")
     implementation("org.dhatim:fastexcel:0.19.0")
+    implementation("net.lingala.zip4j:zip4j:2.11.5")
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

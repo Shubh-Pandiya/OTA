@@ -69,10 +69,15 @@ class SupabaseAuth(
         parseSession(response.body).also(::store)
     }
 
-    /** A valid access token, refreshed when close to expiry. Throws [CloudException] with authFailed when signed out. */
-    suspend fun accessToken(forceRefresh: Boolean = false): String = lock.withLock {
+    /**
+     * A valid access token, refreshed when close to expiry. Throws [CloudException] with authFailed when signed out.
+     * [rejected]: the token the cloud just refused. When several calls are refused at once, only the
+     * first refreshes; the others get its new token instead of using up the rotating refresh token again.
+     */
+    suspend fun accessToken(forceRefresh: Boolean = false, rejected: String? = null): String = lock.withLock {
         val current = _session.value ?: throw CloudException("Not signed in", authFailed = true)
         if (!forceRefresh && current.expiresAtMillis - clock() > REFRESH_MARGIN_MS) return@withLock current.accessToken
+        if (forceRefresh && rejected != null && current.accessToken != rejected) return@withLock current.accessToken
         val body = JSONObject().put("refresh_token", current.refreshToken).toString()
         val response = withContext(Dispatchers.IO) { Http.send("POST", "${config.url}/auth/v1/token?grant_type=refresh_token", headers(), body) }
         if (!response.ok) {

@@ -35,20 +35,24 @@ data class PhoneRelease(
     val checksumsUrl: String?
 )
 
-/** Phone releases published on GitHub (tags `android-v1.1.0`, …); the repository is public. */
+/**
+ * Phone releases published on GitHub; the repository is public. The app signed with the release key
+ * (com.ota.business) follows tags `phone-v2.0.0`, …; the old debug-key app follows `android-v…`.
+ */
 object PhoneReleases {
     const val FEED = "https://api.github.com/repos/Shubh-Pandiya/OTA/releases?per_page=30"
-    const val TAG_PREFIX = "android-v"
+    const val LEGACY_PREFIX = "android-v"
+    const val PREFIX = "phone-v"
     const val CHECKSUMS = "SHA256SUMS.txt"
 
-    /** Published (not draft, not pre-release) phone releases that carry an APK. */
-    fun parse(json: String): List<PhoneRelease> {
+    /** Published (not draft, not pre-release) phone releases tagged [prefix] that carry an APK. */
+    fun parse(json: String, prefix: String): List<PhoneRelease> {
         val list = JSONArray(json)
         return (0 until list.length()).mapNotNull { i ->
             val r = list.getJSONObject(i)
             val tag = r.optString("tag_name")
-            if (!tag.startsWith(TAG_PREFIX) || r.optBoolean("draft") || r.optBoolean("prerelease")) return@mapNotNull null
-            val version = PhoneVersion.parse(tag.removePrefix(TAG_PREFIX)) ?: return@mapNotNull null
+            if (!tag.startsWith(prefix) || r.optBoolean("draft") || r.optBoolean("prerelease")) return@mapNotNull null
+            val version = PhoneVersion.parse(tag.removePrefix(prefix)) ?: return@mapNotNull null
             val array = r.optJSONArray("assets") ?: JSONArray()
             val assets = (0 until array.length()).map { array.getJSONObject(it) }
             val apk = assets.firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }?.let { a ->
@@ -63,8 +67,8 @@ object PhoneReleases {
     }
 
     /** The newest release above [currentCode]; never an older or equal one, so there are no downgrades. */
-    fun newer(json: String, currentCode: Long): PhoneRelease? =
-        parse(json).filter { it.version.code > currentCode }.maxByOrNull { it.version }
+    fun newer(json: String, currentCode: Long, prefix: String): PhoneRelease? =
+        parse(json, prefix).filter { it.version.code > currentCode }.maxByOrNull { it.version }
 
     /** `sha256sum` output: "<hex>  <name>" per line. */
     fun parseChecksums(text: String): Map<String, String> = text.lineSequence().mapNotNull { line ->
@@ -80,6 +84,14 @@ object PhoneReleases {
         val known = listOfNotNull(published?.lowercase(), apk.sha256).distinct()
         return known.singleOrNull()
     }
+
+    /** "ab12…" fingerprint of a signing certificate, as `apksigner --print-certs` shows it. */
+    fun certSha256(cert: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(cert).joinToString("") { "%02x".format(it) }
+
+    /** Comma-separated fingerprints (colons and case ignored) from the build. */
+    fun pins(list: String): Set<String> =
+        list.split(',').map { it.replace(":", "").trim().lowercase() }.filter { it.length == 64 }.toSet()
 
     fun sha256(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")

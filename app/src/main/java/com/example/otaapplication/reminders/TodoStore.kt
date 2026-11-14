@@ -3,14 +3,16 @@ package com.example.otaapplication.reminders
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteOpenHelper
+import com.example.otaapplication.security.EncryptedDb
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 
 /** Small local table of Home to-dos. Kept apart from the order database: nothing here syncs. */
-class TodoStore private constructor(context: Context) : SQLiteOpenHelper(context, "todos.db", null, 1) {
+class TodoStore private constructor(context: Context) :
+    SQLiteOpenHelper(context, DB_NAME, EncryptedDb.keyFor(context, DB_NAME), null, 1, 0, null, null, false) {
 
     private val _changes = MutableStateFlow(0)
     /** Bumped on every write, including ones made from a notification while the app is open. */
@@ -84,6 +86,7 @@ class TodoStore private constructor(context: Context) : SQLiteOpenHelper(context
     )
 
     companion object {
+        const val DB_NAME = "todos.db"
         @Volatile private var instance: TodoStore? = null
         fun get(context: Context): TodoStore =
             instance ?: synchronized(this) { instance ?: TodoStore(context.applicationContext).also { instance = it } }

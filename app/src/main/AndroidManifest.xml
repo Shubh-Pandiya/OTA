@@ -14,6 +14,15 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <!-- In-app updates from GitHub Releases (the user allows "Install unknown apps" once). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- The old app offers to remove itself once the new app has its data. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- The old and new OTA Business apps check each other's signing key during the move. -->
+    <queries>
+        <package android:name="com.example.otaapplication" />
+        <package android:name="com.ota.business" />
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -21,7 +30,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:networkSecurityConfig="${networkSecurityConfig}"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.OTAApplication"
@@ -29,7 +38,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
+            android:label="${appLabel}"
             android:theme="@style/Theme.OTAApplication"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -57,6 +66,17 @@
         <!-- Android's installer reports an in-app update's progress here. -->
         <receiver
             android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
+
+        <!-- Takes the data from the old app (in its own process, away from the open databases). -->
+        <activity
+            android:name=".migration.RestoreActivity"
+            android:exported="true"
+            android:process=":restore"
+            android:label="${appLabel}"
+            android:theme="@style/Theme.OTAApplication" />
+        <receiver
+            android:name=".migration.MoveInstallReceiver"
             android:exported="false" />
 
         <!-- Shares generated PDFs (payment advices) with other apps. -->

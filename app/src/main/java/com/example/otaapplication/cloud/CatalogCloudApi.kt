@@ -27,14 +27,14 @@ class PostgrestCatalogApi(private val client: PostgrestClient) : CatalogCloudApi
             afterId == null -> "&updated_at=gt.${Http.encode(after)}"
             else -> "&or=" + Http.encode("(updated_at.gt.\"$after\",and(updated_at.eq.\"$after\",id.gt.$afterId))")
         }
-        val body = client.call("GET", "${type.table}?select=*&order=updated_at.asc,id.asc&limit=$limit$filter")
+        val body = client.call("GET", "${type.table}?select=${CatalogJson.COLUMNS}&order=updated_at.asc,id.asc&limit=$limit$filter")
         return CatalogJson.parseRows(body, type)
     }
 
     override suspend fun push(type: PartyType, rows: List<PendingParty>): List<RemoteParty> {
         if (rows.isEmpty()) return emptyList()
         val body = client.call(
-            "POST", "${type.table}?on_conflict=id",
+            "POST", "${type.table}?on_conflict=id&select=${CatalogJson.COLUMNS}",
             mapOf("Prefer" to "resolution=merge-duplicates,return=representation"),
             CatalogJson.toJsonArray(rows).toString()
         )
@@ -44,6 +44,9 @@ class PostgrestCatalogApi(private val client: PostgrestClient) : CatalogCloudApi
 
 /** JSON mapping between local rows and the cloud tables (see supabase/migrations). */
 object CatalogJson {
+    /** Only what the apps read (not e.g. archived_at or is_test). */
+    const val COLUMNS = "id,name,address,city,phone,gstin,bank_account_name,bank_name,bank_account_no,bank_ifsc,bank_branch,bank_upi,deleted,created_at,updated_at,client_updated_at"
+
     fun toJson(row: PendingParty): JSONObject {
         val p = row.party
         return JSONObject()

@@ -384,7 +384,7 @@ fun Modifier.onEnter(action: () -> Unit): Modifier = onPreviewKeyEvent {
 // ------------------------------------------------------------------------------------ splash
 
 @Composable
-fun Splash(message: String, error: String?, onQuit: () -> Unit) {
+fun Splash(message: String, error: String?, onCancel: (() -> Unit)? = null, onQuit: () -> Unit = {}) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.widthIn(max = 460.dp).padding(32.dp)) {
             val t = rememberInfiniteTransition()
@@ -399,6 +399,10 @@ fun Splash(message: String, error: String?, onQuit: () -> Unit) {
                 Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 Spacer(Modifier.height(16.dp))
                 LinearProgressIndicator(Modifier.width(220.dp).clip(RoundedCornerShape(2.dp)), trackColor = Brand.SaffronSoft)
+                if (onCancel != null) {
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(onClick = onCancel) { Text("Close now") }
+                }
             } else {
                 Banner(error, Brand.Red)
                 Spacer(Modifier.height(16.dp))

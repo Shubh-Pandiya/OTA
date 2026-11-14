@@ -36,8 +36,13 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     var hardDeletes = true
     /** Times ota_clear_test_data was called. */
     var clearCalls = 0
-    private var tick = 0L
-    private val base = Instant.parse("2026-11-10T04:30:00Z")
+    /** Rows returned by each table GET, in order ("orders" to 2). */
+    val pulled = CopyOnWriteArrayList<Pair<String, Int>>()
+    /** The cloud API's "max rows": a GET never returns more, whatever its limit. */
+    var maxRows = 1000
+    /** Table GETs still answered before they fail with 503 (a dropped link mid-pull); absent = no limit. */
+    val getBudget = HashMap<String, Int>()
+    private var last: Instant = Instant.EPOCH
     private val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSxxx").withZone(ZoneOffset.UTC)
 
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -61,12 +66,19 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
 
     fun table(name: String) = tables.getOrPut(name) { LinkedHashMap() }
 
-    /** Next server timestamp, strictly increasing, in PostgREST's format. */
-    fun now(): String = fmt.format(base.plusNanos(++tick * 1000))
+    /**
+     * Next server timestamp in PostgREST's format: the real clock (the HTTP Date header the server
+     * adds is the real clock too), kept strictly increasing.
+     */
+    fun now(): String {
+        val real = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+        last = if (real.isAfter(last)) real else last.plusNanos(1000)
+        return fmt.format(last)
+    }
 
-    /** A row as another device would have written it. */
-    fun put(name: String, row: JSONObject) {
-        row.put("updated_at", now())
+    /** A row as another device would have written it ([at] = its server time, e.g. ten minutes ago). */
+    fun put(name: String, row: JSONObject, at: Instant? = null) {
+        row.put("updated_at", at?.let(fmt::format) ?: now())
         if (!row.has("client_updated_at")) row.put("client_updated_at", System.currentTimeMillis())
         table(name)[row.getString("id")] = row
     }
@@ -145,10 +157,34 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
                 if (staff?.optBoolean("is_admin") != true) 200 to "[]"
                 else { JSONObject(body).let { b -> b.keys().forEach { settings.put(it, b.get(it)) } }; 200 to JSONArray().put(settings).toString() }
             }
-            method == "GET" -> 200 to JSONArray(table(name).values.sortedBy { it.getString("updated_at") }).toString()
+            method == "GET" -> select(name, query)
             method == "POST" -> upsert(name, JSONArray(body), query)
             else -> 404 to "{}"
         }
+    }
+
+    /** A table GET the way PostgREST answers the sync's: updated_at / keyset filter, (updated_at, id) order, limit. */
+    private fun select(name: String, query: String): Pair<Int, String> {
+        getBudget[name]?.let { left ->
+            if (left <= 0) return 503 to JSONObject().put("message", "connection lost").toString()
+            getBudget[name] = left - 1
+        }
+        val params = query.split('&').filter { it.contains('=') }.associate { p ->
+            p.substringBefore('=') to URLDecoder.decode(p.substringAfter('='), Charsets.UTF_8)
+        }
+        fun time(s: String) = java.time.OffsetDateTime.parse(s.replace(' ', '+')).toInstant()
+        val at = { row: JSONObject -> time(row.getString("updated_at")) }
+        var rows = table(name).values.sortedWith(compareBy<JSONObject>({ at(it) }, { it.getString("id") }))
+        params["updated_at"]?.let { f -> val t = time(f.removePrefix("gt.")); rows = rows.filter { at(it) > t } }
+        params["or"]?.let { f ->
+            val m = Regex("""\(updated_at\.gt\."(.+)",and\(updated_at\.eq\."(.+)",id\.gt\.(.+)\)\)""").matchEntire(f) ?: error("bad or: $f")
+            val t = time(m.groupValues[1])
+            val id = m.groupValues[3]
+            rows = rows.filter { at(it) > t || (at(it) == t && it.getString("id") > id) }
+        }
+        rows = rows.take(minOf(params["limit"]?.toInt() ?: Int.MAX_VALUE, maxRows))
+        pulled += name to rows.size
+        return 200 to JSONArray(rows).toString()
     }
 
     private fun upsert(name: String, rows: JSONArray, query: String): Pair<Int, String> {

@@ -70,7 +70,7 @@ class AppUpdater private constructor(private val context: Context) {
             if (!manual && _state.value !is UpdateState.Idle) return
             if (manual) _state.value = UpdateState.Checking
             val release = try {
-                withContext(Dispatchers.IO) { PhoneReleases.newer(get(feed), currentCode) }
+                withContext(Dispatchers.IO) { PhoneReleases.newer(get(feed), currentCode, BuildConfig.UPDATE_TAG_PREFIX) }
             } catch (e: Exception) {
                 if (manual) _state.value = UpdateState.Failed(null, "Could not check for updates: ${friendly(e)}")
                 return
@@ -158,7 +158,10 @@ class AppUpdater private constructor(private val context: Context) {
         }
     }
 
-    private fun download(release: PhoneRelease): File {
+    internal fun download(
+        release: PhoneRelease,
+        onProgress: (Float) -> Unit = { _state.value = UpdateState.Downloading(release, it) }
+    ): File {
         val apk = release.apk
         val published = release.checksumsUrl?.let { url -> PhoneReleases.parseChecksums(get(url))[apk.name] }
         if (published != null && apk.sha256 != null && !published.equals(apk.sha256, ignoreCase = true)) {
@@ -188,7 +191,7 @@ class AppUpdater private constructor(private val context: Context) {
                             val pct = (done * 100 / total).toInt()
                             if (pct != shown) {
                                 shown = pct
-                                _state.value = UpdateState.Downloading(release, (done.toFloat() / total).coerceAtMost(1f))
+                                onProgress((done.toFloat() / total).coerceAtMost(1f))
                             }
                         }
                     }
@@ -216,6 +219,11 @@ class AppUpdater private constructor(private val context: Context) {
         val theirs = info.signingInfo?.signingCertificateHistory?.map { it.toByteArray().contentHashCode() }.orEmpty()
         if (mine.isEmpty() || theirs.isEmpty() || mine.none { it in theirs }) {
             throw IOException("The update is signed with a different key than the app on this phone, so Android would refuse it. Nothing was changed.")
+        }
+        // The release key is also pinned in the app itself.
+        val pins = PhoneReleases.pins(BuildConfig.UPDATE_CERT_SHA256)
+        if (pins.isNotEmpty() && certFingerprints(info).none { it in pins }) {
+            throw IOException("The update is not signed with the OTA Business release key. Nothing was changed.")
         }
     }
 
@@ -253,7 +261,7 @@ class AppUpdater private constructor(private val context: Context) {
         return certs.orEmpty().map { it.toByteArray().contentHashCode() }
     }
 
-    private fun get(url: String): String {
+    internal fun get(url: String): String {
         val conn = open(url, readTimeoutMs = 20_000)
         try {
             if (conn.responseCode != 200) throw IOException("Update server answered HTTP ${conn.responseCode}")
@@ -272,7 +280,7 @@ class AppUpdater private constructor(private val context: Context) {
             setRequestProperty("User-Agent", "OTA-Business-Android/${BuildConfig.VERSION_NAME}")
         }
 
-    private fun friendly(e: Exception): String = when (e) {
+    internal fun friendly(e: Exception): String = when (e) {
         is java.net.UnknownHostException, is java.net.ConnectException -> "no internet connection"
         is java.net.SocketTimeoutException -> "the connection timed out"
         else -> e.message ?: e.javaClass.simpleName
@@ -287,6 +295,13 @@ class AppUpdater private constructor(private val context: Context) {
         /** How often a running app looks for a new release. */
         const val CHECK_EVERY_MS = 6 * 60 * 60 * 1000L
         private const val MIN_GAP_MS = 30 * 60 * 1000L
+
+        /** SHA-256 fingerprints of the certificates [info] is signed with. */
+        fun certFingerprints(info: PackageInfo): List<String> {
+            val s = info.signingInfo ?: return emptyList()
+            val certs = if (s.hasMultipleSigners()) s.apkContentsSigners else s.signingCertificateHistory
+            return certs.orEmpty().map { PhoneReleases.certSha256(it.toByteArray()) }
+        }
 
         private fun safeName(name: String) = name.replace(Regex("""[^A-Za-z0-9._-]"""), "_")
 

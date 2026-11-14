@@ -10,12 +10,11 @@ import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
-import com.example.otaapplication.data.SyncTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-/** Pull cursors (last server `updated_at` seen) by table name. */
+/** Pull cursors (a server `updated_at`, see [DeltaPull]) by table name. */
 interface CursorStore {
     fun get(table: String): String?
     fun set(table: String, value: String?)
@@ -53,19 +52,30 @@ class OrderSync(
     private val numberOrder: (uuid: String, offerNo: String) -> Boolean = orders::renumber,
     private val numberAdvice: (adviceId: String, adviceNo: String) -> Boolean = { id, no -> payments?.assignNumber(id, no) == true },
     private val adviceRenumbered: (adviceId: String) -> Unit = {},
-    private val pageSize: Int = 500,
+    private val pageSize: Int = DeltaPull.PAGE_SIZE,
     private val pushBatch: Int = 200
 ) {
-    suspend fun syncAll(): OrderSyncResult {
+    private val pulledTables: List<OrderTable<*>> =
+        listOf(OrderTable.ORDERS, OrderTable.BILLS, OrderTable.LINKS) + if (payments != null) listOf(OrderTable.ADVICES, OrderTable.ADVICE_LINES) else emptyList()
+
+    /** Starts reading every table's changes ahead (see [PullAhead]). */
+    fun readAhead(ahead: PullAhead) {
+        for (table in pulledTables) start(ahead, table)
+    }
+
+    private fun <T> start(ahead: PullAhead, table: OrderTable<T>) =
+        ahead.start(table.name, cursors.get(table.name), pageSize, { after, afterId -> api.pull(table, after, afterId, pageSize) }, { it.serverUpdatedAt }, { it.id })
+
+    suspend fun syncAll(ahead: PullAhead? = null): OrderSyncResult {
         val repo = orders.index
         var changed = 0
         // Parents first, so links can find their order and bill.
-        changed += pull(OrderTable.ORDERS) { withContext(Dispatchers.IO) { orders.applyPulled(it) } }
-        changed += pull(OrderTable.BILLS) { withContext(Dispatchers.IO) { repo.applyRemoteBills(it) } }
-        changed += pull(OrderTable.LINKS) { withContext(Dispatchers.IO) { repo.applyRemoteLinks(it) } }
+        changed += pull(OrderTable.ORDERS, ahead) { withContext(Dispatchers.IO) { orders.applyPulled(it) } }
+        changed += pull(OrderTable.BILLS, ahead) { withContext(Dispatchers.IO) { repo.applyRemoteBills(it) } }
+        changed += pull(OrderTable.LINKS, ahead) { withContext(Dispatchers.IO) { repo.applyRemoteLinks(it) } }
         if (payments != null) {
-            changed += pull(OrderTable.ADVICES) { withContext(Dispatchers.IO) { payments.applyRemoteAdvices(it) } }
-            changed += pull(OrderTable.ADVICE_LINES) { withContext(Dispatchers.IO) { payments.applyRemoteLines(it) } }
+            changed += pull(OrderTable.ADVICES, ahead) { withContext(Dispatchers.IO) { payments.applyRemoteAdvices(it) } }
+            changed += pull(OrderTable.ADVICE_LINES, ahead) { withContext(Dispatchers.IO) { payments.applyRemoteLines(it) } }
         }
 
         val notices = ArrayList<String>()
@@ -81,24 +91,18 @@ class OrderSync(
         return OrderSyncResult(changed, pushed, notices)
     }
 
-    private suspend fun <T> pull(table: OrderTable<T>, apply: suspend (List<RemoteRow<T>>) -> Int): Int {
-        val saved = cursors.get(table.name)
-        var after = saved?.let { SyncTime.minusSeconds(it, OVERLAP_SECONDS) }
-        var afterId: String? = null
-        var newest = saved
-        var changed = 0
-        var pages = 0
-        while (pages++ < MAX_PAGES) {
-            val page = api.pull(table, after, afterId, pageSize)
-            changed += apply(page)
-            newest = page.fold(newest) { acc, row -> SyncTime.later(acc, row.serverUpdatedAt) }
-            if (page.size < pageSize) break
-            after = page.last().serverUpdatedAt
-            afterId = page.last().id
-        }
-        // Saved only after the rows were applied, so a failed round reads them again next time.
-        if (newest != saved) cursors.set(table.name, newest)
-        return changed
+    private suspend fun <T> pull(table: OrderTable<T>, ahead: PullAhead?, apply: suspend (List<RemoteRow<T>>) -> Int): Int {
+        val read: suspend (String?, String?) -> List<RemoteRow<T>> = { after, afterId -> api.pull(table, after, afterId, pageSize) }
+        return DeltaPull.run(
+            saved = cursors.get(table.name),
+            serverStart = ahead?.serverStart ?: api.serverTime(),
+            pageSize = pageSize,
+            fetch = { after, afterId -> ahead?.fetch(table.name, after, afterId, read) ?: read(after, afterId) },
+            updatedAt = { it.serverUpdatedAt },
+            id = { it.id },
+            apply = apply,
+            save = { cursors.set(table.name, it) }
+        )
     }
 
     private suspend fun <T> push(table: OrderTable<T>, pending: () -> List<PendingRow<T>>): Int {
@@ -282,7 +286,6 @@ class OrderSync(
     }
 
     internal companion object {
-        const val OVERLAP_SECONDS = 60L
         const val MAX_PAGES = 100
     }
 }

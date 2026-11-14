@@ -2,7 +2,7 @@ package com.example.otaapplication.data
 
 import android.content.ContentValues
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import com.example.otaapplication.OrderItem
 import com.example.otaapplication.cloud.OrderTable
 import org.json.JSONArray

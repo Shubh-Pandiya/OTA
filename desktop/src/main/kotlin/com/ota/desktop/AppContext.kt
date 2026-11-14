@@ -11,7 +11,12 @@ import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.Numbers
 import com.ota.desktop.data.OrderStore
 import com.ota.desktop.data.PaymentStore
+import com.ota.desktop.backup.AutoBackup
+import com.ota.desktop.backup.LocalSettings
+import com.ota.desktop.backup.Restorer
 import com.ota.desktop.db.Db
+import com.ota.desktop.db.Migrations
+import com.ota.desktop.security.PinLock
 import com.ota.desktop.db.EmbeddedDb
 import com.ota.desktop.db.Kv
 import com.ota.desktop.export.DataExport
@@ -43,7 +48,12 @@ import kotlinx.coroutines.launch
 
 /** Everything the screens use: the local database, stores, cloud sign-in and background sync. */
 @OptIn(FlowPreview::class)
-class AppContext internal constructor(private val server: EmbeddedDb, val db: Db) : AutoCloseable {
+class AppContext internal constructor(
+    private val server: EmbeddedDb,
+    val db: Db,
+    /** Where this laptop's own settings (backups, lock) live; tests and screenshots pass their own. */
+    home: java.io.File = AppPaths.home
+) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val kv = Kv(db)
     val config: SupabaseConfig = SupabaseConfig.fromBuildConfig()
@@ -90,6 +100,20 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     val weather = DesktopWeather(kv)
     val updates = UpdateManager(UpdateManager.RUNNING)
 
+    /** Backup and lock settings: per laptop, outside the database so a restore never changes them. */
+    val settings = LocalSettings.at(home)
+    val backups = AutoBackup(
+        settings, server::connect, java.io.File(home, "backup-staging"),
+        info = { mapOf("app" to UpdateManager.RUNNING.toString(), "schema" to Migrations.latest.toString()) }
+    )
+    val lock = PinLock(settings)
+
+    /**
+     * Set by the window: closes this context, runs `work` with the database stopped (instance lock
+     * held), opens the data again and shows the message `work` returns (or its error).
+     */
+    var restartWith: ((busy: String, work: () -> String) -> Unit)? = null
+
     private val _staff = MutableStateFlow(engine.cachedStaff())
     val staff: StateFlow<StaffProfile?> = _staff.asStateFlow()
 
@@ -110,6 +134,13 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
         scheduler.start(scope)
         updates.consumeOutcome()
         updates.start(scope)
+        backups.start(scope)
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                lock.checkIdle()
+            }
+        }
         scope.launch {
             // A finished sync round may have pulled rows from the phones.
             engine.status.distinctUntilChangedBy { it.lastSyncAt to it.running }.drop(1).collect {
@@ -127,6 +158,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
 
     suspend fun signIn(email: String, password: String) {
         val session = auth.signIn(email, password)
+        lock.unlocked()
         // Real and test data sit side by side; this only picks which one the screens and sync use.
         engine.adoptDataMode(session.email)
         _revision.update { it + 1 }
@@ -148,6 +180,27 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
         _staff.value = null
     }
 
+    /** "Forgot PIN": checks the signed-in account's cloud password (needs internet); refreshes its session. */
+    suspend fun verifyAccountPassword(password: String) {
+        val email = auth.session.value?.email ?: throw IllegalStateException("Nobody is signed in")
+        auth.signIn(email, password)
+    }
+
+    /**
+     * Restore: a safety backup of the current data first (if that fails nothing happens), then the
+     * window stops the database, [zip] replaces it, and the data is opened again.
+     */
+    suspend fun restoreBackup(zip: java.io.File, password: CharArray?, info: java.util.Properties?): java.io.File {
+        val restart = restartWith ?: error("Restore is not available here")
+        val safety = backups.backupNow("before-restore")
+        restart("Restoring the backup. OTA Business reopens your data in a moment…") {
+            val aside = Restorer.restore(AppPaths.home, AppPaths.pgData, zip, password, info, UpdateManager.RUNNING)
+            "Restored ${zip.name}.\n\nYour data from just before is saved as ${safety.name} in ${safety.parent}" +
+                (aside?.let { ", and the previous database folder is kept at $it" } ?: "") + "."
+        }
+        return safety
+    }
+
     /** For the updater: a last sync round, then a clean stop; [onExit] ends the process. */
     fun updateHost(onExit: () -> Unit) = object : UpdateHost {
         override suspend fun syncBeforeUpdate(): String? {
@@ -164,6 +217,7 @@ class AppContext internal constructor(private val server: EmbeddedDb, val db: Db
     }
 
     override fun close() {
+        backups.close()
         updates.stop()
         scheduler.stop()
         scope.cancel()

@@ -1,12 +1,14 @@
 package com.example.otaapplication.cloud
 
 import com.example.otaapplication.data.Deletion
-import com.example.otaapplication.data.SyncTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** [removed]: local rows removed by deletes made elsewhere, per table. [pushed]: deletes sent from here. */
-data class DeletionSyncResult(val removed: Map<String, Int>, val pushed: Int)
+/**
+ * [removed]: local rows removed by deletes made elsewhere, per table. [pushed]: deletes sent from here.
+ * [pulled]: tombstones read.
+ */
+data class DeletionSyncResult(val removed: Map<String, Int>, val pushed: Int, val pulled: Int = 0)
 
 /**
  * Hard deletes (docs/desktop-sync-contract.md, "Deleting"): reads the cloud's tombstones
@@ -22,34 +24,35 @@ class DeletionSync(
     private val markSent: (List<Deletion>) -> Unit,
     private val apply: (List<Deletion>) -> Map<String, Int>,
     private val resetTable: (table: String) -> Unit,
-    private val pageSize: Int = 500,
+    private val pageSize: Int = DeltaPull.PAGE_SIZE,
     private val pushBatch: Int = 200
 ) {
     suspend fun syncAll(): DeletionSyncResult = try {
-        val removed = pull()
-        DeletionSyncResult(removed, push())
+        var pulled = 0
+        val removed = pull { pulled += it }
+        DeletionSyncResult(removed, push(), pulled)
     } catch (e: CloudException) {
         // The cloud doesn't have hard deletes yet: deletes stay queued until it does.
         if (!e.missingInCloud) throw e
         DeletionSyncResult(emptyMap(), 0)
     }
 
-    private suspend fun pull(): Map<String, Int> {
-        val saved = cursors.get(CURSOR)
-        var after = saved?.let { SyncTime.minusSeconds(it, OrderSync.OVERLAP_SECONDS) }
-        var afterId: String? = null
-        var newest = saved
+    private suspend fun pull(counted: (Int) -> Unit): Map<String, Int> {
         val removed = HashMap<String, Int>()
-        var pages = 0
-        while (pages++ < OrderSync.MAX_PAGES) {
-            val page = api.pullDeletions(after, afterId, pageSize)
-            withContext(Dispatchers.IO) { apply(page) }.forEach { (table, n) -> if (n > 0) removed.merge(table, n, Int::plus) }
-            newest = page.fold(newest) { acc, row -> SyncTime.later(acc, row.serverUpdatedAt) }
-            if (page.size < pageSize) break
-            after = page.last().serverUpdatedAt
-            afterId = page.last().id
-        }
-        if (newest != saved) cursors.set(CURSOR, newest)
+        DeltaPull.run(
+            saved = cursors.get(CURSOR),
+            serverStart = api.serverTime(),
+            pageSize = pageSize,
+            fetch = { after, afterId -> api.pullDeletions(after, afterId, pageSize) },
+            updatedAt = { it.serverUpdatedAt },
+            id = { it.id },
+            apply = { page ->
+                counted(page.size)
+                withContext(Dispatchers.IO) { apply(page) }.forEach { (table, n) -> if (n > 0) removed.merge(table, n, Int::plus) }
+                0
+            },
+            save = { cursors.set(CURSOR, it) }
+        )
         return removed
     }
 

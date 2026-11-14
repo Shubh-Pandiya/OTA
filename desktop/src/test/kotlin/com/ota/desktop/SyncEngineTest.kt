@@ -26,6 +26,7 @@ import com.example.otaapplication.data.SyncIds
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.time.LocalDate
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -422,4 +423,69 @@ class SyncEngineTest {
         assertTrue(cloud.table("ota_deletions").isEmpty())
     }
 
+    private fun engineWith(pageSize: Int = 1000, pushBatch: Int = 200) =
+        SyncEngine(db, kv, auth, PostgrestClient(config, auth), catalog, orders, payments, Numbers(db, kv) { day }, pageSize = pageSize, pushBatch = pushBatch)
+
+    private fun cloudOrders(times: List<Instant>) = times.mapIndexed { i, at ->
+        "33333333-3333-4333-8333-33333333333$i".also { id -> cloud.put("orders", cloudOrder(id, "2627010$i"), at) }
+    }
+
+    private fun pulledOrders() = cloud.pulled.filter { it.first == "orders" }.map { it.second }
+
+    @Test
+    fun pagesNeverSkipRowsSharingATimestamp() = runBlocking {
+        val at = Instant.now().minusSeconds(600)
+        val ids = cloudOrders(List(5) { at })
+        val small = engineWith(pageSize = 2)
+        assertNull(small.sync().error)
+        assertEquals(ids, ids.filter { orders.get(it) != null }, "every row sharing the boundary timestamp arrives")
+        assertEquals(listOf(2, 2, 1), pulledOrders())
+        assertTrue(cloud.requests.any { it.startsWith("GET /rest/v1/orders") && it.contains("&or=") }, "later pages continue after (updated_at, id)")
+
+        // Those rows are older than the cloud clock at the start of the pull, so they aren't read again.
+        cloud.pulled.clear()
+        assertNull(small.sync().error)
+        assertEquals(listOf(0), pulledOrders())
+    }
+
+    @Test
+    fun interruptedPullResumesAtItsLastPage() = runBlocking {
+        val start = Instant.now().minusSeconds(600)
+        val ids = cloudOrders(List(5) { start.plusSeconds(60L * it) })
+        val small = engineWith(pageSize = 2)
+        cloud.getBudget["orders"] = 2
+        assertNotNull(small.sync().error)
+        assertEquals(4, ids.count { orders.get(it) != null }, "the pages read before the link dropped are kept")
+
+        cloud.getBudget.clear()
+        cloud.pulled.clear()
+        assertNull(small.sync().error)
+        assertEquals(5, ids.count { orders.get(it) != null })
+        assertEquals(2, pulledOrders().sum(), "only the last page (plus the minute of overlap) is read again")
+    }
+
+    @Test
+    fun uploadsGoInBatches() = runBlocking {
+        repeat(450) { numbered(order()) }
+        assertNull(engineWith(pushBatch = 200).sync().error)
+        assertEquals(3, cloud.requests.count { it.startsWith("POST /rest/v1/orders") })
+        assertEquals(450, cloud.table("orders").size)
+    }
+
+    @Test
+    fun quietRoundOnlyAsksEachTableOnce() = runBlocking {
+        numbered(order())
+        assertNull(engine.sync().error)
+        cloud.requests.clear()
+        assertNull(engine.sync().error)
+        // Staff row and storage use are cached: nothing was uploaded and both were read moments ago.
+        assertEquals(
+            listOf("ota_deletions", "buyers", "suppliers", "orders", "bills", "order_bills", "payment_advices", "advice_lines").sorted(),
+            cloud.requests.map { it.removePrefix("GET /rest/v1/").substringBefore('?') }.sorted()
+        )
+        numbered(order())
+        cloud.requests.clear()
+        assertNull(engine.sync().error)
+        assertTrue(cloud.requests.any { it.contains("rpc/ota_cloud_status") }, "an upload reads storage use again")
+    }
 }

@@ -1,0 +1,33 @@
+# Supabase's free tier pauses a project after 7 days without activity. One tiny REST read a day
+# with the public publishable key keeps it awake. The anonymous role has no table grants, so the
+# query runs inside Postgres and is refused with 42501 (HTTP 401) - that still counts as activity
+# and reads no data.
+# Runs in a few seconds on ubuntu-latest; no checkout needed.
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # daily 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping Supabase REST
+        env:
+          SUPABASE_URL: https://oorhbksfftzkjmbazgem.supabase.co
+          SUPABASE_KEY: sb_publishable_TgpueJiAG0vF35OkQrCiMA_L0Gj15tK
+        run: |
+          for i in 1 2 3; do
+            body=$(curl -s --max-time 30 -w ' HTTP%{http_code}' \
+              -H "apikey: $SUPABASE_KEY" "$SUPABASE_URL/rest/v1/order_counters?select=fy&limit=1") || body="curl failed"
+            echo "attempt $i: $body"
+            case "$body" in *HTTP200*|*42501*HTTP401*) exit 0 ;; esac
+            sleep 20
+          done
+          exit 1

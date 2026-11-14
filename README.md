@@ -36,42 +36,56 @@ Studio creates it by itself. To point one machine at a different Supabase projec
 `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` in `local.properties`; those win over
 `supabase.properties`.
 
-## Phone updates (1.1.0 and later)
+## Phone app: updates, lock and encryption
 
-The phone app updates itself from GitHub Releases (`android-v*` tags; the repository is public, so no
-token). It checks on start and every 6 hours, and *Sync Settings → App updates →
-Check* checks at once. When a newer version is out it shows the version and notes with **Update now /
-Later** (*Later* waits a day). *Update now*:
+**Two apps, one move (November 2026).** Phones up to 1.1.x run `com.example.otaapplication`, signed
+with an Android Studio debug key. From 2.0.0 the app is `com.ota.business`, signed with the OTA
+release key. Android can't update an app in place across keys, so the move is a one-time step:
 
-1. the first time, asks to allow *Install unknown apps* for OTA Business (it opens that setting and
-   continues once it is on);
-2. syncs when online; offline, unsynced orders, bills and advices simply stay queued on the phone;
-3. downloads `OTA-Business-<version>.apk` and checks its size and SHA-256 against `SHA256SUMS.txt`;
-4. checks that the APK is the same app, signed with the **same certificate** as the installed app, and
-   newer (a downgrade is refused);
-5. hands it to Android's installer, which asks *Update this app?* once more.
+1. The old app updates itself to **1.2.0** (`android-v1.2.0`, still the old key). It asks *Move to the
+   new app?*. **Move now** syncs and refuses to continue while anything is still unsynced. It then downloads
+   `phone-v2.0.0`, checks its SHA-256 and that it is signed with the release key, and installs it **next to** the old app.
+2. It packs the orders, bills, advices, to-dos, cheque/transaction pictures and settings into an
+   encrypted move file (AES-256-GCM, key from a 20-character recovery code). The file goes straight to the new
+   app, with a safety copy in `Download/OTA Business/OTA-move-<time>.otamove`.
+3. The new app restores everything and asks the user to sign in once (sign-in tokens are not copied).
+   The old app then only shows *Moved to the new app*, the recovery code, and **Remove this old app**.
 
-It is an in-place update, so everything on the phone stays: sign-in, orders, bills, advices, to-dos,
-cheque images and settings. Database migrations run on first start as usual.
+If the hand-over is interrupted, open the new app's sign-in screen, choose *Moving from the old app? Restore
+from the move file*, pick the `.otamove` file and type the recovery code shown in the old app.
 
-**Releasing:** set `otaAndroidVersion` in `gradle.properties` (versionCode = major×10000 +
-minor×100 + patch), add `app/release-notes/<version>.md`, and push tag `android-v<version>`. The
-[Android workflow](.github/workflows/android.yml) runs the unit tests, builds the R8-shrunk release
-APK (about 4 MB), signs it, and publishes the APK, `SHA256SUMS.txt` and the signing certificate's
-SHA-256 as a GitHub release.
+**Updates.** Each app follows only its own GitHub releases: the old app `android-v*`, the new app `phone-v*`
+(the desktop's `desktop-v*` releases are ignored). It checks on start and every 6 hours, and *Sync
+Settings → App updates → Check* checks at once. *Update now* asks once to allow *Install unknown apps*.
+It then syncs (offline, unsynced rows stay queued) and downloads `OTA-Business-<version>.apk`. Before
+handing the APK to Android's installer, it checks the size and SHA-256 against `SHA256SUMS.txt`, the same
+package, a newer version (no downgrades) and, for the new app, the release certificate
+`860a5773…8f55c3f0`. It is an in-place update, so everything on the phone stays.
 
-**Signing:** the release is signed with the key the phones' current app was built with (the Android
-Studio debug key of the computer that built it), so phones update in place without uninstalling.
-That keystore is stored, base64-encoded, in the repository secret `ANDROID_KEYSTORE_BASE64`; never
-commit it. Optional secrets `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`
-default to Android's debug values (`android` / `androiddebugkey` / `android`). To check the key
-matches a phone, compare the release's certificate SHA-256 with
-`keytool -list -v -keystore ~/.android/debug.keystore -storepass android` on that computer. If they
-differ, Android refuses the update and nothing on the phone changes.
+**App lock.** *Sync Settings → Security → App lock* sets a 4–8 digit PIN (salted PBKDF2), with optional
+fingerprint unlock. The app locks on a cold start and after being away for the chosen time (30 s,
+1, 5 or 15 min). After 5 wrong PINs the wait grows (30 s, doubling up to 1 hour); *Forgot PIN?* checks the account password online.
 
-**Phones on the first version (1.0, no updater):** install the APK of the
-[newest `android-v*` release](https://github.com/Shubh-Pandiya/OTA/releases?q=android-v) once by hand,
-over the existing app (do not uninstall). Later versions update themselves.
+**Encryption.** The phone's databases (orders/bills/advices and to-dos) are SQLCipher-encrypted, and
+pictures are sealed with AES-GCM, using keys kept in the Android Keystore. Phones upgrading from an
+older version are converted once on first start.
+
+**Releasing.**
+- *New app:* set `otaAndroidVersion` in `gradle.properties` (versionCode = major×10000 + minor×100 +
+  patch), add `app/release-notes/<version>.md`, push tag `phone-v<version>`. Signed with the release key
+  from the secrets `OTA_RELEASE_KEYSTORE_BASE64`, `OTA_RELEASE_KEYSTORE_PASSWORD`, `OTA_RELEASE_KEY_ALIAS`
+  and `OTA_RELEASE_KEY_PASSWORD`.
+- *Old app (only if the move bridge ever needs a fix):* push `android-v<version>`. CI builds with
+  `-PotaLegacyBridge=true` and the old key in `ANDROID_KEYSTORE_BASE64`.
+- The [Android workflow](.github/workflows/android.yml) runs the unit tests and builds the R8-shrunk APK (about
+  8 MB; SQLCipher adds its native library). It refuses an APK signed with the wrong key, then publishes the
+  APK, `SHA256SUMS.txt` and the certificate SHA-256.
+
+**The release key is the only way to ship updates.** It is never committed. Keep the offline backup copy
+safe: if the key and its passwords are lost, phones can't be updated again without another move.
+
+**Keeping the cloud awake.** Supabase's free tier pauses after 7 idle days.
+[keep-supabase-awake](.github/workflows/keep-supabase-awake.yml) makes one tiny read each day (a few seconds of Actions time).
 
 ## Cloud (Supabase) setup
 
@@ -249,8 +263,33 @@ a few seconds after start and every 6 hours, and asks *Update now / Later* with 
 On every start the app also refuses data last opened by a newer version (no downgrades: the installer itself cannot block an older MSI, so the app does), takes a backup
 whenever the version changed (if the updater has not just made one), and applies database migrations in
 one transaction, so a failed migration leaves the database exactly as it was and says which backup to use.
-To put a backup back (with the app closed): `"OTA Business.exe" --restore-backup "<backup .zip>"`; the
+To put a backup back (with the app closed): `"OTA Business.exe" --restore-backup "<backup .zip>" [--password "<backup password>"]`; the
 current database is kept beside it as `pgdata-before-restore-<time>`.
+
+**Automatic backups (Sync & Cloud → Backups):**
+- **What and when.** The app makes a full copy of the local database: real data, the test account's data and the Accounts books, which exist only on this laptop.
+  - It backs up once a day, and again when you close the app if anything changed and there was no backup in the last 10 minutes.
+  - Backups run on a low-priority background thread while you keep working. A backup taken on close shows *Saving a backup before closing…* and waits at most 90 s; *Close now* skips it.
+- **Where.** Backups go to `Documents/OTA Backups` by default. *Change folder…* picks a USB drive or a Google Drive / OneDrive folder, which keeps copies off the laptop.
+  - Files are named `OTA-Business-backup_<date>_<computer>_<daily|on-exit|manual|before-restore>.zip`.
+  - The last 14 are kept (configurable). Rotation deletes only this computer's files with that exact name, so a shared folder can also hold other files and other laptops' backups.
+- **Encryption.** Each backup is a standard zip with its data encrypted with AES-256 (WinZip AES).
+  - On first use the app generates a backup password (`XXXX-XXXX-XXXX-XXXX-XXXX`). *Show* / *Copy* display it; write it down. *Change…* sets your own.
+  - The password is stored only on this laptop, in `security.properties` in the data folder, readable by your user only, and never in the backup.
+  - Older passwords are remembered, so older backups restore without asking.
+  - A short README and a manifest inside the zip are not encrypted.
+- **Recovery without the app.** Open the zip with 7-Zip, WinZip, Keka or The Unarchiver and enter the backup password. Windows' built-in zip viewer can't open it. Inside is a PostgreSQL 17 data folder.
+- **Restore…** Pick a backup, then enter its password if it came from another laptop or an older password, then confirm that it **replaces all of this laptop's local data**. The app then:
+  1. saves a safety backup of the current data to the backup folder (if that fails, nothing changes);
+  2. stops the database;
+  3. puts the backup in place, keeping the old folder as `pgdata-before-restore-<time>`;
+  4. reopens.
+- Pre-update copies in the data folder's `backups` folder stay unencrypted, as before. They sit beside the live, unencrypted database in the same private folder, and keeping them plain keeps the update rollback simple.
+
+**PIN lock (Sync & Cloud → Security, optional, per laptop):** set a 4–8 digit PIN, stored only as a salted PBKDF2 hash.
+- The app locks on start (once signed in) and after 5/15/30/60 minutes without keyboard or mouse input, or *Lock now*. Only the screens lock; sync and backups keep running.
+- After 5 wrong PINs, entry pauses for 30 s, doubling up to 15 min, even across restarts.
+- *Forgot PIN?* checks your OTA Business account password online, then lets you set a new PIN or turn the lock off.
 **Coming from 1.2.1 or older:** install 1.3.0 once by hand (download and run the MSI); later versions update themselves.
 On a Mac the update downloads the DMG and verifies it the same way. After the app closes, it swaps
 `OTA Business.app` in place and reopens it, and the data folder is never touched. The first Mac version

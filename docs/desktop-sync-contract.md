@@ -210,12 +210,22 @@ voucher number, and when).
 
 ## Pulling (delta sync)
 
-For each table, keep a cursor `(updated_at, id)` of the last row received and page with:
+For each table, keep a cursor and page in `(updated_at, id)` order. The first page starts one
+minute before the cursor (`&updated_at=gt.<cursor − 60 s>`, covering transactions that commit out
+of order); each later page continues after the previous page's last row:
 
 ```
-GET /rest/v1/<table>?select=<cols>&order=updated_at.asc,id.asc&limit=500
-    &or=(updated_at.gt."<cursor>",and(updated_at.eq."<cursor>",id.gt.<cursor id>))
+GET /rest/v1/<table>?select=<cols>&order=updated_at.asc,id.asc&limit=1000
+    &or=(updated_at.gt."<last updated_at>",and(updated_at.eq."<last updated_at>",id.gt.<last id>))
 ```
+
+`limit` must not exceed the project's API "max rows" (1000): a short page means the end. The cursor
+is saved after every applied page (an interrupted pull resumes there). Once a pull reaches the end
+it is moved up to the cloud's clock (the HTTP `Date` of the answer before the pull started) minus a
+minute, so rows from a bulk change aren't downloaded again by every round. Responses are requested
+with `Accept-Encoding: gzip`; request bodies are sent uncompressed (PostgREST rejects
+`Content-Encoding: gzip`). After the deletes, the tables' pages are read ahead in parallel (at most
+four requests at once) and applied in the order below.
 
 Pull `ota_deletions` first (see *Deleting*), then `orders`, then `bills`, then `order_bills`, then `payment_advices`, then `advice_lines`. Store `updated_at` **exactly as returned**
 (microseconds), because archiving needs it. Apply with last-write-wins on `client_updated_at`; a

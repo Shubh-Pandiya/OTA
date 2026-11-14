@@ -1,15 +1,29 @@
 package com.example.otaapplication.data
 
 import android.content.Context
+import com.example.otaapplication.security.LocalKeys
 import java.io.File
 import java.util.UUID
 
+/** Encrypts image bytes at rest. */
+interface ImageSealer {
+    fun seal(plain: ByteArray): ByteArray
+    fun open(sealed: ByteArray): ByteArray
+}
+
+/** AES-GCM with this phone's Android Keystore key. */
+object KeystoreImageSealer : ImageSealer {
+    override fun seal(plain: ByteArray) = LocalKeys.seal(plain)
+    override fun open(sealed: ByteArray) = LocalKeys.open(sealed)
+}
+
 /**
  * Cheque photos and transaction screenshots attached to payment advices, kept as compressed
- * JPEGs under `files/advice_images/<advice id>/<image id>.jpg`. The same relative path is the
- * object name in the cloud's `advice-images` Storage bucket.
+ * JPEGs under `files/advice_images/<advice id>/<image id>.jpg`. With a [sealer] the files are
+ * encrypted (a short magic header, then the sealed JPEG); always read them through [readFile].
+ * Files written by older versions (plain JPEG) still read, and [sealExisting] encrypts them.
  */
-class AdviceImageFiles(private val root: File) {
+class AdviceImageFiles(private val root: File, private val sealer: ImageSealer? = null) {
     fun file(path: String): File = File(root, path)
 
     fun file(adviceId: String, imageId: String): File = file(path(adviceId, imageId))
@@ -21,19 +35,47 @@ class AdviceImageFiles(private val root: File) {
 
     fun exists(path: String): Boolean = file(path).isFile
 
-    fun read(path: String): ByteArray? = file(path).takeIf { it.isFile }?.readBytes()
+    fun read(path: String): ByteArray? = readFile(file(path))
 
-    /** Writes via a temp file so a half-written image is never picked up. */
-    fun write(path: String, bytes: ByteArray) {
-        val target = file(path)
+    /** The JPEG bytes of [file] (decrypted), or null if it is missing or unreadable. */
+    fun readFile(file: File): ByteArray? {
+        if (!file.isFile) return null
+        val bytes = file.readBytes()
+        if (!isSealed(bytes)) return bytes
+        return runCatching { (sealer ?: KeystoreImageSealer).open(bytes.copyOfRange(MAGIC.size, bytes.size)) }.getOrNull()
+    }
+
+    fun write(path: String, bytes: ByteArray) = writeFile(file(path), bytes)
+
+    /** Writes (encrypted when sealing) via a temp file so a half-written image is never picked up. */
+    fun writeFile(target: File, bytes: ByteArray) {
         target.parentFile?.mkdirs()
         val temp = File(target.parentFile, target.name + ".part")
-        temp.writeBytes(bytes)
+        temp.writeBytes(sealer?.let { MAGIC + it.seal(bytes) } ?: bytes)
         if (!temp.renameTo(target)) {
             target.delete()
-            temp.renameTo(target)
+            check(temp.renameTo(target)) { "Could not write ${target.name}" }
         }
     }
+
+    /** Encrypts images saved by a version that kept them plain. Returns how many were converted. */
+    fun sealExisting(): Int {
+        if (sealer == null) return 0
+        var count = 0
+        root.walkTopDown().filter { it.isFile && it.name.endsWith(".jpg") }.forEach { f ->
+            val bytes = f.readBytes()
+            if (!isSealed(bytes)) {
+                writeFile(f, bytes)
+                count++
+            }
+        }
+        return count
+    }
+
+    /** Every stored image as (relative path, decrypted bytes); staged images are skipped. */
+    fun exportAll(): Sequence<Pair<String, ByteArray>> =
+        root.walkTopDown().filter { it.isFile && it.name.endsWith(".jpg") && it.parentFile?.name != STAGING }
+            .mapNotNull { f -> readFile(f)?.let { f.relativeTo(root).invariantSeparatorsPath to it } }
 
     fun delete(path: String) {
         val target = file(path)
@@ -61,11 +103,14 @@ class AdviceImageFiles(private val root: File) {
 
     companion object {
         private const val STAGING = "staging"
+        private val MAGIC = "OTAIMG1".toByteArray(Charsets.US_ASCII)
+
+        fun isSealed(bytes: ByteArray) = bytes.size > MAGIC.size && MAGIC.indices.all { bytes[it] == MAGIC[it] }
 
         fun path(adviceId: String, imageId: String) = "$adviceId/$imageId.jpg"
 
         fun newId(): String = UUID.randomUUID().toString()
 
-        fun forContext(context: Context) = AdviceImageFiles(File(context.applicationContext.filesDir, "advice_images"))
+        fun forContext(context: Context) = AdviceImageFiles(File(context.applicationContext.filesDir, "advice_images"), KeystoreImageSealer)
     }
 }

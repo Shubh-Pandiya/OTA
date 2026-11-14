@@ -2,7 +2,7 @@ package com.example.otaapplication.data
 
 import android.content.ContentValues
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import java.util.UUID
 
 /** Buyer and supplier catalog. All calls hit the database; run them off the main thread. */

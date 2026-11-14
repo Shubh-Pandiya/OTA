@@ -4,11 +4,11 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.PartyType
-import com.example.otaapplication.data.SyncTime
+import com.example.otaapplication.data.RemoteParty
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Where each table's pull cursor (last server `updated_at` seen) is kept. */
+/** Where each table's pull cursor (a server `updated_at`, see [DeltaPull]) is kept. */
 interface SyncCursors {
     fun get(type: PartyType): String?
     fun set(type: PartyType, value: String?)
@@ -29,14 +29,23 @@ class CatalogSync(
     private val repository: CatalogRepository,
     private val api: CatalogCloudApi,
     private val cursors: SyncCursors,
-    private val pageSize: Int = 500,
-    private val pushBatch: Int = 200
+    private val pageSize: Int = DeltaPull.PAGE_SIZE,
+    private val pushBatch: Int = 200,
+    /** The cloud's clock (see [DeltaPull]); null when unknown. */
+    private val serverTime: () -> String? = { null }
 ) {
-    suspend fun syncAll(): SyncResult {
+    /** Starts reading every table's changes ahead (see [PullAhead]). */
+    fun readAhead(ahead: PullAhead) {
+        for (type in PartyType.entries) {
+            ahead.start(key(type), cursors.get(type), pageSize, { after, afterId -> api.pull(type, after, afterId, pageSize) }, { it.serverUpdatedAt }, { it.party.id })
+        }
+    }
+
+    suspend fun syncAll(ahead: PullAhead? = null): SyncResult {
         var pulled = 0
         var pushed = 0
         for (type in PartyType.entries) {
-            pulled += pull(type)
+            pulled += pull(type, ahead)
             val (sent, changed) = push(type)
             pushed += sent
             pulled += changed
@@ -44,26 +53,21 @@ class CatalogSync(
         return SyncResult(pulled, pushed)
     }
 
-    private suspend fun pull(type: PartyType): Int {
-        val saved = cursors.get(type)
-        var after = saved?.let { SyncTime.minusSeconds(it, OVERLAP_SECONDS) }
-        var afterId: String? = null
-        var newest = saved
-        var changed = 0
-        var pages = 0
-        while (pages++ < MAX_PAGES) {
-            val page = api.pull(type, after, afterId, pageSize)
-            changed += withContext(Dispatchers.IO) { repository.mergePulled(type, page) }
-            newest = page.fold(newest) { acc, row -> SyncTime.later(acc, row.serverUpdatedAt) }
-            if (page.size < pageSize) break
-            val last = page.last()
-            after = last.serverUpdatedAt
-            afterId = last.party.id
-        }
-        // Saved only after the merge committed, so a failed sync re-reads the same rows next time.
-        if (newest != saved) cursors.set(type, newest)
-        return changed
-    }
+    private suspend fun pull(type: PartyType, ahead: PullAhead?): Int = DeltaPull.run(
+        saved = cursors.get(type),
+        serverStart = ahead?.serverStart ?: serverTime(),
+        pageSize = pageSize,
+        fetch = { after, afterId ->
+            val read: suspend (String?, String?) -> List<RemoteParty> = { a, i -> api.pull(type, a, i, pageSize) }
+            ahead?.fetch(key(type), after, afterId, read) ?: read(after, afterId)
+        },
+        updatedAt = { it.serverUpdatedAt },
+        id = { it.party.id },
+        apply = { page -> withContext(Dispatchers.IO) { repository.mergePulled(type, page) } },
+        save = { cursors.set(type, it) }
+    )
+
+    private fun key(type: PartyType) = "catalog:${type.table}"
 
     /** Returns rows sent and local rows whose content changed because the server kept a newer copy. */
     private suspend fun push(type: PartyType): Pair<Int, Int> {
@@ -85,7 +89,6 @@ class CatalogSync(
     }
 
     private companion object {
-        const val OVERLAP_SECONDS = 60L
         const val MAX_PAGES = 100
     }
 }

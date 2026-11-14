@@ -106,6 +106,13 @@ fun SignInScreen(cloud: CloudSync, status: CloudStatus) {
                 textAlign = TextAlign.Center,
                 modifier = Modifier.graphicsLayer { alpha = entry.value }
             )
+            if (!com.example.otaapplication.BuildConfig.IS_BRIDGE) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                androidx.compose.material3.TextButton(
+                    onClick = { context.startActivity(android.content.Intent(context, com.example.otaapplication.migration.RestoreActivity::class.java)) },
+                    modifier = Modifier.graphicsLayer { alpha = entry.value }
+                ) { Text("Moving from the old app? Restore from the move file") }
+            }
         }
     }
 }
