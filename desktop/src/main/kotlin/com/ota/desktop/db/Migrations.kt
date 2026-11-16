@@ -64,6 +64,6 @@ class Kv(private val db: Db) {
     fun remove(vararg keys: String) = db.read { c -> keys.forEach { c.update("delete from ${table(it)} where key = ?", it) } }
 
     companion object {
-        val PER_DATA_SET = listOf("cursor.", "counter.", "sync.last")
+        val PER_DATA_SET = listOf("cursor.", "counter.", "sync.last", "maintenance.", "open_items.")
     }
 }

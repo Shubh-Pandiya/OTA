@@ -13,7 +13,7 @@ reminders stay on the phone that created them and are never uploaded.
 | | Phones | Cloud | Desktop |
 |---|---|---|---|
 | Buyers, suppliers | full copy | **permanent** full copy | full copy |
-| Orders, bills, order_bills, payment_advices, advice_lines | their own rows, plus anything pulled | only the last `retention_days` (by order / payment date) | **every row ever**, the system of record |
+| Orders, bills, order_bills, payment_advices, advice_lines | their own rows, plus anything pulled | open items however old (unpaid bills, unbilled orders and everything linked to them), plus settled ones for `retention_days` | **every row ever**, the system of record |
 
 ### Admins
 
@@ -22,7 +22,8 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 `staff.is_admin` is only kept in step for display and can't grant anything.
 
 - Only an admin may archive (`ota_mark_archived`), purge (`ota_purge_archived_orders`) or change
-  `app_settings` (retention days, storage limit). The cloud refuses everyone else, whatever the app shows.
+  `app_settings` (retention days, storage limit); the test login may archive and purge its own `test_`
+  tables. The cloud refuses everyone else, whatever the app shows.
 - The desktop follows the same rule: cloud clean-up, retention settings and the **Accounts** section
   appear only when an admin is signed in. Any staff login can still use the rest of the desktop app.
 
@@ -39,7 +40,7 @@ tables: `test_buyers`, `test_suppliers`, `test_orders`, `test_bills`, `test_orde
   synced tables and `ota_deletions` for the test login. RPCs keep their names and pick the tables themselves.
 - Test orders and advices are numbered `T{FYstartYY}{FYendYY}{serial}` (T26270001, PA-T26270001) from
   the test counters; they only move forward. The production series is unaffected.
-- Archive and purge only touch production rows.
+- An admin's archive and purge only touch production rows; the test login's only touch the `test_` tables.
 - `ota_clear_test_data()` (test login only) truncates the test tables and keeps the counters. It
   returns the deleted counts as JSON. The phone and the desktop show **Clear all my test data** to the
   test login only, and then also wipe their local synced copy.
@@ -258,17 +259,27 @@ or `payment_advices` means that order / advice number is already taken.
    This returns the number of rows marked. A row edited after your pull is skipped; it comes back
    in the next pull and is archived then. Archiving doesn't change `updated_at`, so phones don't
    download anything again.
-3. **Purge**: `POST /rest/v1/rpc/ota_purge_archived_orders` with `{}`. It deletes:
-   - orders dated (by order date) more than `retention_days` ago that are archived and unchanged
-     since (`updated_at <= archived_at`),
-   - the archived, unchanged links of those orders (and old archived links whose order is gone),
-   - payment advices dated (by pay_date) before the cutoff that are archived and unchanged,
-   - their archived, unchanged lines (and old archived lines whose advice is gone),
-   - archived, unchanged bills that no order link and no advice line points to any more.
+3. **Purge**: `POST /rest/v1/rpc/ota_purge_archived_orders` with `{}`. It keeps **open items**
+   however old they are, and deletes only settled ones:
+   - A bill is open while it has no amount, or `amount - Σ(paid + cd_amount + goods_return +
+     rate_diff + claim)` over its advice lines is at least 0.005.
+   - An order is open while it has no bill link (never billed).
+   - Everything linked to an open item stays: an order with all its bills, a bill with all its
+     orders and advices, an advice with all its bills (and the links and lines between them).
+   - A row edited recently (its `updated_at`, IST date, is within `retention_days`), never archived
+     or changed after archiving also stays, and so does everything linked to it.
+   - The rest (settled orders, bills, links, advices and lines) are deleted, as are archived
+     unchanged lines and links whose other side is already gone.
 
    It returns `{"orders": n, "order_bills": n, "payment_advices": n, "advice_lines": n, "bills": n,
-   "cutoff": "yyyy-mm-dd", "retention_days": n}`.
+   "cutoff": "yyyy-mm-dd", "retention_days": n, "rule": "open_items"}`.
    **A row that isn't archived is never deleted.** Buyers and suppliers are never purged.
+   Run by an admin it purges the production tables; run by the test login, the `test_` tables.
+4. **Upload open items once** (desktop 1.11.0+). Purges before 20261122000000_keep_open_items.sql
+   went by date and removed open items too. The first time a purge answers `"rule": "open_items"`,
+   the desktop lists the cloud's ids (`GET /rest/v1/<table>?select=id&order=id.asc&limit=1000&id=gt.<last>`),
+   finds the open items (as above) it holds that the cloud lacks, and uploads them as they are
+   (same `client_updated_at`). Phones receive them through the normal delta pull.
 
 Run steps 1–3 every time the desktop connects, and on a timer while it runs.
 
@@ -295,7 +306,9 @@ the reported database size may only drop after autovacuum.
   points at it, so the desktop can always resolve `advice_lines.bill_id`, even after the bill
   and its orders have left the cloud.
 - A purge never deletes anything on a phone. Purged rows just stop appearing in pulls, and no
-  tombstones are created for them.
+  tombstones are created for them. Phones keep every row they ever pulled, so open items stay
+  visible offline.
+- Orders that are never billed (for example cancelled ones) stay in the cloud until deleted.
 
 ## Storage monitoring
 
@@ -319,7 +332,7 @@ later. Never drop it.
 
 An order takes about 1 KB including one bill and its link (row data plus indexes). Items are
 stored as compact JSON, and no PDFs are stored. A payment advice with two lines is under 1 KB. With about 450 MB usable, the cloud could hold
-roughly 400 000 orders; with 30-day retention it only ever holds one month's worth.
+roughly 400 000 orders. Keeping open items plus 30 days of settled ones, it typically holds 10–30 MB.
 
 ## Item units
 

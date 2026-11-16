@@ -42,6 +42,8 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     var maxRows = 1000
     /** Table GETs still answered before they fail with 503 (a dropped link mid-pull); absent = no limit. */
     val getBudget = HashMap<String, Int>()
+    /** What ota_purge_archived_orders reports as its rule ("open_items" since 20261122000000_keep_open_items.sql). */
+    var purgeRule: String? = null
     private var last: Instant = Instant.EPOCH
     private val fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSxxx").withZone(ZoneOffset.UTC)
 
@@ -182,6 +184,8 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
             val id = m.groupValues[3]
             rows = rows.filter { at(it) > t || (at(it) == t && it.getString("id") > id) }
         }
+        if (params["order"] == "id.asc") rows = rows.sortedBy { it.getString("id") }
+        params["id"]?.let { f -> val id = f.removePrefix("gt."); rows = rows.filter { it.getString("id") > id } }
         rows = rows.take(minOf(params["limit"]?.toInt() ?: Int.MAX_VALUE, maxRows))
         pulled += name to rows.size
         return 200 to JSONArray(rows).toString()
@@ -238,7 +242,8 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
             gone.forEach { table(name).remove(it) }
             result.put(name, gone.size)
         }
-        return 200 to result.put("cutoff", "2026-10-11").put("retention_days", settings.getInt("retention_days")).toString()
+        return 200 to result.put("cutoff", "2026-10-11").put("retention_days", settings.getInt("retention_days"))
+            .apply { purgeRule?.let { put("rule", it) } }.toString()
     }
 
     override fun close() = server.stop(0)

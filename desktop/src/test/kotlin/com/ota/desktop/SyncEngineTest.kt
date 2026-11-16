@@ -210,6 +210,45 @@ class SyncEngineTest {
     }
 
     @Test
+    fun openItemsPurgedEarlierAreUploadedOnceAgain() = runBlocking {
+        fun advice(billId: String, paid: Double, no: String) = payments.save(
+            com.example.otaapplication.data.AdviceDraft(
+                payDate = day, buyer = "Ram Traders", supplier = "Shiv Mills", mode = com.example.otaapplication.data.PaymentMode.ONLINE, reference = "",
+                balanceAmount = null, balanceSide = null, remarks = "", lines = listOf(billId to com.example.otaapplication.data.LineAmounts(paid = paid))
+            ),
+            no
+        )
+        val settled = numbered(order())
+        orders.attachBill(listOf(settled.id), "B-1", BillDetails(amount = 1000.0))
+        val settledBill = orders.billsForOrder(settled.id).single()
+        val settledAdvice = advice(settledBill.id, 1000.0, "26270001")
+        val open = numbered(order())
+        orders.attachBill(listOf(open.id), "B-2", BillDetails(amount = 1000.0))
+        val openBill = orders.billsForOrder(open.id).single()
+        val openAdvice = advice(openBill.id, 400.0, "26270002")
+        val unbilled = numbered(order())
+
+        // An old cloud purged everything by date; the new rule keeps open items, and the laptop uploads them once.
+        engine.sync(maintenance = true)
+        cloud.purgeRule = "open_items"
+        engine.sync(maintenance = true)
+        assertEquals(setOf(open.id, unbilled.id), cloud.table("orders").keys)
+        assertEquals(setOf(openBill.id), cloud.table("bills").keys)
+        assertEquals(setOf(openAdvice.id), cloud.table("payment_advices").keys)
+        assertEquals(1, cloud.table("order_bills").size)
+        assertEquals(1, cloud.table("advice_lines").size)
+        assertTrue(settled.id !in cloud.table("orders") && settledAdvice.id !in cloud.table("payment_advices"))
+        assertTrue(engine.status.value.lastPurge!!.contains("open row(s) uploaded again"))
+        assertEquals(0, engine.sync().pending)
+
+        // Only once: the next maintenance doesn't list cloud ids again.
+        val before = cloud.requests.size
+        engine.sync(maintenance = true)
+        assertTrue(cloud.requests.drop(before).none { it.contains("select=id&order=id.asc") })
+        assertEquals(3, orders.list().size, "the laptop keeps every order")
+    }
+
+    @Test
     fun nonAdminNeverArchivesOrPurges() = runBlocking {
         // Admin is decided by the sign-in email; a staff row flagged is_admin doesn't make someone admin.
         auth.signIn("staff@ota.com", "x")

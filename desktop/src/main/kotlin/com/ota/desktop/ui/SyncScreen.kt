@@ -93,7 +93,7 @@ fun SyncScreen() {
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Kpi("Last sync", ago(status.lastSyncAt), if (status.running) "Running now" else "Automatic every few minutes", Brand.Saffron, Modifier.weight(1f))
             Kpi("Waiting to upload", "${status.pending}", if (status.pending == 0) "Everything is in the cloud" else "Uploaded on the next sync", if (status.pending == 0) Brand.Green else Brand.Amber, Modifier.weight(1f))
-            Kpi("Cloud retention", u?.let { "${it.retentionDays} days" } ?: "—", "Older orders live only here", Brand.Blue, Modifier.weight(1f))
+            Kpi("Cloud retention", u?.let { "${it.retentionDays} days" } ?: "—", "Open bills stay however old", Brand.Blue, Modifier.weight(1f))
             Kpi("Last clean-up", ago(status.lastMaintenanceAt), if (admin) "On connect and every 6 hours" else "Run by the admin's laptop", Brand.Muted, Modifier.weight(1f))
         }
         Spacer(Modifier.height(14.dp))
@@ -186,7 +186,8 @@ private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?) {
     }
     Panel(Modifier.fillMaxWidth(), title = "Cloud settings (admin)") {
         Text(
-            "Orders, bills and payment advices older than the retention days are removed from the cloud, but only after this laptop has stored them. " +
+            "Bills not yet fully paid, unbilled orders and everything linked to them stay in the cloud however old they are. " +
+                "Settled orders, bills and payment advices are removed once settled longer than the retention days, but only after this laptop has stored them. " +
                 "Lower the days if the cloud gets full. Buyers and suppliers always stay in the cloud.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
         )

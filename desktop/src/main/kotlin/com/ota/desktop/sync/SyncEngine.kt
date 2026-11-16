@@ -23,6 +23,7 @@ import com.ota.desktop.data.CatalogStore
 import com.ota.desktop.data.Deletions
 import com.ota.desktop.data.LocalSyncTable
 import com.ota.desktop.data.Numbers
+import com.ota.desktop.data.OpenItems
 import com.ota.desktop.data.OrderStore
 import com.ota.desktop.data.PaymentStore
 import com.ota.desktop.db.Db
@@ -103,6 +104,9 @@ class SyncEngine(
 
     /** Which data set is in use (the last login's); installs from before 1.5.0 hold real data. */
     fun dataMode(): String = kv[KEY_DATA_MODE] ?: OtaAccounts.MODE_PRODUCTION
+
+    /** The test login on its own data set: it archives and purges its own test_ tables. */
+    private fun testBooks(): Boolean = OtaAccounts.isTest(auth.session.value?.email) && dataMode() == OtaAccounts.MODE_TEST && db.schema == Db.TEST
 
     /** On start: picks up the data set in use, so queries, ids and PDF folders follow it. */
     fun loadDataMode() {
@@ -242,7 +246,7 @@ class SyncEngine(
                     pulls.stop()
                 }
             }
-            if (maintenance && isAdmin()) maintain()
+            if (maintenance && (isAdmin() || testBooks())) maintain(notices)
         } catch (e: CloudException) {
             full = e.storageFull
             error = when {
@@ -561,7 +565,7 @@ class SyncEngine(
      * Archive then purge. Pulls again first so rows pushed in this round get their final cloud
      * version stored locally; only those exact versions are marked archived.
      */
-    private suspend fun maintain() {
+    private suspend fun maintain(notices: MutableList<String>) {
         pullAll()
         var marked = 0
         for (t in LocalSyncTable.ALL) {
@@ -576,10 +580,13 @@ class SyncEngine(
             }
         }
         val purged = JSONObject(client.call("POST", "rpc/ota_purge_archived_orders", body = "{}"))
+        val openItems = purged.optString("rule") == "open_items"
+        val restored = if (openItems && withContext(Dispatchers.IO) { kv[KEY_OPEN_RESTORED] } == null) restoreOpenItems(notices) else null
         val summary = buildString {
             append("Archived ").append(marked).append(" row(s); removed from cloud: ")
             append(listOf("orders", "bills", "payment_advices").joinToString(", ") { "${purged.optInt(it)} ${it.replace('_', ' ')}" })
-            if (purged.has("cutoff")) append(" (dated before ").append(purged.optString("cutoff")).append(")")
+            if (purged.has("cutoff")) append(if (openItems) " (settled before " else " (dated before ").append(purged.optString("cutoff")).append(")")
+            if (restored != null && restored > 0) append("; ").append(restored).append(" open row(s) uploaded again")
         }
         withContext(Dispatchers.IO) {
             kv[KEY_LAST_MAINTENANCE] = clock().toString()
@@ -587,11 +594,61 @@ class SyncEngine(
         }
     }
 
+    /**
+     * Once, after the cloud switched to keeping open items (bills not fully paid, unbilled orders and
+     * everything linked to them): uploads those that earlier date-based purges removed, so phones
+     * see them again. Returns how many rows were queued.
+     */
+    private suspend fun restoreOpenItems(notices: MutableList<String>): Int {
+        val keep = withContext(Dispatchers.IO) { OpenItems.keep(db) }
+        var queued = 0
+        for (t in LocalSyncTable.ALL) {
+            val wanted = keep.of(t.local)
+            if (wanted.isEmpty()) continue
+            val inCloud = cloudIds(t.cloud.name)
+            val missing = wanted - inCloud
+            if (missing.isNotEmpty()) withContext(Dispatchers.IO) { t.markPending(db, missing) }
+            queued += missing.size
+        }
+        if (queued > 0) {
+            pushNumbered(LocalSyncTable.ORDERS, notices) { row ->
+                resolveDuplicate(row, row.value.offerNo, Numbers.Kind.ORDER, LocalSyncTable.ORDERS) { OrderNumber.parseOrderDate(row.value.date) }
+            }
+            push(LocalSyncTable.BILLS)
+            push(LocalSyncTable.LINKS)
+            pushNumbered(LocalSyncTable.ADVICES, notices) { row ->
+                resolveDuplicate(row, row.value.adviceNo, Numbers.Kind.ADVICE, LocalSyncTable.ADVICES) { row.value.payDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() } }
+            }
+            push(LocalSyncTable.ADVICE_LINES)
+        }
+        withContext(Dispatchers.IO) { kv[KEY_OPEN_RESTORED] = clock().toString() }
+        return queued
+    }
+
+    /** Every id in a cloud table (keyset pages; the test login's path goes to its test_ table). */
+    private suspend fun cloudIds(table: String): Set<String> {
+        val ids = HashSet<String>()
+        var after: String? = null
+        var pages = 0
+        while (pages++ < MAX_PAGES * 10) {
+            val path = "$table?select=id&order=id.asc&limit=$ID_PAGE" + (after?.let { "&id=gt.$it" } ?: "")
+            val page = JSONArray(client.call("GET", path))
+            if (page.length() == 0) break
+            for (i in 0 until page.length()) ids += page.getJSONObject(i).getString("id")
+            after = page.getJSONObject(page.length() - 1).getString("id")
+            if (page.length() < ID_PAGE) break
+        }
+        return ids
+    }
+
     companion object {
         private const val DELETIONS_CURSOR = "cursor.ota_deletions"
         private const val KEY_TEST_SPLIT = "test_tables_split"
         private const val MAX_PAGES = 100
         private const val ARCHIVE_BATCH = 500
+        private const val ID_PAGE = 1000
+        /** Set once the open items earlier purges removed were uploaded again (per data set). */
+        private const val KEY_OPEN_RESTORED = "open_items.restored"
         const val STORAGE_FULL = "Cloud storage is full. Changes are kept on this laptop and upload once space is freed " +
             "(lower the retention days or run cloud clean-up)."
         private const val KEY_STAFF_CODE = "staff.code"

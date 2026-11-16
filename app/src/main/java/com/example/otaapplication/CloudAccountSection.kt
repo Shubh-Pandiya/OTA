@@ -267,8 +267,8 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
             StatusLine(Icons.Default.Storage, "Cloud storage: ${usageText(usage)}", isError = usage.warning)
             StatusLine(
                 Icons.Default.History,
-                "Cloud keeps orders for ${usage.retentionDays} day${if (usage.retentionDays == 1) "" else "s"} (set in the desktop app). " +
-                    "Orders on this phone are never removed by it."
+                "Cloud keeps unpaid bills and their orders and advices; settled ones leave after ${usage.retentionDays} day${if (usage.retentionDays == 1) "" else "s"} " +
+                    "(set in the desktop app). Nothing on this phone is removed by it."
             )
         }
         // The storage banner already explains a full cloud.

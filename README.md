@@ -176,7 +176,7 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 - Uploaded: one compact row per order (items as a JSON array), bills and order–bill links (many to
   many). Existing orders upload once after the first sign-in.
 - Size: about 1 KB per order including a bill link, so the 500 MB free database holds hundreds of
-  thousands of orders; with the default 30-day retention the cloud only ever holds about a month.
+  thousands of orders; the cloud keeps open items plus 30 days of settled ones (typically 10–30 MB).
 
 ### Bills and payment advices
 
@@ -198,7 +198,7 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 ### Admins and the test account
 
 - **Admins** are varun@ota.com and shubham@ota.com. Only they may archive or purge the cloud or
-  change retention, and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
+  change retention (the test account archives and purges only its own test tables), and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
   clean-up and the retention settings. **Accounts** is shown to the admins and to the test account.
 - **Test account** testuser1@ota.com uses the same Supabase project but its own tables
   (`test_buyers`, `test_orders`, `test_bills`, … `test_ota_deletions`, `test_order_counters`), added by
@@ -220,9 +220,12 @@ See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md#test-account) 
 
 ### Cloud retention (desktop app)
 
-The cloud keeps orders and payment advices only for `retention_days` (default 30). The desktop app keeps everything: it
-pulls all orders, marks the stored ones archived, and then purges archived orders older than the
-retention period. Rows that were never archived, or changed after archiving, are never purged.
+The cloud keeps open items however old they are: bills not yet fully paid (after paid, cash discount,
+goods return, rate difference and claim), orders never billed, and every order, bill and payment
+advice linked to them. Settled ones are removed once settled longer than `retention_days` (default 30).
+The desktop app keeps everything: it pulls all orders, marks the stored ones archived, and then purges
+settled archived groups. Rows that were never archived, or changed after archiving, are never purged.
+After updating to 1.11.0 the desktop uploads, once, the open items that earlier date-based purges removed.
 Phones keep all their own orders; a purge never removes anything from a phone. Buyers and
 suppliers are never purged.
 

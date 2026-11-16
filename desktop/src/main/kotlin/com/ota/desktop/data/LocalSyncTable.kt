@@ -84,6 +84,11 @@ class LocalSyncTable<T>(
         }
     }
 
+    /** Queues these rows for upload again as they are (their edit time stays, so nothing newer is overwritten). */
+    fun markPending(db: Db, ids: Collection<String>) = db.tx { c ->
+        ids.chunked(500).forEach { chunk -> c.update("update $local set sync_pending = true where id = any(?) and not deleted", com.ota.desktop.db.uuidArray(chunk)) }
+    }
+
     // ------------------------------------------------------------------ archiving
 
     /** Rows whose current cloud version is stored here and not yet marked archived: (id, cloud updated_at). */

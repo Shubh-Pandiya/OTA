@@ -55,7 +55,7 @@ class CloudSettings(private val config: SupabaseConfig, private val auth: Supaba
 
 /**
  * Background sync: right away on start, shortly after local edits, and every [every]. Maintenance
- * (archive + purge, admins only) runs on the first round and then every [maintenanceEvery].
+ * (archive + purge; admins, or the test login on its test data) runs on the first round and then every [maintenanceEvery].
  */
 class SyncScheduler(
     private val engine: SyncEngine,
