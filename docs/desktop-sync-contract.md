@@ -32,7 +32,7 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 tables: `test_buyers`, `test_suppliers`, `test_orders`, `test_bills`, `test_order_bills`,
 `test_payment_advices`, `test_advice_lines`, `test_ota_deletions`, `test_order_counters`, `test_advice_counters`.
 
-- They have the same columns, triggers and rules as the real tables (`is_test` is always true there).
+- They have the same columns, triggers and rules as the real tables. There is no `is_test` column: the table a row lives in is what makes it test or real (dropped in `20261121000000_drop_is_test.sql`).
   RLS lets only the test login (`ota_is_test()`) use them, and the real tables refuse it, so totals,
   Insights, Accounts and exports never mix the two.
 - Clients route by login: `OtaAccounts.cloudPath` (shared `PostgrestClient`) prefixes `test_` on the
@@ -80,7 +80,7 @@ for older app versions but is always `false`.
 | `staff` | user_id, code (1–9, first digit of legacy order numbers and of legacy advice numbers), name, is_admin |
 | `order_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_order_no`; clients never read or write it. |
 | `advice_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_advice_no` (migration `20261116000000_fy_advice_numbers.sql`); separate from the order counter. |
-| `ota_deletions` | tombstones: id, tbl, client_updated_at (delete time on the device), updated_at, is_test. Read-only for clients; written by `ota_delete_rows`. See *Deleting*. |
+| `ota_deletions` | tombstones: id, tbl, client_updated_at (delete time on the device), updated_at. Read-only for clients; written by `ota_delete_rows`. See *Deleting*. |
 | `app_settings` | single row (`id = true`): retention_days (30), storage_limit_mb (500), warn_percent (80) |
 
 Bill and link ids are deterministic, so the same bill typed on two devices is one row:
