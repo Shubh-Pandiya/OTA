@@ -131,6 +131,17 @@ class OrderNumberTest {
     }
 
     @Test
+    fun testAccountNumbers() {
+        assertTrue(OrderNumber.isFy("T26270001"))
+        assertTrue(OrderNumber.isTestFy("T26270001"))
+        assertFalse(OrderNumber.isTestFy("26270001"))
+        assertEquals(1, OrderNumber.fySerialOf("T26270001"))
+        assertFalse(OrderNumber.isFy("T12345678"))
+        assertFalse(OrderNumber.isFy("TT26270001"))
+        assertEquals("PA-T26270001", AdviceNumber.display("T26270001"))
+    }
+
+    @Test
     fun pendingNumbers() {
         assertTrue(OrderNumber.isPending(OrderNumber.PENDING))
         assertTrue(OrderNumber.isPending("  "))

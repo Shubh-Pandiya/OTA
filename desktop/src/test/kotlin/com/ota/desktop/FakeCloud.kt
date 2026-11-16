@@ -150,7 +150,7 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
             name == "rpc/ota_clear_test_data" -> {
                 clearCalls++
                 val counts = JSONObject()
-                for ((t, rows) in tables) { counts.put(t, rows.size); rows.clear() }
+                for ((t, rows) in tables) if (t.startsWith("test_")) { counts.put(t.removePrefix("test_"), rows.size); rows.clear() }
                 200 to counts.toString()
             }
             name == "app_settings" && method == "PATCH" -> {

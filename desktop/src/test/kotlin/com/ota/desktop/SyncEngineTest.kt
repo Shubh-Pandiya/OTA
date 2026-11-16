@@ -270,9 +270,8 @@ class SyncEngineTest {
         assertTrue(orders.list().isEmpty(), "real orders are hidden from the test login")
         assertEquals(0, count("select count(*) from kv where key like 'cursor.%'"), "the test set syncs from scratch")
         assertEquals(chart, count("select count(*) from acc_accounts"), "the test books get their own default chart")
-        // The cloud only shows the test login its test rows.
-        cloud.table("orders").clear()
-        cloud.put("orders", cloudOrder("33333333-3333-4333-8333-333333333333", "26279001"))
+        // The test login reads only the cloud's test_ tables, never the real ones.
+        cloud.put("test_orders", cloudOrder("33333333-3333-4333-8333-333333333333", "T26279001"))
         engine.sync()
         val pendingTest = numbered(order("Test Buyer"))
         engine.refreshPending()
@@ -303,6 +302,26 @@ class SyncEngineTest {
     }
 
     @Test
+    fun theOldTestCopyIsDroppedOnceForTheTestTables() = runBlocking {
+        auth.signIn("testuser1@ota.com", "x")
+        engine.adoptDataMode("testuser1@ota.com")
+        val old = numbered(order())
+        db.read { c ->
+            c.createStatement().use {
+                it.execute("delete from ota_test.kv where key = 'test_tables_split'")
+                it.execute("insert into ota_test.kv(key, value) values ('cursor.orders', '42')")
+            }
+        }
+        engine.loadDataMode()
+        assertEquals(0, count("select count(*) from ota_test.orders"), "pre-1.10.0 test copy dropped")
+        assertEquals(0, count("select count(*) from ota_test.kv where key like 'cursor.%'"), "pulled again from the test tables")
+        val kept = numbered(order())
+        engine.loadDataMode()
+        assertEquals(listOf(kept.id), orders.list().map { it.id }, "only once")
+        assertTrue(old.id != kept.id)
+    }
+
+    @Test
     fun onlyTheTestAccountCanClearAndItEmptiesCloudAndLaptop() = runBlocking {
         assertFailsWith<IllegalStateException> { engine.clearTestData() }
         assertEquals(0, cloud.clearCalls)
@@ -312,12 +331,13 @@ class SyncEngineTest {
         val o = numbered(order())
         orders.attachBill(listOf(o.id), "T-1", BillDetails(amount = 100.0))
         engine.sync()
-        assertEquals(1, cloud.table("orders").size)
+        assertEquals(1, cloud.table("test_orders").size)
+        assertTrue(cloud.table("orders").isEmpty(), "test rows never reach the real tables")
 
         val counts = engine.clearTestData()
         assertEquals(1, cloud.clearCalls)
         assertEquals(1, counts["orders"])
-        assertTrue(cloud.table("orders").isEmpty() && cloud.table("bills").isEmpty())
+        assertTrue(cloud.table("test_orders").isEmpty() && cloud.table("test_bills").isEmpty())
         assertTrue(orders.list().isEmpty())
         assertEquals(0, count("select count(*) from bills"))
         assertEquals(0, engine.status.value.pending)

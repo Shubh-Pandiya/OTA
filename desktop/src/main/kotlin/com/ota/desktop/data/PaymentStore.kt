@@ -151,7 +151,7 @@ class PaymentStore(private val db: Db, private val onChange: () -> Unit = {}) {
         val args = ArrayList<Any?>()
         for (token in SearchText.tokens(filter.text)) {
             where.append(
-                """ and (lower(a.advice_no || ' ' || (case when a.advice_no ~ '^[0-9]{8}$' then 'pa-' || a.advice_no else '' end) || ' ' || a.buyer || ' ' || a.supplier || ' ' || a.mode || ' ' || a.reference || ' ' || a.remarks) like ? escape '\'
+                """ and (lower(a.advice_no || ' ' || (case when a.advice_no ~ '^T?[0-9]{8}$' then 'pa-' || a.advice_no else '' end) || ' ' || a.buyer || ' ' || a.supplier || ' ' || a.mode || ' ' || a.reference || ' ' || a.remarks) like ? escape '\'
                      or exists (select 1 from advice_lines sl join bills sb on sb.id = sl.bill_id where sl.advice_id = a.id and not sl.deleted and lower(sb.bill_no) like ? escape '\'))"""
             )
             val p = SearchText.containsPattern(token); args += p; args += p

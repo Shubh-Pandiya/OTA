@@ -144,7 +144,8 @@ object SyncIds {
 
 /**
  * Who may do what, by sign-in email. The cloud applies the same rules (ota_is_admin / ota_is_test in
- * supabase/migrations/20261117000000_admins_and_test_isolation.sql), so these only decide what to show.
+ * supabase/migrations/20261117000000_admins_and_test_isolation.sql and 20261120000000_test_tables.sql), so these only
+ * decide what to show and which tables to use.
  */
 object OtaAccounts {
     val ADMIN_EMAILS = setOf("varun@ota.com", "shubham@ota.com")
@@ -160,4 +161,14 @@ object OtaAccounts {
 
     const val MODE_PRODUCTION = "production"
     const val MODE_TEST = "test"
+
+    /** Cloud tables that have a test_ twin (supabase/migrations/20261120000000_test_tables.sql). */
+    private val TEST_TABLES = setOf("buyers", "suppliers", "orders", "bills", "order_bills", "payment_advices", "advice_lines", "ota_deletions")
+
+    /** PostgREST [path] for this login: the test account reads and writes the test_ tables; RPCs are shared. */
+    fun cloudPath(path: String, email: String?): String {
+        if (!isTest(email)) return path
+        val end = path.indexOfAny(charArrayOf('?', '/')).let { if (it < 0) path.length else it }
+        return if (path.substring(0, end) in TEST_TABLES) "test_$path" else path
+    }
 }

@@ -111,6 +111,6 @@ class AdviceImageFiles(private val root: File, private val sealer: ImageSealer? 
 
         fun newId(): String = UUID.randomUUID().toString()
 
-        fun forContext(context: Context) = AdviceImageFiles(File(context.applicationContext.filesDir, "advice_images"), KeystoreImageSealer)
+        fun forContext(context: Context) = AdviceImageFiles(File(DataSet.filesDir(context), "advice_images"), KeystoreImageSealer)
     }
 }

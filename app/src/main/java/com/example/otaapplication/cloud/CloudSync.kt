@@ -9,6 +9,7 @@ import com.example.otaapplication.AdvicePdf
 import com.example.otaapplication.OrderFiles
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.DataSet
 import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OtaAccounts
@@ -69,13 +70,13 @@ class CloudSync private constructor(private val context: Context) {
     private val config = SupabaseConfig.fromBuildConfig()
     private val repository = CatalogRepository(OtaDatabase.get(context))
     private val auth = SupabaseAuth(config, SessionStore(prefs))
-    private val cursors = PrefsSyncCursors(prefs)
+    private val cursors = PrefsSyncCursors(DataSet.cursorPrefs(context))
     private val client = PostgrestClient(config, auth)
     private val engine = CatalogSync(repository, PostgrestCatalogApi(client), cursors, serverTime = client::serverTime)
     private val orders = LocalOrders.get(context)
     private val payments = PaymentRepository.get(context)
     private val orderApi = PostgrestOrderApi(client)
-    private val orderCursors = PrefsCursorStore(prefs)
+    private val orderCursors = PrefsCursorStore(DataSet.cursorPrefs(context))
     private val numberPrefs = context.getSharedPreferences(OrderNumberAllocator.PREFS, Context.MODE_PRIVATE)
     private val orderEngine = OrderSync(
         orders, orderApi, orderCursors,
@@ -161,33 +162,22 @@ class CloudSync private constructor(private val context: Context) {
         val session = syncLock.withLock {
             val session = auth.signIn(email, password)
             val mode = OtaAccounts.dataMode(session.email)
-            // Earlier versions held production data only (the test account is new in this version).
-            val held = prefs.getString(KEY_DATA_MODE, null) ?: OtaAccounts.MODE_PRODUCTION
-            if (held != mode) {
+            if ((mode == OtaAccounts.MODE_TEST) != DataSet.isTest(context)) {
+                // Real and test data live in separate sets on the phone; each keeps its own unsynced
+                // changes, but they are only sent by a login of the same kind, so send them first.
                 val pending = pendingCount()
-                // Real orders older than the cloud's retention live only on the phones, so real data
-                // is never wiped for the test account: it needs a phone without real data.
-                if (mode == OtaAccounts.MODE_TEST && hasRealData()) {
-                    auth.signOut()
-                    throw CloudException(
-                        "This phone holds real business data, so the test account can't be used on it. " +
-                            "Use the test account on a phone without real orders, bills or advices."
-                    )
-                }
                 if (pending > 0) {
                     auth.signOut()
                     throw CloudException(
                         "This phone has $pending unsynced change${if (pending == 1) "" else "s"} from " +
-                            (if (held == OtaAccounts.MODE_TEST) "the test account" else "a staff account") +
+                            (if (DataSet.isTest(context)) "the test account" else "a staff account") +
                             ". Sign in with that account and let it sync first."
                     )
                 }
-                // Test and real data never share a phone: start this login from a clean copy (only
-                // test data, or tombstones, reach here). PDFs go only when they were test PDFs.
-                wipeLocalData(deleteFiles = held == OtaAccounts.MODE_TEST)
+                // Restarts the app on the other data set; nothing below runs.
+                DataSet.switchTo(context, mode)
             }
             prefs.edit { putString(KEY_DATA_MODE, mode) }
-            SyncIds.testMode = mode == OtaAccounts.MODE_TEST
             session
         }
         _status.update { it.copy(email = session.email, lastError = null) }
@@ -231,14 +221,14 @@ class CloudSync private constructor(private val context: Context) {
         return counts
     }
 
-    private fun hasRealData(): Boolean =
-        OtaDatabase.get(context).liveSyncedRows() > 0 || orders.history.locked { orders.history.readArray().length() } > 0
-
-    /** First run of this version: record which data set the phone already holds. */
+    /**
+     * The open data set must belong to the signed-in login (it can differ only if the app was killed
+     * while switching): otherwise restart on the right one before anything syncs.
+     */
     private fun adoptDataMode() {
-        val email = auth.session.value?.email
-        if (email != null && !prefs.contains(KEY_DATA_MODE)) prefs.edit { putString(KEY_DATA_MODE, OtaAccounts.dataMode(email)) }
-        SyncIds.testMode = prefs.getString(KEY_DATA_MODE, null) == OtaAccounts.MODE_TEST
+        val email = auth.session.value?.email ?: return
+        val mode = OtaAccounts.dataMode(email)
+        if ((mode == OtaAccounts.MODE_TEST) != DataSet.isTest(context)) DataSet.switchTo(context, mode)
     }
 
     /**
@@ -506,7 +496,7 @@ class CloudSync private constructor(private val context: Context) {
         private const val KEY_USAGE_CHECKED = "cloud_usage_checked_at"
         private const val KEY_STORAGE_FULL = "cloud_storage_full"
         /** "production" or "test": whose data this phone holds ([OtaAccounts.dataMode]). */
-        private const val KEY_DATA_MODE = "data_mode"
+        private const val KEY_DATA_MODE = DataSet.KEY_DATA_MODE
         /** How often a known staff code is checked again (codes rarely change). */
         private const val ALLOCATE_TIMEOUT_MS = 10_000L
         private const val STAFF_RECHECK_MS = 6 * 60 * 60 * 1000L

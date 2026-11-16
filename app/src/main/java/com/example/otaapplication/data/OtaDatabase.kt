@@ -296,6 +296,6 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         @Volatile private var instance: OtaDatabase? = null
 
         fun get(context: Context): OtaDatabase =
-            instance ?: synchronized(this) { instance ?: OtaDatabase(context).also { instance = it } }
+            instance ?: synchronized(this) { instance ?: OtaDatabase(context, DataSet.databaseName(context)).also { instance = it } }
     }
 }

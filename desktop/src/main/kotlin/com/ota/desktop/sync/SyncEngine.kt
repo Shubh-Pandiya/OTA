@@ -28,6 +28,7 @@ import com.ota.desktop.data.PaymentStore
 import com.ota.desktop.db.Db
 import com.ota.desktop.db.Kv
 import com.ota.desktop.db.one
+import com.ota.desktop.db.query
 import com.ota.desktop.db.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
@@ -113,6 +114,23 @@ class SyncEngine(
         val test = mode == OtaAccounts.MODE_TEST
         db.schema = if (test) Db.TEST else Db.PRODUCTION
         SyncIds.testMode = test
+        if (test) splitTestTables()
+    }
+
+    /**
+     * Once, on 1.10.0: the test account's cloud data moved to its own tables and was renumbered
+     * (T26270001), so the laptop's old test copy is dropped and pulled again from there. Only the
+     * test schema is touched; its own books (acc_*) stay.
+     */
+    private fun splitTestTables() {
+        db.tx { c ->
+            if (c.query("select 1 from ${Db.TEST}.kv where key = '$KEY_TEST_SPLIT'") { true }.isNotEmpty()) return@tx
+            for (t in listOf("advice_lines", "payment_advices", "order_bills", "bills", "orders", "buyers", "suppliers", "pending_deletions")) {
+                c.update("delete from ${Db.TEST}.$t")
+            }
+            c.update("delete from ${Db.TEST}.kv where key like 'cursor.%' or key like 'counter.%' or key = 'sync.last'")
+            c.update("insert into ${Db.TEST}.kv(key, value) values ('$KEY_TEST_SPLIT', '1')")
+        }
     }
 
     /**
@@ -571,6 +589,7 @@ class SyncEngine(
 
     companion object {
         private const val DELETIONS_CURSOR = "cursor.ota_deletions"
+        private const val KEY_TEST_SPLIT = "test_tables_split"
         private const val MAX_PAGES = 100
         private const val ARCHIVE_BATCH = 500
         const val STORAGE_FULL = "Cloud storage is full. Changes are kept on this laptop and upload once space is freed " +

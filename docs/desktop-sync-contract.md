@@ -28,21 +28,25 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 
 ### Test account
 
-`testuser1@ota.com` is the test login. Its data lives in the same tables, tagged and hidden:
+`testuser1@ota.com` is the test login. Since `20261120000000_test_tables.sql` its data lives in its own
+tables: `test_buyers`, `test_suppliers`, `test_orders`, `test_bills`, `test_order_bills`,
+`test_payment_advices`, `test_advice_lines`, `test_ota_deletions`, `test_order_counters`, `test_advice_counters`.
 
-- Every synced table (buyers, suppliers, orders, bills, order_bills, payment_advices, advice_lines) has
-  a boolean `is_test`. A trigger sets it on insert from the login (`ota_is_test()`), and it never changes
-  on update. Clients don't send it.
-- A restrictive RLS policy (`is_test = ota_is_test()`) means production logins never read or write test
-  rows, and the test login sees only test rows. Totals, Insights, Accounts and exports therefore never mix them.
-- Test orders and advices number from their own FY counters (`order_counters` / `advice_counters`
-  are keyed by `(fy, is_test)`), so the production series has no gaps from testing.
+- They have the same columns, triggers and rules as the real tables (`is_test` is always true there).
+  RLS lets only the test login (`ota_is_test()`) use them, and the real tables refuse it, so totals,
+  Insights, Accounts and exports never mix the two.
+- Clients route by login: `OtaAccounts.cloudPath` (shared `PostgrestClient`) prefixes `test_` on the
+  synced tables and `ota_deletions` for the test login. RPCs keep their names and pick the tables themselves.
+- Test orders and advices are numbered `T{FYstartYY}{FYendYY}{serial}` (T26270001, PA-T26270001) from
+  the test counters; they only move forward. The production series is unaffected.
 - Archive and purge only touch production rows.
-- `ota_clear_test_data()` (test login only) deletes every test row and resets the test counters. It
+- `ota_clear_test_data()` (test login only) truncates the test tables and keeps the counters. It
   returns the deleted counts as JSON. The phone and the desktop show **Clear all my test data** to the
   test login only, and then also wipe their local synced copy.
-- The phone keeps one kind of data (`SyncIds.testMode`). It refuses a test login while it holds real
-  data, and switching it back to a real login drops the synced test copy first.
+- The phone (2.0.2+) keeps a separate local data set per kind of login (`DataSet`: database
+  `ota_local_test.db`, files under `files/test`, own sync cursors). Signing in with the other kind
+  restarts the app on that set, refused while the current set has unsynced changes. On first start in
+  test mode, the pre-2.0.2 test copy in the main set is dropped and pulled again.
 - The desktop (1.7.0+) keeps both side by side in its local database. Real data is in schema `public`,
   test data in schema `ota_test` with the same tables. kv `data.mode` (in `public`) records the last
   login, and every connection's `search_path` follows it, so every store, report, Insights query and
@@ -53,6 +57,8 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
     from `public` into `ota_test` once.
   - The test account has its own Accounts books (chart, vouchers, commission) in `ota_test`, built
     from test bills only. Real books never see test data.
+  - 1.10.0 drops the old `ota_test` synced copy and its cursors once (kv `test_tables_split`) and pulls
+    the renumbered rows from the test tables; test books stay.
   - **Clear all my test data** on the desktop empties `ota_test` (synced tables, test vouchers and audit)
     and keeps its chart of accounts. Test PDFs are saved in a separate `Test data` folder.
 

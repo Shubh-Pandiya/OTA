@@ -200,16 +200,21 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 - **Admins** are varun@ota.com and shubham@ota.com. Only they may archive or purge the cloud or
   change retention, and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
   clean-up and the retention settings. **Accounts** is shown to the admins and to the test account.
-- **Test account** testuser1@ota.com uses the same cloud, but its rows are tagged `is_test` and hidden
-  by RLS. Nobody else sees them in any list, search, total, Insights, Accounts or export, and it sees
-  only its own test data. Test orders and advices use their own number series.
+- **Test account** testuser1@ota.com uses the same Supabase project but its own tables
+  (`test_buyers`, `test_orders`, `test_bills`, … `test_ota_deletions`, `test_order_counters`), added by
+  `20261120000000_test_tables.sql`. RLS lets only the test login use them and keeps it out of the real
+  tables, so test data never shows in any real list, search, total, Insights, Accounts or export.
+  Test orders and advices are numbered **T{FY}{serial}** (e.g. T26270001, PA-T26270001) from their own
+  counters; real numbers are unaffected. Numbers only move forward and deletes are hard, as for real data.
   - Signed in as the test user, *Sync Settings* (phone) and *Sync & Cloud* (desktop) show
-    **Clear all my test data**. It deletes every test row in the cloud and on that device.
-  - The desktop accepts the test login on a laptop that holds real data (desktop 1.7.0). The test data
-    sits beside the real data in its own local schema, so while the test user is signed in only test
-    rows show, and signing in with a staff login brings the real data back. Switching never deletes or
-    mixes anything. The test user gets its own Accounts books, built from test bills only.
-  - The phone keeps one kind of data and refuses a test login while it holds real data.
+    **Clear all my test data**. It empties the test tables (counters keep going) and that device's test copy.
+  - Desktop: test data sits beside the real data in its own local schema (`ota_test`); while the test
+    user is signed in only test rows show, and a staff login brings the real data back. Switching never
+    deletes or mixes anything. The test user gets its own Accounts books, built from test bills only.
+  - Phone (2.0.2+): the same, with a separate local database and files for the test login. Signing in
+    with the other kind of login restarts the app on that data set; it is refused while the current set
+    has unsynced changes.
+  - Older apps signed in as the test user can't reach the test tables and fail safe; real logins are unaffected.
 
 See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md#test-account) for the details.
 

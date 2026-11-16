@@ -33,4 +33,15 @@ class OtaAccountsTest {
         SyncIds.testMode = false
         assertEquals(real, SyncIds.bill("acme|46"))
     }
+
+    @Test fun testLoginUsesTestTables() {
+        val test = "testuser1@ota.com"
+        assertEquals("test_orders?select=*&order=updated_at", OtaAccounts.cloudPath("orders?select=*&order=updated_at", test))
+        assertEquals("test_ota_deletions?id=gt.1", OtaAccounts.cloudPath("ota_deletions?id=gt.1", test))
+        assertEquals("test_payment_advices", OtaAccounts.cloudPath("payment_advices", test))
+        assertEquals("rpc/ota_allocate_order_no", OtaAccounts.cloudPath("rpc/ota_allocate_order_no", test))
+        assertEquals("staff?select=code", OtaAccounts.cloudPath("staff?select=code", test))
+        assertEquals("orders?select=*", OtaAccounts.cloudPath("orders?select=*", "varun@ota.com"))
+        assertEquals("orders", OtaAccounts.cloudPath("orders", null))
+    }
 }

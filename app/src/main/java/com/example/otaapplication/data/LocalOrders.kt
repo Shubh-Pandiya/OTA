@@ -115,7 +115,7 @@ class LocalOrders(val history: OrderHistoryStore, val index: OrderRepository) {
 
         /** The app-wide instance (history in the app's files folder, index in the app database). */
         fun get(context: Context): LocalOrders = instance ?: synchronized(this) {
-            instance ?: LocalOrders(OrderHistoryStore(context.filesDir), OrderRepository(OtaDatabase.get(context))).also { instance = it }
+            instance ?: LocalOrders(OrderHistoryStore(DataSet.filesDir(context)), OrderRepository(OtaDatabase.get(context))).also { instance = it }
         }
 
         /** Deletes an order's sync JSON and the PDF next to its folder (layout made by the PDF screen). */

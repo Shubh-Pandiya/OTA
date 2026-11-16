@@ -8,7 +8,8 @@ import java.time.format.DateTimeFormatter
  *
  * Current format, one agency-wide series per financial year (1 April – 31 March):
  * {FY start YY}{FY end YY}{4-digit serial}, e.g. 26270001 is the first order of FY 2026-27.
- * Always 8 digits, so it never looks like an older 12-digit number.
+ * Always 8 digits, so it never looks like an older 12-digit number. The test account's numbers come from
+ * separate counters and start with T, e.g. T26270001.
  * The cloud hands the numbers out (rpc ota_allocate_order_no), so they are unique across every
  * phone and the desktop. An order saved offline has a blank number ("Pending number") until the
  * next sync gives it one.
@@ -84,7 +85,13 @@ object OrderNumber {
         return fyPrefix(date) + serial.toString().padStart(FY_SERIAL_DIGITS, '0')
     }
 
-    fun isFy(offerNo: String): Boolean = offerNo.trim().let { FY.matches(it) && consecutiveYears(it) }
+    /** A financial-year number from the cloud: 26270001, or T26270001 for the test account. */
+    fun isFy(offerNo: String): Boolean = offerNo.trim().removePrefix(TEST_PREFIX).let { FY.matches(it) && consecutiveYears(it) }
+
+    /** A test account number, e.g. T26270001. */
+    fun isTestFy(offerNo: String): Boolean = offerNo.trim().startsWith(TEST_PREFIX) && isFy(offerNo)
+
+    const val TEST_PREFIX = "T"
 
     /** Serial of a financial-year number, or null for any other number. */
     fun fySerialOf(offerNo: String): Int? = offerNo.trim().takeIf { isFy(it) }?.takeLast(FY_SERIAL_DIGITS)?.toInt()

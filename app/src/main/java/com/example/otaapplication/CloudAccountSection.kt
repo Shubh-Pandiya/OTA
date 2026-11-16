@@ -191,7 +191,7 @@ private fun TestAccountBanner() {
         Icon(Icons.Default.Badge, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(10.dp))
         Text(
-            "Test account. Everything you make here is test data: only this login sees it, and it never counts in real totals or numbers.",
+            "Test account. Everything you make here is test data with T-numbers (e.g. T26270001): only this login sees it, it is kept apart from real data on this phone, and it never counts in real totals or numbers. Signing in with a staff account switches back to real data (the app restarts).",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onTertiaryContainer
         )

@@ -1,6 +1,7 @@
 package com.example.otaapplication.cloud
 
 import com.example.otaapplication.BuildConfig
+import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.SyncTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -111,7 +112,7 @@ class PostgrestClient(val config: SupabaseConfig, private val auth: SupabaseAuth
     fun serverTime(): String? = serverMillis.takeIf { it > 0 }?.let(SyncTime::fromMillis)
 
     suspend fun call(method: String, path: String, extraHeaders: Map<String, String> = emptyMap(), body: String? = null): String {
-        val url = "${config.url}/rest/v1/$path"
+        val url = "${config.url}/rest/v1/${OtaAccounts.cloudPath(path, auth.session.value?.email)}"
         var token = auth.accessToken()
         repeat(2) { attempt ->
             val headers = extraHeaders + mapOf("apikey" to config.publishableKey, "Authorization" to "Bearer $token")
