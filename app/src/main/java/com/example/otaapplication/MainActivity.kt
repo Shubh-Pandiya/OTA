@@ -686,6 +686,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigate: (Screen) -> Unit) {
     ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
+      Column(
+          Modifier
+              .fillMaxHeight()
+              .verticalScroll(rememberScrollState())
+              .padding(bottom = 12.dp)
+      ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -752,6 +758,7 @@ private fun AppDrawer(currentScreen: Screen, cloudStatus: CloudStatus, onNavigat
                 )
             ) }
         }
+      }
     }
 }
 
