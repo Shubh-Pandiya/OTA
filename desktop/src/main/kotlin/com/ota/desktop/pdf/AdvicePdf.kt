@@ -45,20 +45,25 @@ object AdvicePdf {
         pdf.text("Advice No: ${AdviceNumber.display(advice.adviceNo)}", LEFT, 135f, 11f, bold = true)
         pdf.text("Date: ${advice.payDate.format(dateFormat)}", RIGHT, 135f, 11f, bold = true, align = PdfKit.Align.RIGHT)
 
-        pdf.strokeRect(LEFT, 145f, 297.5f, 195f, 1f); pdf.strokeRect(297.5f, 145f, RIGHT, 195f, 1f)
+        // Long names wrap in full; both boxes grow to the taller one and everything below moves down.
+        val buyer = pdf.block(advice.buyer, 245f, 11f)
+        val supplier = pdf.block(advice.supplier, 245f, 11f)
+        val boxBottom = maxOf(195f, 166f + maxOf(buyer.height, supplier.height) + 5f)
+        pdf.strokeRect(LEFT, 145f, 297.5f, boxBottom, 1f); pdf.strokeRect(297.5f, 145f, RIGHT, boxBottom, 1f)
         pdf.text("PAID BY (BUYER):", 45f, 160f, 10f, bold = true)
         pdf.text("PAID TO (SUPPLIER):", 302.5f, 160f, 10f, bold = true)
-        pdf.block(advice.buyer, 245f, 11f, maxLines = 2).draw(45f, 166f)
-        pdf.block(advice.supplier, 245f, 11f, maxLines = 2).draw(302.5f, 166f)
+        buyer.draw(45f, 166f)
+        supplier.draw(302.5f, 166f)
+        val shift = boxBottom - 195f
 
-        pdf.text("PAYMENT MODE:", LEFT, 214f, 10f, bold = true)
+        pdf.text("PAYMENT MODE:", LEFT, 214f + shift, 10f, bold = true)
         val modeText = buildString {
             append(advice.mode.label)
             if (advice.reference.isNotBlank()) append("   ${advice.mode.referenceLabel.substringBefore(" (")}: ${advice.reference}")
         }
-        pdf.text(modeText, LEFT + 88f, 214f, 10f)
+        pdf.text(modeText, LEFT + 88f, 214f + shift, 10f)
 
-        val tableTop = 226f
+        val tableTop = 226f + shift
         var y = tableTop
         fun header() {
             pdf.fillRect(LEFT, y, RIGHT, y + 22f, PdfKit.ORANGE)

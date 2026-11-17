@@ -110,27 +110,31 @@ object AdvicePdf {
         paint.textAlign = Paint.Align.RIGHT
         canvas.drawText("Date: ${advice.payDate.format(dateFormat)}", RIGHT, 135f, paint)
 
-        // ---- Paid by / Paid to
+        // ---- Paid by / Paid to: long names wrap in full; both boxes grow to the taller one and everything below moves down.
+        val partyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f; typeface = Typeface.DEFAULT }
+        val buyerLayout = layout(advice.buyer, 245, partyPaint)
+        val supplierLayout = layout(advice.supplier, 245, partyPaint)
+        val boxBottom = maxOf(195f, 166f + maxOf(buyerLayout.height, supplierLayout.height) + 5f)
+        val shift = boxBottom - 195f
         paint.textAlign = Paint.Align.LEFT; paint.style = Paint.Style.STROKE; paint.strokeWidth = 1f
-        canvas.drawRect(LEFT, 145f, 297.5f, 195f, paint); canvas.drawRect(297.5f, 145f, RIGHT, 195f, paint)
+        canvas.drawRect(LEFT, 145f, 297.5f, boxBottom, paint); canvas.drawRect(297.5f, 145f, RIGHT, boxBottom, paint)
         paint.style = Paint.Style.FILL; paint.textSize = 10f
         canvas.drawText("PAID BY (BUYER):", 45f, 160f, paint); canvas.drawText("PAID TO (SUPPLIER):", 302.5f, 160f, paint)
-        val partyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 11f; typeface = Typeface.DEFAULT }
-        drawLayout(canvas, layout(advice.buyer, 245, partyPaint, maxLines = 2), 45f, 166f)
-        drawLayout(canvas, layout(advice.supplier, 245, partyPaint, maxLines = 2), 302.5f, 166f)
+        drawLayout(canvas, buyerLayout, 45f, 166f)
+        drawLayout(canvas, supplierLayout, 302.5f, 166f)
 
         // ---- Mode / reference
         paint.typeface = Typeface.DEFAULT_BOLD; paint.textSize = 10f
-        canvas.drawText("PAYMENT MODE:", LEFT, 214f, paint)
+        canvas.drawText("PAYMENT MODE:", LEFT, 214f + shift, paint)
         paint.typeface = Typeface.DEFAULT
         val modeText = buildString {
             append(advice.mode.label)
             if (advice.reference.isNotBlank()) append("   ${advice.mode.referenceLabel.substringBefore(" (")}: ${advice.reference}")
         }
-        canvas.drawText(modeText, LEFT + 88f, 214f, paint)
+        canvas.drawText(modeText, LEFT + 88f, 214f + shift, paint)
 
         // ---- Bills table
-        val tableTop = 226f
+        val tableTop = 226f + shift
         var y = tableTop
         fun header() {
             paint.style = Paint.Style.FILL; paint.color = orange

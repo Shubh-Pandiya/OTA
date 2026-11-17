@@ -81,4 +81,26 @@ class PdfTest {
         assertEquals("PA-26270001.pdf", AdvicePdf.fileFor(advice).name)
         assertEquals("PA420261108001.pdf", AdvicePdf.fileFor(advice.copy(adviceNo = "PA420261108001")).name)
     }
+
+    private val longBuyer = "Shree Shubh Laxmi Ganesh Garments and Textile Manufacturing Private Limited\n" +
+        "12-A, Second Floor, Rajwada Main Road, Near Krishnapura Chhatri, Indore 452002, Madhya Pradesh\nGSTIN 23ABCDE1234F1Z5"
+    private val longSupplier = "Raymond Limited (Textile Division) Suiting and Shirting Fabrics Wholesale Depot\n" +
+        "Plot 156/H No. 2, Village Zadgaon, Ratnagiri Industrial Area, Thane, Maharashtra 400606"
+
+    @Test
+    fun longPartyNamesGrowTheBoxes() {
+        val order = OrderFormData(
+            date = "08-11-2026", offerNo = "26270001", buyer = longBuyer, supplier = longSupplier,
+            items = listOf(OrderItem("1", "Cotton shirting", "250", "145", "M")), remarks = "Long names check."
+        )
+        val orderText = render(OrderPdf.write(order, File(out, "order-long-names.pdf"))).first.replace(Regex("\\s+"), " ")
+        listOf("Madhya Pradesh", "GSTIN 23ABCDE1234F1Z5", "Thane, Maharashtra 400606", "PARTICULARS").forEach { assertTrue(it in orderText, "missing '$it'") }
+        val advice = PaymentAdvice(
+            id = "a", adviceNo = "26270002", payDate = LocalDate.of(2026, 11, 8), buyer = longBuyer, supplier = longSupplier,
+            mode = PaymentMode.CHEQUE, reference = "004512", balanceAmount = null, balanceSide = null, remarks = "",
+            lines = listOf(AdviceLine("l1", Bill("b1", "INV-2041", LocalDate.of(2026, 10, 2), 1000.0), LineAmounts(1000.0, null, null, null, null)))
+        )
+        val adviceText = render(AdvicePdf.write(advice, File(out, "advice-long-names.pdf"))).first.replace(Regex("\\s+"), " ")
+        listOf("Madhya Pradesh", "GSTIN 23ABCDE1234F1Z5", "Thane, Maharashtra 400606", "PAYMENT MODE").forEach { assertTrue(it in adviceText, "missing '$it'") }
+    }
 }

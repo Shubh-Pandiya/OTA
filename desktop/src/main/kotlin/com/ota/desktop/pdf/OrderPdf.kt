@@ -34,12 +34,16 @@ object OrderPdf {
         pdf.letterhead("ORDER FORM")
         pdf.text("Offer No: ${data.offerNo}", 40f, 135f, 11f, bold = true)
         pdf.text("Date: ${data.date}", 450f, 135f, 11f, bold = true)
-        pdf.strokeRect(40f, 145f, 290f, 215f); pdf.strokeRect(290f, 145f, 555f, 215f)
+        // Long names wrap; both boxes grow to the taller one and everything below moves down.
+        val buyer = pdf.block(data.buyer, 240f, 10f)
+        val supplier = pdf.block(data.supplier, 255f, 10f)
+        val boxBottom = maxOf(215f, 165f + maxOf(buyer.height, supplier.height) + 6f)
+        pdf.strokeRect(40f, 145f, 290f, boxBottom); pdf.strokeRect(290f, 145f, 555f, boxBottom)
         pdf.text("BUYER:", 45f, 160f, 11f, bold = true); pdf.text("SUPPLIER:", 295f, 160f, 11f, bold = true)
-        pdf.block(data.buyer, 240f, 10f).draw(45f, 165f)
-        pdf.block(data.supplier, 255f, 10f).draw(295f, 165f)
+        buyer.draw(45f, 165f)
+        supplier.draw(295f, 165f)
 
-        var tableTop = 230f
+        var tableTop = boxBottom + 15f
         var y = tableTop
         fun header() {
             pdf.fillRect(40f, y, 555f, y + 22f, PdfKit.ORANGE)
