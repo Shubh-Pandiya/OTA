@@ -48,7 +48,7 @@ object BillSql {
     private const val LINE_SETTLED = "l.paid + coalesce(l.cd_amount, 0) + coalesce(l.goods_return, 0) + coalesce(l.rate_diff, 0) + coalesce(l.claim, 0)"
     private const val LIVE_LINES = "from advice_lines l join payment_advices a on a.id = l.advice_id where l.bill_id = b.id and not l.deleted and not a.deleted"
 
-    const val COLUMNS = """b.id, b.bill_no, b.bill_date, b.amount, b.lr_no, b.cd_percent, b.cd_amount, b.items, b.buyer, b.supplier, b.transport,
+    const val COLUMNS = """b.id, b.bill_no, b.bill_date, b.amount, b.lr_no, b.cd_percent, b.cd_amount, b.items, b.buyer, b.supplier, b.transport, b.gst_percent,
         (select count(*) from order_bills x join orders xo on xo.id = x.order_id where x.bill_id = b.id and not x.deleted and not xo.deleted) as order_count,
         (select coalesce(sum($LINE_SETTLED), 0) $LIVE_LINES) as settled,
         (select count(*) $LIVE_LINES) as advice_count"""
@@ -60,7 +60,8 @@ object BillSql {
         id = id("id"), billNo = str("bill_no"), billDate = date("bill_date"), amount = dbl("amount"),
         orderCount = getInt("order_count"), lrNo = str("lr_no"), cdPercent = dbl("cd_percent"), cdAmount = dbl("cd_amount"),
         settled = PaymentMath.round2(dbl("settled") ?: 0.0), adviceCount = getInt("advice_count"),
-        items = LocalSyncTable.readItems(this), buyer = str("buyer"), supplier = str("supplier"), transport = str("transport")
+        items = LocalSyncTable.readItems(this), buyer = str("buyer"), supplier = str("supplier"), transport = str("transport"),
+        gstPercent = dbl("gst_percent")
     )
 
     fun byId(c: Connection, id: String): Bill? = c.one("select $COLUMNS from bills b where b.id = ?::uuid", id) { it.toBill() }
@@ -370,6 +371,7 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
         put("items", Json(OrderTable.itemsToJson(d.items).toString()), d.items.isNotEmpty())
         put("buyer", d.buyer.trim(), d.buyer.isNotBlank())
         put("supplier", d.supplier.trim(), d.supplier.isNotBlank())
+        put("gst_percent", d.gstPercent, d.gstPercent != null)
         if (sets.isEmpty()) return
         c.update("update bills set ${sets.joinToString(", ")} where id = ?::uuid", *args.toTypedArray(), billId)
     }

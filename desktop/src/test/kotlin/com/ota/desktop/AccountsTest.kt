@@ -89,6 +89,28 @@ class AccountsTest {
     }
 
     @Test
+    fun commissionIsOnTheValueBeforeGst() {
+        val items = listOf(OrderItem(particulars = "Shirting", quantity = "200", rate = "50"))
+        // Items ₹10,000 + GST 5% = ₹10,500; a typed-over amount still uses the items total.
+        val withLines = orders.saveBill(null, "G-1", BillDetails(billDate = day, amount = 10_500.0, items = items, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
+        val typedOver = orders.saveBill(null, "G-2", BillDetails(billDate = day, amount = 10_700.0, items = items, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
+        // No lines: worked back from the GST-inclusive amount.
+        val headerOnly = orders.saveBill(null, "G-3", BillDetails(billDate = day, amount = 10_500.0, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
+        // Entered before GST was recorded: the stored amount, as before.
+        val legacy = bill("OLD-1", 10_500.0)
+        books.reconcileCommission(day)
+        books.setCommission(supplier("Shiv Mills").id, 2.5)
+
+        assertEquals(25_000, books.voucherForBill(withLines.id)!!.total)
+        assertEquals(25_000, books.voucherForBill(typedOver.id)!!.total)
+        assertEquals(25_000, books.voucherForBill(headerOnly.id)!!.total)
+        assertEquals(26_250, books.voucherForBill(legacy.id)!!.total)
+        assertTrue(books.voucherForBill(withLines.id)!!.narration.contains("before GST"))
+        assertTrue(books.voucherForBill(legacy.id)!!.narration.contains("of ₹"))
+        assertFalse(books.reconcileCommission(day).changed)
+    }
+
+    @Test
     fun commissionFollowsBillsAndNeverDuplicates() {
         val b = bill("SB-1", 3900.0)
         bill("SB-2", 10_000.0, supplier = "  shiv   MILLS ")
@@ -296,7 +318,7 @@ class AccountsTest {
             c.exec("delete from schema_version where version >= 4")
         }
         Migrations.run(db)
-        assertEquals(listOf(1, 2, 3, 4, 5, 6), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
+        assertEquals((1..Migrations.latest).toList(), db.read { c -> c.query("select version from schema_version order by 1") { it.getInt(1) } })
         assertEquals(20, books.accounts().size)
         assertEquals(1, db.read { c -> c.one("select count(*) from bills") { it.getInt(1) } })
         Migrations.run(db)

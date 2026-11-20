@@ -42,6 +42,9 @@ import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.cloud.CloudSync
 import com.example.otaapplication.cloud.CloudUsage
 import com.example.otaapplication.cloud.StorageAlert
+import com.example.otaapplication.data.GstSetting
+import com.example.otaapplication.data.OtaAccounts
+import com.example.otaapplication.data.PaymentMath
 import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -270,6 +273,7 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
                 "Cloud keeps unpaid bills and their orders and advices; settled ones leave after ${usage.retentionDays} day${if (usage.retentionDays == 1) "" else "s"} " +
                     "(set in the desktop app). Nothing on this phone is removed by it."
             )
+            GstLine(cloud, usage.gstPercent, OtaAccounts.isAdmin(status.email))
         }
         // The storage banner already explains a full cloud.
         AnimatedVisibility(visible = status.lastError != null && !status.storageFull, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
@@ -372,6 +376,63 @@ private fun SignedInPanel(cloud: CloudSync, status: CloudStatus) {
                 TextButton(onClick = { confirmSignOut = false; scope.launch { cloud.signOut() } }) { Text("Sign out") }
             },
             dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+/** The agency-wide GST % added to new bills; admins can change it here (or on the desktop). */
+@Composable
+private fun GstLine(cloud: CloudSync, percent: Double, canEdit: Boolean) {
+    var editing by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) {
+            StatusLine(Icons.Default.Calculate, "New bills add GST ${GstSetting.text(percent)} to the items total. Commission is on the value before GST.")
+        }
+        if (canEdit) TextButton(onClick = { editing = true }) { Text("Change") }
+    }
+    if (editing) GstDialog(cloud, percent, onDone = { editing = false })
+}
+
+@Composable
+private fun GstDialog(cloud: CloudSync, current: Double, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var text by rememberSaveable { mutableStateOf(PaymentMath.plain(current)) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val value = PaymentMath.parse(text)?.takeIf { it in 0.0..100.0 }
+    FormDialog(
+        title = "GST on bills",
+        icon = Icons.Default.Calculate,
+        onDismiss = onDone,
+        onConfirm = {
+            val pct = value ?: return@FormDialog
+            busy = true
+            scope.launch {
+                error = try {
+                    cloud.setGstPercent(pct)
+                    null
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    e.message ?: "Could not save"
+                }
+                busy = false
+                if (error == null) onDone()
+            }
+        },
+        confirmEnabled = value != null && !busy,
+        busy = busy
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it; error = null },
+            label = { Text("GST %") },
+            suffix = { Text("%") },
+            singleLine = true,
+            isError = text.isNotBlank() && value == null,
+            supportingText = { Text(error ?: "Added to the items total of bills entered from now on, on every phone and the desktop. Saved bills keep their GST.") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }

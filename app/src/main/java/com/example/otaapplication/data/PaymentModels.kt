@@ -162,6 +162,27 @@ object PaymentMath {
     /** Smaller differences than this (half a paisa) count as zero. */
     private const val EPSILON = 0.005
 
+    /** GST % for new bills until the cloud setting has been read. */
+    const val DEFAULT_GST_PERCENT = 5.0
+
+    /** GST in rupees on [base] at [percent]. */
+    fun gstOf(base: Double, percent: Double): Double = round2(base * percent / 100.0)
+
+    /** Bill total including GST: [base] + [gstOf]. */
+    fun withGst(base: Double, percent: Double): Double = round2(round2(base) + gstOf(base, percent))
+
+    /**
+     * Value before GST (the commission base) of a bill of [amount] that includes [gstPercent]: its
+     * item total when known, else worked back from the amount. Bills without a GST % (entered before
+     * GST was recorded) use the amount as it is.
+     */
+    fun taxableValue(amount: Double?, gstPercent: Double?, linesTotal: Double?): Double? = when {
+        gstPercent == null -> amount
+        linesTotal != null -> linesTotal
+        amount == null -> null
+        else -> round2(amount * 100.0 / (100.0 + gstPercent))
+    }
+
     fun round2(value: Double): Double = BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).toDouble()
 
     fun balance(amount: Double?, settled: Double): Double? = amount?.let { round2(it - settled) }
@@ -210,4 +231,16 @@ object PaymentMath {
     fun plain(value: Double?): String = value?.let {
         BigDecimal.valueOf(round2(it)).stripTrailingZeros().toPlainString()
     }.orEmpty()
+}
+
+/**
+ * The agency-wide GST % new bills include (cloud app_settings, read with the storage check and
+ * cached on the device). Until it has been read it is [PaymentMath.DEFAULT_GST_PERCENT].
+ */
+object GstSetting {
+    @Volatile
+    var percent: Double = PaymentMath.DEFAULT_GST_PERCENT
+
+    /** "5%", "12.5%". */
+    fun text(percent: Double): String = PaymentMath.plain(percent) + "%"
 }

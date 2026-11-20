@@ -281,6 +281,15 @@ class StoresTest {
         assertEquals(0, db.read { c -> t.pendingCount(c) })
         assertTrue(t.toArchive(db, 10).isEmpty(), "pushed version is archived only after it is pulled back")
 
+        // The GST % travels both ways (null stays null for bills entered before it was recorded).
+        assertNull(orders.bill(id)!!.gstPercent)
+        val gst = RemoteRow(id, BillValue("X1", "2026-11-01", 10.5, gstPercent = 5.0), false, System.currentTimeMillis(), "2026-11-10T11:10:00+00:00")
+        assertEquals(1, t.applyPulled(db, listOf(gst)))
+        assertEquals(5.0, orders.bill(id)!!.gstPercent)
+        orders.saveBill(id, "X1", BillDetails(amount = 20.0, buyer = "B", supplier = "S", gstPercent = 5.0), emptyList())
+        assertEquals(5.0, t.pending(db, 10).single().value.gstPercent)
+        t.markPushed(db, t.pending(db, 10))
+
         // A deleted row from an app before hard deletes removes the local row; an older one does not.
         val stale = v1.copy(deleted = true, clientUpdatedAt = 1, serverUpdatedAt = "2026-11-10T11:30:00+00:00")
         assertEquals(0, t.applyPulled(db, listOf(stale)))

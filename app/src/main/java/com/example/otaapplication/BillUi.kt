@@ -47,6 +47,7 @@ import com.example.otaapplication.data.OrderQuery
 import com.example.otaapplication.data.OrderRepository
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.OrderSummary
+import com.example.otaapplication.data.GstSetting
 import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.data.PaymentStatus
@@ -166,7 +167,9 @@ internal fun amountValid(text: String) = text.isBlank() || PaymentMath.parse(tex
 
 /**
  * Editable bill details: date, amount, LR (bilty) number, cash discount (% and ₹) and the item
- * lines as billed. The amount follows the lines' total until the user types a different one.
+ * lines as billed. The amount follows the lines' total plus [gstPercent] GST until the user types a
+ * different one. New bills take the agency's current GST %; a bill entered before GST was recorded
+ * keeps null (its amount follows the plain lines total, as it did then).
  */
 class BillFieldsState(
     day: Long? = null,
@@ -175,8 +178,11 @@ class BillFieldsState(
     cdPercent: String = "",
     cdAmount: String = "",
     items: List<OrderItem> = emptyList(),
-    transport: String = ""
+    transport: String = "",
+    gstPercent: Double? = GstSetting.percent
 ) {
+    var gstPercent by mutableStateOf(gstPercent)
+        private set
     var day by mutableStateOf(day)
     var amount by mutableStateOf(amount)
         private set
@@ -187,9 +193,12 @@ class BillFieldsState(
     val items = mutableStateListOf<OrderItem>().apply { addAll(items) }
 
     /** True while the amount is blank or equal to the lines' total, so it keeps following them. */
-    private var amountFollowsLines = amount.isBlank() || PaymentMath.parse(amount) == PaymentMath.linesTotal(items)
+    private var amountFollowsLines = amount.isBlank() || PaymentMath.parse(amount) == autoTotal(PaymentMath.linesTotal(items), gstPercent)
 
     val linesTotal: Double? get() = PaymentMath.linesTotal(items)
+
+    /** Lines total plus GST: what the amount follows. */
+    val autoAmount: Double? get() = autoTotal(linesTotal, gstPercent)
 
     val valid: Boolean
         get() = amountValid(amount) && amountValid(cdPercent) && amountValid(cdAmount) &&
@@ -197,7 +206,7 @@ class BillFieldsState(
 
     fun typeAmount(text: String) {
         amount = text
-        amountFollowsLines = text.isBlank() || PaymentMath.parse(text) == linesTotal
+        amountFollowsLines = text.isBlank() || PaymentMath.parse(text) == autoAmount
         syncDiscount()
     }
 
@@ -205,7 +214,7 @@ class BillFieldsState(
         items.clear()
         items.addAll(updated.mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString()) })
         if (amountFollowsLines) {
-            amount = PaymentMath.plain(linesTotal)
+            amount = PaymentMath.plain(autoAmount)
             syncDiscount()
         }
     }
@@ -228,6 +237,7 @@ class BillFieldsState(
         transport = transport.trim(),
         cdPercent = PaymentMath.parse(cdPercent),
         cdAmount = PaymentMath.parse(cdAmount),
+        gstPercent = gstPercent,
         items = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
             .mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString(), particulars = item.particulars.trim(), quantity = item.quantity.trim(), rate = item.rate.trim()) }
     )
@@ -235,6 +245,8 @@ class BillFieldsState(
     /** Fills empty fields from an existing bill (used when an existing bill number is picked). */
     fun fillBlanks(bill: Bill) {
         if (day == null) day = bill.billDate?.toEpochDay()
+        // Taking over the bill's amount means taking over the GST it was entered with.
+        if (amount.isBlank() && bill.amount != null) gstPercent = bill.gstPercent
         if (items.isEmpty() && bill.items.isNotEmpty()) setItems(bill.items)
         if (amount.isBlank()) typeAmount(PaymentMath.plain(bill.amount))
         if (lrNo.isBlank()) lrNo = bill.lrNo
@@ -246,8 +258,11 @@ class BillFieldsState(
     companion object {
         fun of(bill: Bill) = BillFieldsState(
             bill.billDate?.toEpochDay(), PaymentMath.plain(bill.amount), bill.lrNo, PaymentMath.plain(bill.cdPercent),
-            PaymentMath.plain(bill.cdAmount), bill.items, bill.transport
+            PaymentMath.plain(bill.cdAmount), bill.items, bill.transport, bill.gstPercent
         )
+
+        private fun autoTotal(lines: Double?, gst: Double?): Double? =
+            lines?.let { if (gst == null) it else PaymentMath.withGst(it, gst) }
     }
 }
 
@@ -278,14 +293,15 @@ fun BillFields(
     TransportField(state.transport, { state.transport = it }, "Transport$suffix", transports)
     BillLinesEditor(state, loadOrderItems)
     val total = state.linesTotal
+    val gst = state.gstPercent
     AmountField(
         value = state.amount,
         onValueChange = state::typeAmount,
         label = "Bill amount$suffix",
         supportingText = when {
-            total == null -> null
-            PaymentMath.parse(state.amount) == total -> "Total of the bill lines"
-            else -> "Lines total ${rupees(total)}"
+            total == null -> gst?.let { "Including GST ${GstSetting.text(it)}" }
+            gst == null -> if (PaymentMath.parse(state.amount) == total) "Total of the bill lines" else "Lines total ${rupees(total)}"
+            else -> "Items ${rupees(total)} + GST ${GstSetting.text(gst)} ${rupees(PaymentMath.gstOf(total, gst))} = ${rupees(PaymentMath.withGst(total, gst))}"
         }
     )
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

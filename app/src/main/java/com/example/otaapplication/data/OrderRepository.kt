@@ -346,6 +346,7 @@ class OrderRepository(
         if (!onlyGiven || d.buyer.isNotBlank()) put("buyer", d.buyer.trim())
         if (!onlyGiven || d.supplier.isNotBlank()) put("supplier", d.supplier.trim())
         if (!onlyGiven || d.transport.isNotBlank()) put("transport", d.transport.trim())
+        if (!onlyGiven || d.gstPercent != null) put("gst_percent", d.gstPercent)
     }
 
     /** Removes a (wrong) bill link from an order. A bill left with no orders is retired too. */
@@ -414,7 +415,7 @@ class OrderRepository(
 
     fun pendingBills(limit: Int): List<PendingRow<BillValue>> =
         helper.readableDatabase.rawQuery(
-            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount, items, buyer, supplier, transport FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
+            "SELECT id, bill_no, bill_date, amount, is_deleted, updated_at, lr_no, cd_percent, cd_amount, items, buyer, supplier, transport, gst_percent FROM bills WHERE sync_pending = 1 ORDER BY updated_at, id LIMIT $limit",
             null
         ).use { c ->
             buildList {
@@ -429,7 +430,8 @@ class OrderRepository(
                             items = BillSql.itemsFromText(c.getStringOrNull(9)),
                             buyer = c.getStringOrNull(10).orEmpty(),
                             supplier = c.getStringOrNull(11).orEmpty(),
-                            transport = c.getStringOrNull(12).orEmpty()
+                            transport = c.getStringOrNull(12).orEmpty(),
+                            gstPercent = if (c.isNull(13)) null else c.getDouble(13)
                         ),
                         c.getInt(4) != 0,
                         c.getLong(5)
@@ -492,6 +494,7 @@ class OrderRepository(
                     put("lr_no", row.value.lrNo); put("cd_percent", row.value.cdPercent); put("cd_amount", row.value.cdAmount)
                     put("items", BillSql.itemsToText(row.value.items))
                     put("buyer", row.value.buyer); put("supplier", row.value.supplier); put("transport", row.value.transport)
+                    put("gst_percent", row.value.gstPercent)
                     put("updated_at", row.clientUpdatedAt); put("is_deleted", 0); put("sync_pending", 0)
                 }
                 if (db.update("bills", values, "id = ?", arrayOf(row.id)) == 0) {

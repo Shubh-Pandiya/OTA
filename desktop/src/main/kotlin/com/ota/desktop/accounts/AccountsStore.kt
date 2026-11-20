@@ -1,6 +1,9 @@
 package com.ota.desktop.accounts
 
+import com.example.otaapplication.data.GstSetting
+import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.SearchText
+import com.ota.desktop.data.LocalSyncTable
 import com.ota.desktop.db.Db
 import com.ota.desktop.db.date
 import com.ota.desktop.db.dbl
@@ -23,7 +26,18 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /** A bill with the parties it belongs to: its own, or else those of its first live order. */
-internal data class BookBill(val id: String, val no: String, val date: LocalDate?, val amount: Long?, val buyer: String, val supplier: String)
+internal data class BookBill(
+    val id: String,
+    val no: String,
+    val date: LocalDate?,
+    val amount: Long?,
+    val buyer: String,
+    val supplier: String,
+    /** GST % included in [amount]; null = entered before GST was recorded. */
+    val gstPercent: Double? = null,
+    /** Value before GST (paise), the commission base; equals [amount] when [gstPercent] is null. */
+    val taxable: Long? = amount
+)
 
 /**
  * The agency's own books: chart of accounts, party accounts, vouchers and their audit trail. Local
@@ -281,7 +295,9 @@ class AccountsStore(
                     if (amount <= 0) continue
                     val (supplierId, percent) = suppliers[SearchText.partyKey(b.supplier)] ?: continue
                     if (percent <= 0.0) continue
-                    val paise = Paise.decimal(amount).multiply(BigDecimal.valueOf(percent)).divide(BigDecimal(100), 2, RoundingMode.HALF_UP).movePointRight(2).longValueExact()
+                    // Commission is on the value before GST; bills entered before GST was recorded use their amount.
+                    val base = b.taxable ?: amount
+                    val paise = Paise.decimal(base).multiply(BigDecimal.valueOf(percent)).divide(BigDecimal(100), 2, RoundingMode.HALF_UP).movePointRight(2).longValueExact()
                     if (paise <= 0) continue
                     wanted += b.id
                     val old = existing[b.id]
@@ -289,7 +305,9 @@ class AccountsStore(
                     val narration = buildString {
                         append("Commission ${pct(percent)}% on bill ${b.no}")
                         b.date?.let { append(" dated ${it.format(DMY)}") }
-                        append(" of ₹${Paise.format(amount)}")
+                        val gst = b.gstPercent
+                        if (gst == null) append(" of ₹${Paise.format(amount)}")
+                        else append(" on ₹${Paise.format(base)} before GST (bill ₹${Paise.format(amount)} incl. GST ${GstSetting.text(gst)})")
                         SearchText.firstLine(b.buyer).takeIf { it.isNotEmpty() }?.let { append(" · $it") }
                     }
                     val lines = listOf(VoucherLine(supplierId, paise, 0), VoucherLine(commission, 0, paise))
@@ -331,13 +349,18 @@ class AccountsStore(
         val party = """from order_bills pl join orders po on po.id = pl.order_id
             where pl.bill_id = b.id and not pl.deleted and not po.deleted order by po.order_day nulls last, po.order_no limit 1"""
         return c.query(
-            "select b.id, b.bill_no, b.bill_date, b.amount, b.buyer, b.supplier, (select po.buyer $party) as p_buyer, (select po.supplier $party) as p_supplier " +
+            "select b.id, b.bill_no, b.bill_date, b.amount, b.gst_percent, b.items, b.buyer, b.supplier, (select po.buyer $party) as p_buyer, (select po.supplier $party) as p_supplier " +
                 "from bills b where not b.deleted order by b.bill_date nulls last, b.bill_no, b.id"
         ) {
             val own = it.str("buyer").isNotBlank() && it.str("supplier").isNotBlank()
+            val amount = it.getBigDecimal("amount")
+            val gst = it.dbl("gst_percent")
+            val taxable = if (gst == null) amount else
+                PaymentMath.taxableValue(amount?.toDouble(), gst, PaymentMath.linesTotal(LocalSyncTable.readItems(it)))?.let(BigDecimal::valueOf)
             BookBill(
-                it.id(), it.str("bill_no"), it.date("bill_date"), it.getBigDecimal("amount")?.let(Paise::of),
-                if (own) it.str("buyer") else it.str("p_buyer"), if (own) it.str("supplier") else it.str("p_supplier")
+                it.id(), it.str("bill_no"), it.date("bill_date"), amount?.let(Paise::of),
+                if (own) it.str("buyer") else it.str("p_buyer"), if (own) it.str("supplier") else it.str("p_supplier"),
+                gst, taxable?.let(Paise::of)
             )
         }
     }

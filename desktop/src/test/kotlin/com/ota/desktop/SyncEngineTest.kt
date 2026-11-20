@@ -160,6 +160,22 @@ class SyncEngineTest {
     }
 
     @Test
+    fun billGstSyncsAndTheRateComesFromTheCloud() = runBlocking {
+        orders.saveBill(null, "G-1", BillDetails(amount = 1050.0, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
+        orders.saveBill(null, "OLD-1", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())
+        cloud.usage.put("gst_percent", 12.0)
+        try {
+            assertNull(engine.sync().error)
+            val bills = cloud.table("bills").values
+            assertEquals(5.0, bills.single { it.getString("bill_no") == "G-1" }.getDouble("gst_percent"))
+            assertTrue(bills.single { it.getString("bill_no") == "OLD-1" }.isNull("gst_percent"))
+            assertEquals(12.0, com.example.otaapplication.data.GstSetting.percent)
+        } finally {
+            com.example.otaapplication.data.GstSetting.percent = 5.0
+        }
+    }
+
+    @Test
     fun offlineAdvicesGetTheirFyNumberBeforeUploading() = runBlocking {
         val bill = orders.saveBill(null, "PB-1", BillDetails(amount = 1000.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())
         fun draft(paid: Double) = com.example.otaapplication.data.AdviceDraft(
@@ -279,10 +295,11 @@ class SyncEngineTest {
     @Test
     fun onlyAdminsChangeRetention() = runBlocking {
         val settings = CloudSettings(config, auth)
-        settings.update(15, 500, 80)
+        settings.update(15, 500, 80, 12.0)
         assertEquals(15, cloud.settings.getInt("retention_days"))
+        assertEquals(12.0, cloud.settings.getDouble("gst_percent"))
         cloud.staff = JSONObject().put("code", 4).put("is_admin", false)
-        assertFailsWith<CloudException> { settings.update(7, 500, 80) }
+        assertFailsWith<CloudException> { settings.update(7, 500, 80, 5.0) }
         assertEquals(15, cloud.settings.getInt("retention_days"))
     }
 

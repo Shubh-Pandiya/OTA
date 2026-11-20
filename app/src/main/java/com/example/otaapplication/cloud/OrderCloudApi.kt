@@ -10,6 +10,7 @@ import com.example.otaapplication.data.BillValue
 import com.example.otaapplication.data.Deletion
 import com.example.otaapplication.data.LineAmounts
 import com.example.otaapplication.data.LinkValue
+import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PendingRow
 import com.example.otaapplication.data.RemoteRow
 import com.example.otaapplication.data.SyncTime
@@ -81,7 +82,7 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,transport,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,transport,gst_percent,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
@@ -96,6 +97,7 @@ class OrderTable<T>(
                     .put("buyer", row.value.buyer.ifBlank { null } ?: JSONObject.NULL)
                     .put("supplier", row.value.supplier.ifBlank { null } ?: JSONObject.NULL)
                     .put("transport", row.value.transport.ifBlank { null } ?: JSONObject.NULL)
+                    .put("gst_percent", row.value.gstPercent ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -110,7 +112,8 @@ class OrderTable<T>(
                     items = itemsFromJson(json.optJSONArray("items")),
                     buyer = json.text("buyer"),
                     supplier = json.text("supplier"),
-                    transport = json.text("transport")
+                    transport = json.text("transport"),
+                    gstPercent = json.number("gst_percent")
                 ))
             }
         )
@@ -239,13 +242,21 @@ class OrderTable<T>(
 }
 
 /** Cloud database size against the plan quota, plus how long the cloud keeps orders. */
-data class CloudUsage(val usedBytes: Long, val limitMb: Int, val warnPercent: Int, val retentionDays: Int, val percent: Double) {
+data class CloudUsage(
+    val usedBytes: Long,
+    val limitMb: Int,
+    val warnPercent: Int,
+    val retentionDays: Int,
+    val percent: Double,
+    /** Agency-wide GST % added to new bills (app_settings). */
+    val gstPercent: Double = PaymentMath.DEFAULT_GST_PERCENT
+) {
     val warning: Boolean get() = percent >= warnPercent
     val usedMb: Double get() = usedBytes / 1_048_576.0
 
     fun toJson(): String = JSONObject()
         .put("used_bytes", usedBytes).put("limit_mb", limitMb).put("warn_percent", warnPercent)
-        .put("retention_days", retentionDays).put("percent", percent).toString()
+        .put("retention_days", retentionDays).put("percent", percent).put("gst_percent", gstPercent).toString()
 
     companion object {
         fun parse(text: String?): CloudUsage? {
@@ -256,7 +267,9 @@ data class CloudUsage(val usedBytes: Long, val limitMb: Int, val warnPercent: In
                 limitMb = json.optInt("limit_mb", 500),
                 warnPercent = json.optInt("warn_percent", 80),
                 retentionDays = json.optInt("retention_days", 30),
-                percent = json.optDouble("percent", 0.0)
+                percent = json.optDouble("percent", 0.0),
+                gstPercent = json.optDouble("gst_percent", PaymentMath.DEFAULT_GST_PERCENT)
+                    .takeIf { it.isFinite() && it in 0.0..100.0 } ?: PaymentMath.DEFAULT_GST_PERCENT
             )
         }
     }
@@ -275,6 +288,9 @@ interface OrderCloudApi {
 
     /** Storage use and retention (ota_cloud_status); null when not available. */
     suspend fun usage(): CloudUsage? = null
+
+    /** Sets the agency-wide GST % for new bills (admins only; throws otherwise). */
+    suspend fun updateGstPercent(percent: Double): Unit = throw UnsupportedOperationException("updateGstPercent")
 
     /**
      * The next agency-wide order number for the financial year of [orderDate] (e.g. 26270001).
@@ -485,6 +501,17 @@ class PostgrestOrderApi(private val client: PostgrestClient) : OrderCloudApi {
 
     override suspend fun usage(): CloudUsage? =
         CloudUsage.parse(client.call("POST", "rpc/ota_cloud_status", body = "{}").trim().takeUnless { it == "null" })
+
+    override suspend fun updateGstPercent(percent: Double) {
+        require(percent in 0.0..100.0) { "GST must be 0 to 100 %" }
+        val body = client.call(
+            "PATCH", "app_settings?id=eq.true&select=gst_percent",
+            mapOf("Prefer" to "return=representation"),
+            JSONObject().put("gst_percent", PaymentMath.round2(percent)).toString()
+        )
+        // Row-level security hides the row from non-admins, so nothing is updated and nothing returned.
+        if (JSONArray(body).length() == 0) throw CloudException("Only an admin can change the GST %", 403)
+    }
 
     override suspend fun allocateOrderNo(orderDate: LocalDate): String {
         val body = try {

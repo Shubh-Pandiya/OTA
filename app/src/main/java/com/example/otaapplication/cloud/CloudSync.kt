@@ -10,6 +10,8 @@ import com.example.otaapplication.OrderFiles
 import com.example.otaapplication.OrderNumberAllocator
 import com.example.otaapplication.data.CatalogRepository
 import com.example.otaapplication.data.DataSet
+import com.example.otaapplication.data.GstSetting
+import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.AdviceImageFiles
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OtaAccounts
@@ -124,6 +126,10 @@ class CloudSync private constructor(private val context: Context) {
     )
     val status: StateFlow<CloudStatus> = _status.asStateFlow()
 
+    init {
+        _status.value.usage?.let { GstSetting.percent = it.gstPercent }
+    }
+
     private val _catalogChanges = MutableStateFlow(0)
     /** Increases whenever a sync changed the local catalog, so open screens can reload. */
     val catalogChanges: StateFlow<Int> = _catalogChanges.asStateFlow()
@@ -201,6 +207,14 @@ class CloudSync private constructor(private val context: Context) {
         _status.update {
             it.copy(email = null, lastSyncAt = null, lastError = null, offline = false, notice = null, usage = null, storageFull = false)
         }
+    }
+
+    /** Admin only: changes the GST % new bills include, on every device (bills already saved keep theirs). */
+    suspend fun setGstPercent(percent: Double) {
+        orderApi.updateGstPercent(percent)
+        GstSetting.percent = PaymentMath.round2(percent)
+        _status.update { s -> s.copy(usage = s.usage?.copy(gstPercent = GstSetting.percent)) }
+        prefs.edit { _status.value.usage?.let { putString(KEY_USAGE, it.toJson()) } }
     }
 
     /**
@@ -445,6 +459,7 @@ class CloudSync private constructor(private val context: Context) {
             if (fresh != null) putLong(KEY_USAGE_CHECKED, System.currentTimeMillis())
         }
         _status.update { it.copy(usage = usage) }
+        usage?.let { GstSetting.percent = it.gstPercent }
         setStorageFull(full)
         StorageAlert.update(context, usage, full)
     }

@@ -97,4 +97,26 @@ class PaymentMathTest {
         assertEquals(BalanceSide.CR, BalanceSide.parse("CR"))
         assertNull(BalanceSide.parse(null))
     }
+
+    @Test
+    fun gstOnTheItemsTotal() {
+        assertEquals(500.0, PaymentMath.gstOf(10_000.0, 5.0), 0.0)
+        assertEquals(10_500.0, PaymentMath.withGst(10_000.0, 5.0), 0.0)
+        // Rounded to 2 decimals: 1234.57 + 61.73 (61.7285).
+        assertEquals(61.73, PaymentMath.gstOf(1234.57, 5.0), 0.0)
+        assertEquals(1296.30, PaymentMath.withGst(1234.57, 5.0), 0.0)
+        assertEquals(1234.57, PaymentMath.withGst(1234.57, 0.0), 0.0)
+    }
+
+    @Test
+    fun taxableValueIsTheCommissionBase() {
+        // Entered before GST was recorded: the amount as it is.
+        assertEquals(10_500.0, PaymentMath.taxableValue(10_500.0, null, 10_000.0)!!, 0.0)
+        // GST bill: its items total, even when the amount was typed over (e.g. freight added).
+        assertEquals(10_000.0, PaymentMath.taxableValue(10_700.0, 5.0, 10_000.0)!!, 0.0)
+        // GST bill without lines: worked back from the amount.
+        assertEquals(10_000.0, PaymentMath.taxableValue(10_500.0, 5.0, null)!!, 0.0)
+        assertEquals(1234.57, PaymentMath.taxableValue(1296.30, 5.0, null)!!, 0.0)
+        assertNull(PaymentMath.taxableValue(null, 5.0, null))
+    }
 }

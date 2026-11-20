@@ -116,7 +116,8 @@ data class BillValue(
     val items: List<OrderItem> = emptyList(),
     val buyer: String = "",
     val supplier: String = "",
-    val transport: String = ""
+    val transport: String = "",
+    val gstPercent: Double? = null
 )
 
 data class LinkValue(val orderId: String, val billId: String)

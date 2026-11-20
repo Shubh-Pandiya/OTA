@@ -3,6 +3,7 @@ package com.ota.desktop.sync
 import com.example.otaapplication.cloud.CloudException
 import com.example.otaapplication.cloud.SupabaseAuth
 import com.example.otaapplication.cloud.SupabaseConfig
+import com.example.otaapplication.data.PaymentMath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,12 +25,14 @@ import java.time.Duration
 class CloudSettings(private val config: SupabaseConfig, private val auth: SupabaseAuth) {
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build()
 
-    /** Updates retention days, storage limit and warning threshold. Throws when not allowed. */
-    suspend fun update(retentionDays: Int, storageLimitMb: Int, warnPercent: Int) {
+    /** Updates retention days, storage limit, warning threshold and the GST % for new bills. Throws when not allowed. */
+    suspend fun update(retentionDays: Int, storageLimitMb: Int, warnPercent: Int, gstPercent: Double) {
         require(retentionDays in 1..3650) { "Retention must be 1 to 3650 days" }
         require(storageLimitMb > 0) { "Storage limit must be positive" }
         require(warnPercent in 1..100) { "Warning level must be 1 to 100 %" }
-        val body = JSONObject().put("retention_days", retentionDays).put("storage_limit_mb", storageLimitMb).put("warn_percent", warnPercent).toString()
+        require(gstPercent in 0.0..100.0) { "GST must be 0 to 100 %" }
+        val body = JSONObject().put("retention_days", retentionDays).put("storage_limit_mb", storageLimitMb).put("warn_percent", warnPercent)
+            .put("gst_percent", PaymentMath.round2(gstPercent)).toString()
         val token = auth.accessToken()
         val response = withContext(Dispatchers.IO) {
             http.send(

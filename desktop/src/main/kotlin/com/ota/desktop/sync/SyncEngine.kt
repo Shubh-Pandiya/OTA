@@ -14,6 +14,7 @@ import com.example.otaapplication.cloud.PostgrestClient
 import com.example.otaapplication.cloud.PostgrestOrderApi
 import com.example.otaapplication.cloud.PullAhead
 import com.example.otaapplication.cloud.SupabaseAuth
+import com.example.otaapplication.data.GstSetting
 import com.example.otaapplication.data.OtaAccounts
 import com.example.otaapplication.data.PartyType
 import com.example.otaapplication.data.PaymentAdvice
@@ -91,6 +92,10 @@ class SyncEngine(
         )
     )
     val status: StateFlow<SyncStatus> = _status.asStateFlow()
+
+    init {
+        _status.value.usage?.let { GstSetting.percent = it.gstPercent }
+    }
     /** Pages being read ahead during a round's pulls (after its deletes); null otherwise. */
     @Volatile private var ahead: PullAhead? = null
 
@@ -265,7 +270,7 @@ class SyncEngine(
             now - (withContext(Dispatchers.IO) { kv.long(KEY_USAGE_CHECKED) } ?: 0) !in 0 until USAGE_RECHECK_MS
         val usage = if (auth.session.value != null && due) runCatching { orderApi.usage() }.getOrNull() else null
         withContext(Dispatchers.IO) {
-            usage?.let { kv[KEY_USAGE] = it.toJson(); kv[KEY_USAGE_CHECKED] = now.toString() }
+            usage?.let { kv[KEY_USAGE] = it.toJson(); kv[KEY_USAGE_CHECKED] = now.toString(); GstSetting.percent = it.gstPercent }
             if (error == null) kv[KEY_LAST_SYNC] = now.toString()
         }
         _status.update {

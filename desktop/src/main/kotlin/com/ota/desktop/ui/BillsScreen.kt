@@ -47,6 +47,7 @@ import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.Bill
 import com.example.otaapplication.data.BillDetails
 import com.example.otaapplication.data.BillPayment
+import com.example.otaapplication.data.GstSetting
 import com.example.otaapplication.data.PaymentMath
 import com.example.otaapplication.data.PaymentStatus
 import com.example.otaapplication.data.SearchText
@@ -284,8 +285,11 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
     var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
     var items by remember { mutableStateOf(bill?.items?.map(Units::splitLegacy).orEmpty()) }
     var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
-    // The amount follows the lines' total until typed over (an old bill keeps its typed amount).
-    var amountAuto by remember { mutableStateOf(bill?.amount == null || bill.amount == bill.linesTotal) }
+    // New bills include the agency's GST %; a saved bill keeps its own (null = entered before GST was recorded).
+    val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
+    fun autoTotal(lines: Double?) = lines?.let { if (gst == null) it else PaymentMath.withGst(it, gst) }
+    // The amount follows the lines' total (+ GST) until typed over (an old bill keeps its typed amount).
+    var amountAuto by remember { mutableStateOf(bill?.amount == null || bill.amount == autoTotal(bill.linesTotal)) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -302,7 +306,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
 
     fun setItems(next: List<OrderItem>) {
         items = next.mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
-        if (amountAuto) amount = PaymentMath.plain(PaymentMath.linesTotal(items))
+        if (amountAuto) amount = PaymentMath.plain(autoTotal(PaymentMath.linesTotal(items)))
     }
     fun bad(text: String) = text.isNotBlank() && (PaymentMath.parse(text) ?: -1.0) < 0
     val linesTotal = PaymentMath.linesTotal(items)
@@ -377,7 +381,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                 }
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Field(amount, { amount = it; amountAuto = it.isBlank() && linesTotal == null }, "Bill amount (₹)", Modifier.weight(1f), number = true,
+                    Field(amount, { amount = it; amountAuto = it.isBlank() && linesTotal == null }, if (gst == null) "Bill amount (₹)" else "Bill amount incl. GST (₹)", Modifier.weight(1f), number = true,
                         error = if (bad(amount)) "Invalid" else null)
                     Field(cdPct, {
                         cdPct = it
@@ -386,12 +390,19 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                     Field(cdAmt, { cdAmt = it }, "CD ₹", Modifier.weight(0.7f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
                 }
                 if (linesTotal != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    val total = if (gst == null) "lines total ${moneyFull(linesTotal)}"
+                        else "items ${moneyFull(linesTotal)} + GST ${GstSetting.text(gst)} ${moneyFull(PaymentMath.gstOf(linesTotal, gst))} = ${moneyFull(PaymentMath.withGst(linesTotal, gst))}"
                     Text(
-                        if (amountAuto) "Amount = lines total ${moneyFull(linesTotal)}" else "Lines total ${moneyFull(linesTotal)} · amount typed over",
+                        if (amountAuto) "Amount = $total" else "${total.replaceFirstChar { it.uppercase() }} · amount typed over",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
                     )
-                    if (!amountAuto) TextButton(onClick = { amountAuto = true; amount = PaymentMath.plain(linesTotal) }) { Text("Use lines total") }
-                }
+                    if (!amountAuto) TextButton(onClick = { amountAuto = true; amount = PaymentMath.plain(autoTotal(linesTotal)) }) {
+                        Text(if (gst == null) "Use lines total" else "Use items + GST")
+                    }
+                } else if (gst != null) Text(
+                    "Enter the bill amount including GST ${GstSetting.text(gst)}; commission is worked out on the value before GST.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
             }
         },
@@ -415,7 +426,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                 val details = BillDetails(
                     day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), lines,
                     if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier),
-                    transport.trim()
+                    transport.trim(), gst
                 )
                 busy = true
                 scope.launch {
@@ -484,6 +495,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
     var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
 
     fun bad(text: String) = text.isNotBlank() && (PaymentMath.parse(text) ?: -1.0) < 0
     val numberError = if (bill == null && number.isBlank() && error != null) "Required" else null
@@ -497,7 +509,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                 if (bill == null) Field(number, { number = it }, "Bill / invoice number", Modifier.fillMaxWidth(), error = numberError)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     DateField(date, { date = it }, "Bill date", Modifier.weight(1f), optional = true)
-                    Field(amount, { amount = it }, "Bill amount (₹)", Modifier.weight(1f), number = true, error = if (bad(amount)) "Invalid" else null)
+                    Field(amount, { amount = it }, if (gst == null) "Bill amount (₹)" else "Bill amount incl. GST ${GstSetting.text(gst)} (₹)", Modifier.weight(1f), number = true, error = if (bad(amount)) "Invalid" else null)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(1f))
@@ -526,7 +538,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                 busy = true
                 scope.launch {
                     runCatching {
-                        onSave(number.trim(), BillDetails(day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), transport = transport.trim()))
+                        onSave(number.trim(), BillDetails(day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), transport = transport.trim(), gstPercent = gst))
                     }.onFailure { error = it.message; busy = false }
                 }
             }) { Text("Save") }

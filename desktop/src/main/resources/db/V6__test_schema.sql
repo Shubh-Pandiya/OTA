@@ -4,18 +4,19 @@
 -- in as the test account before: its synced rows, delete queue, sync cursors and counters were in
 -- public and move here. The Accounts books stay where they are (they were admin-only then).
 do $$
+declare
+  t text;
+  cols text;
 begin
   if current_schema() <> 'ota_test' then return; end if;
   if coalesce((select value from public.kv where key = 'data.mode'), 'production') <> 'test' then return; end if;
 
-  insert into buyers select * from public.buyers on conflict do nothing;
-  insert into suppliers select * from public.suppliers on conflict do nothing;
-  insert into orders select * from public.orders on conflict do nothing;
-  insert into bills select * from public.bills on conflict do nothing;
-  insert into order_bills select * from public.order_bills on conflict do nothing;
-  insert into payment_advices select * from public.payment_advices on conflict do nothing;
-  insert into advice_lines select * from public.advice_lines on conflict do nothing;
-  insert into pending_deletions select * from public.pending_deletions on conflict do nothing;
+  -- By this schema's own columns: public may already have columns added by later migrations.
+  for t in select unnest(array['buyers', 'suppliers', 'orders', 'bills', 'order_bills', 'payment_advices', 'advice_lines', 'pending_deletions']) loop
+    select string_agg(quote_ident(column_name), ', ' order by ordinal_position) into cols
+      from information_schema.columns where table_schema = 'ota_test' and table_name = t;
+    execute format('insert into ota_test.%I (%s) select %s from public.%I on conflict do nothing', t, cols, cols, t);
+  end loop;
   insert into kv select * from public.kv where key like 'cursor.%' or key like 'counter.%' or key = 'sync.last'
     on conflict (key) do update set value = excluded.value;
 

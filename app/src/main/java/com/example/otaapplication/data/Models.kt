@@ -93,10 +93,15 @@ data class Bill(
     val items: List<OrderItem> = emptyList(),
     /** Parties typed on the bill itself (bills added without orders); blank = taken from its orders. */
     val buyer: String = "",
-    val supplier: String = ""
+    val supplier: String = "",
+    /** GST % included in [amount]; null = entered before GST was recorded (amount taken as it is). */
+    val gstPercent: Double? = null
 ) {
     /** Sum of the item lines (qty × rate), or null when no line has both. */
     val linesTotal: Double? get() = PaymentMath.linesTotal(items)
+
+    /** Value before GST, the base for commission. */
+    val taxableValue: Double? get() = PaymentMath.taxableValue(amount, gstPercent, linesTotal)
 
     /** Amount still due; null when the bill amount isn't known. */
     val balance: Double? get() = PaymentMath.balance(amount, settled)
@@ -115,7 +120,9 @@ data class BillDetails(
     /** Parties stored on the bill; blank = taken from its orders. */
     val buyer: String = "",
     val supplier: String = "",
-    val transport: String = ""
+    val transport: String = "",
+    /** GST % included in the amount; null = not recorded. */
+    val gstPercent: Double? = null
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

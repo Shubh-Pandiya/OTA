@@ -21,7 +21,7 @@ class FakeCloud(var staff: JSONObject? = JSONObject().put("code", 3).put("name",
     val archived = HashMap<String, HashMap<String, String>>()
     val requests = CopyOnWriteArrayList<String>()
     var usage = JSONObject().put("used_bytes", 20L * 1048576).put("limit_mb", 500).put("warn_percent", 80).put("retention_days", 30).put("percent", 4.0)
-    var settings = JSONObject().put("retention_days", 30).put("storage_limit_mb", 500).put("warn_percent", 80)
+    var settings = JSONObject().put("retention_days", 30).put("storage_limit_mb", 500).put("warn_percent", 80).put("gst_percent", 5.0)
     /** When set, every write answers with this HTTP status / Postgres code (e.g. 402 = over quota). */
     var failWrites: Pair<Int, String?>? = null
     /** Last FY order serial handed out by ota_allocate_order_no, per FY prefix ("2627"). */

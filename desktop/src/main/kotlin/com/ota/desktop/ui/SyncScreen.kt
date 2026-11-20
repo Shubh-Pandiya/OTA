@@ -1,5 +1,7 @@
 package com.ota.desktop.ui
 
+import com.example.otaapplication.data.PaymentMath
+import com.example.otaapplication.data.GstSetting
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Arrangement
@@ -131,7 +133,7 @@ fun SyncScreen() {
             SecurityPanel(Modifier.weight(2f).fillMaxHeight())
         }
         Spacer(Modifier.height(14.dp))
-        if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent)
+        if (admin) RetentionPanel(u?.retentionDays, u?.limitMb, u?.warnPercent, u?.gstPercent)
         else Panel(Modifier.fillMaxWidth(), title = "Cloud settings") {
             Text("Cloud clean-up and the retention days are managed by the admins (Varun and Shubham).", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -171,15 +173,17 @@ internal fun ClearTestDataDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) =
 )
 
 @Composable
-private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?) {
+private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?, gst: Double?) {
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
     var daysText by remember { mutableStateOf(days?.toString().orEmpty()) }
     var limitText by remember { mutableStateOf(limit?.toString().orEmpty()) }
     var warnText by remember { mutableStateOf(warn?.toString().orEmpty()) }
+    var gstText by remember { mutableStateOf(PaymentMath.plain(gst)) }
     var busy by remember { mutableStateOf(false) }
-    LaunchedEffect(days, limit, warn) {
+    LaunchedEffect(days, limit, warn, gst) {
+        if (gstText.isEmpty()) gstText = PaymentMath.plain(gst)
         if (daysText.isEmpty()) daysText = days?.toString().orEmpty()
         if (limitText.isEmpty()) limitText = limit?.toString().orEmpty()
         if (warnText.isEmpty()) warnText = warn?.toString().orEmpty()
@@ -188,7 +192,8 @@ private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?) {
         Text(
             "Bills not yet fully paid, unbilled orders and everything linked to them stay in the cloud however old they are. " +
                 "Settled orders, bills and payment advices are removed once settled longer than the retention days, but only after this laptop has stored them. " +
-                "Lower the days if the cloud gets full. Buyers and suppliers always stay in the cloud.",
+                "Lower the days if the cloud gets full. Buyers and suppliers always stay in the cloud. " +
+                "GST % is added to the items total of bills entered from now on, on every phone and laptop (saved bills keep theirs); commission is on the value before GST.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(10.dp))
@@ -196,12 +201,14 @@ private fun RetentionPanel(days: Int?, limit: Int?, warn: Int?) {
             Field(daysText, { daysText = it.filter(Char::isDigit) }, "Retention days", Modifier.width(170.dp), number = true)
             Field(limitText, { limitText = it.filter(Char::isDigit) }, "Storage limit (MB)", Modifier.width(170.dp), number = true)
             Field(warnText, { warnText = it.filter(Char::isDigit) }, "Warn at (%)", Modifier.width(150.dp), number = true)
+            Field(gstText, { gstText = it }, "GST on bills (%)", Modifier.width(150.dp), number = true)
             Button(enabled = !busy, onClick = {
                 val d = daysText.toIntOrNull(); val l = limitText.toIntOrNull(); val w = warnText.toIntOrNull()
-                if (d == null || l == null || w == null) { toast("Fill in all three numbers"); return@Button }
+                val g = PaymentMath.parse(gstText)?.takeIf { it in 0.0..100.0 }
+                if (d == null || l == null || w == null || g == null) { toast("Fill in all four numbers (GST 0 to 100 %)"); return@Button }
                 busy = true
                 scope.launch {
-                    runCatching { app.cloudSettings.update(d, l, w); app.engine.sync(maintenance = true) }
+                    runCatching { app.cloudSettings.update(d, l, w, g); GstSetting.percent = PaymentMath.round2(g); app.engine.sync(maintenance = true) }
                         .onSuccess { toast("Saved. Clean-up ran with $d days retention.") }
                         .onFailure { toast("Couldn't save: ${it.message}") }
                     busy = false
