@@ -135,12 +135,15 @@ class StartupGuard(
     }
 }
 
-/** Row count and checksum of every real-data table: compares the data before and after an update. */
+/**
+ * Row count and checksum of every real-data table: compares the data before and after an update.
+ * Null fields are left out, so a migration that only adds an empty column keeps the checksum.
+ */
 object DataSnapshot {
     fun take(db: Db): Map<String, String> = db.read { c ->
         val tables = c.query("select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name") { it.getString(1) }
         tables.associateWith { t ->
-            c.one("select count(*) || ' ' || coalesce(md5(string_agg(x::text, E'\\n' order by x::text)), '-') from public.\"$t\" x") { it.getString(1) }!!
+            c.one("select count(*) || ' ' || coalesce(md5(string_agg(jsonb_strip_nulls(to_jsonb(x))::text, E'\\n' order by jsonb_strip_nulls(to_jsonb(x))::text)), '-') from public.\"$t\" x") { it.getString(1) }!!
         }
     }
 }

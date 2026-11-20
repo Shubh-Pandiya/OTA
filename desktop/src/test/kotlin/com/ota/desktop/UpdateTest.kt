@@ -1,9 +1,12 @@
 package com.ota.desktop
 
+import com.ota.desktop.db.Db
 import com.ota.desktop.db.Migrations
+import com.ota.desktop.db.exec
 import com.ota.desktop.db.one
 import com.ota.desktop.update.AppVersion
 import com.ota.desktop.update.Backups
+import com.ota.desktop.update.DataSnapshot
 import com.ota.desktop.update.Downloader
 import com.ota.desktop.update.Installer
 import com.ota.desktop.update.MacInstaller
@@ -236,6 +239,22 @@ class UpdateTest {
         db.read { c -> c.createStatement().use { it.execute("insert into schema_version (version) values ($newer)") } }
         val e = assertFailsWith<Migrations.SchemaTooNew> { Migrations.run(db) }
         assertEquals(newer, e.found)
+    }
+
+    @Test
+    fun aMigrationAddingAnEmptyColumnKeepsTheDataSnapshot() {
+        val db = TestDb.fresh()
+        DemoData(db).seed()
+        db.tx { c ->
+            for (schema in listOf(Db.PRODUCTION, Db.TEST)) {
+                c.exec("alter table $schema.bills drop column gst_percent")
+                c.exec("delete from $schema.schema_version where version = 7")
+            }
+        }
+        fun snapshot() = DataSnapshot.take(db) - "schema_version"
+        val before = snapshot()
+        Migrations.run(db)
+        assertEquals(before, snapshot())
     }
 
     @Test
