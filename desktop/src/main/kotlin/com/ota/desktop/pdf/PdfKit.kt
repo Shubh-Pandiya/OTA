@@ -94,7 +94,7 @@ class PdfKit private constructor(private val doc: PDDocument) : AutoCloseable {
 
     fun block(text: String, width: Float, size: Float, bold: Boolean = false, color: Color = Color.BLACK, maxLines: Int = Int.MAX_VALUE): Block {
         val lines = ArrayList<String>()
-        for (para in text.split('\n')) {
+        for (para in text.replace("\r\n", "\n").replace('\r', '\n').replace('\t', ' ').split('\n')) {
             if (para.isBlank()) { lines += ""; continue }
             var line = StringBuilder()
             for (word in para.split(' ')) {

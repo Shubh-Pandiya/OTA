@@ -72,6 +72,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
 import com.example.otaapplication.data.Party
@@ -313,7 +317,10 @@ fun Field(
     )
 }
 
-/** A dense single-line input for table cells (order items, advice lines). */
+/**
+ * A dense input for table cells (order items, advice lines). With [singleLine] false, Enter starts a
+ * new line (design / colour numbers) and Tab still moves to the next cell instead of typing a tab.
+ */
 @Composable
 fun CellField(
     value: String,
@@ -326,6 +333,7 @@ fun CellField(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val border = when {
         error -> Brand.Red
         focused -> Brand.Saffron
@@ -335,11 +343,19 @@ fun CellField(
         value = value,
         onValueChange = onChange,
         singleLine = singleLine,
-        maxLines = if (singleLine) 1 else 4,
+        maxLines = if (singleLine) 1 else 6,
         interactionSource = interaction,
         cursorBrush = SolidColor(Brand.Saffron),
         textStyle = MaterialTheme.typography.bodyMedium.merge(Numeric).copy(textAlign = align, color = MaterialTheme.colorScheme.onSurface),
-        modifier = modifier.heightIn(min = 34.dp).clip(RoundedCornerShape(7.dp)).background(Color.White)
+        modifier = modifier
+            .then(if (singleLine) Modifier else Modifier.onPreviewKeyEvent { e ->
+                if (e.key != androidx.compose.ui.input.key.Key.Tab) return@onPreviewKeyEvent false
+                if (e.type == androidx.compose.ui.input.key.KeyEventType.KeyDown) {
+                    focusManager.moveFocus(if (e.isShiftPressed) androidx.compose.ui.focus.FocusDirection.Previous else androidx.compose.ui.focus.FocusDirection.Next)
+                }
+                true
+            })
+            .heightIn(min = 34.dp).clip(RoundedCornerShape(7.dp)).background(Color.White)
             .border(if (focused) 1.5.dp else 1.dp, border, RoundedCornerShape(7.dp)),
         decorationBox = { inner ->
             Box(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), contentAlignment = Alignment.CenterStart) {

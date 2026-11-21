@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import com.example.otaapplication.data.BankDetails
 import com.example.otaapplication.cloud.CloudStatus
 import com.example.otaapplication.data.CatalogRepository
+import com.example.otaapplication.data.OrderSummary
 import com.example.otaapplication.data.Party
 import com.example.otaapplication.data.PartyType
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +70,13 @@ fun CatalogScreen(
     catalog: CatalogRepository,
     cloudStatus: CloudStatus = CloudStatus(configured = false),
     remoteChanges: Int = 0,
-    onOpenCloudSettings: () -> Unit = {}
+    onOpenCloudSettings: () -> Unit = {},
+    paymentDeps: PaymentDeps? = null,
+    /** The party whose detail is open (kept by the caller so it survives a trip to an order). */
+    viewing: Party? = null,
+    onViewingChange: (Party?) -> Unit = {},
+    remoteOrderChanges: Int = 0,
+    onOpenOrder: (OrderSummary) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -85,6 +92,28 @@ fun CatalogScreen(
         counts = withContext(Dispatchers.IO) { PartyType.entries.associateWith { catalog.count(it) } }
     }
 
+    AnimatedContent(
+        targetState = viewing.takeIf { paymentDeps != null },
+        transitionSpec = {
+            if (targetState != null) {
+                (slideInHorizontally(tween(280)) { it / 3 } + fadeIn(tween(220))) togetherWith fadeOut(tween(120))
+            } else {
+                fadeIn(tween(220)) togetherWith (slideOutHorizontally(tween(260)) { it / 3 } + fadeOut(tween(180)))
+            }
+        },
+        contentKey = { it?.id },
+        label = "partyDetail"
+    ) { shown ->
+    if (shown != null && paymentDeps != null) {
+        PartyDetailScreen(
+            party = shown,
+            deps = paymentDeps,
+            remoteChanges = remoteOrderChanges,
+            onBack = { onViewingChange(null) },
+            onEdit = { editing = shown },
+            onOpenOrder = onOpenOrder
+        )
+    } else
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             PrimaryTabRow(selectedTabIndex = tab.ordinal, containerColor = MaterialTheme.colorScheme.background) {
@@ -136,7 +165,7 @@ fun CatalogScreen(
                 modifier = Modifier.fillMaxSize(),
                 label = "catalogTab"
             ) { type ->
-                PartyList(type = type, query = query, version = version, catalog = catalog, onOpen = { editing = it })
+                PartyList(type = type, query = query, version = version, catalog = catalog, onOpen = { if (paymentDeps != null) onViewingChange(it) else editing = it })
             }
         }
         ExtendedFloatingActionButton(
@@ -145,6 +174,7 @@ fun CatalogScreen(
             text = { AnimatedContent(targetState = tab.label, label = "fabLabel") { Text("Add $it") } },
             modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp)
         )
+    }
     }
 
     editing?.let { party ->
@@ -155,11 +185,13 @@ fun CatalogScreen(
             onSaved = { saved ->
                 editing = null
                 localVersion++
+                if (viewing?.id == saved.id) onViewingChange(saved)
                 Toast.makeText(context, "${saved.type.label} ${if (party.id.isBlank()) "added" else "updated"}", Toast.LENGTH_SHORT).show()
             },
             onDelete = if (party.id.isBlank()) null else {
                 {
                     editing = null
+                    if (viewing?.id == party.id) onViewingChange(null)
                     scope.launch {
                         withContext(Dispatchers.IO) { catalog.delete(party.type, party.id) }
                         localVersion++
@@ -260,7 +292,7 @@ private fun PartyCard(party: Party, onClick: () -> Unit, modifier: Modifier = Mo
                     }
                 }
             }
-            Icon(Icons.Default.Edit, contentDescription = "Edit", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
+            Icon(Icons.Default.ChevronRight, contentDescription = "Open", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(22.dp))
         }
     }
 }

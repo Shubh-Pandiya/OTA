@@ -198,7 +198,7 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
                     val rate = PaymentMath.parse(line.rate)
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Cell(line.serialNo, 0.3f, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Cell(line.particulars, 2f, maxLines = 3)
+                        Cell(line.particulars, 2f, maxLines = 8)
                         Cell(Units.display(line), 1f, TextAlign.End)
                         Cell(line.rate, 0.8f, TextAlign.End)
                         Cell(if (qty != null && rate != null) moneyFull(PaymentMath.round2(qty * rate)) else "", 1f, TextAlign.End)
@@ -356,7 +356,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                         fun set(next: OrderItem) = setItems(items.toMutableList().also { it[i] = next })
                         Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(line.serialNo, Modifier.weight(0.25f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            CellField(line.particulars, { set(line.copy(particulars = it)) }, Modifier.weight(3f), "Description")
+                            CellField(line.particulars, { set(line.copy(particulars = it)) }, Modifier.weight(3f), "Description", singleLine = false)
                             CellField(line.quantity, { set(line.copy(quantity = it)) }, Modifier.weight(0.8f), "0", TextAlign.End)
                             Select("Unit", listOf<QtyUnit?>(null) + QtyUnit.entries, QtyUnit.ofCode(line.unit), { set(line.copy(unit = it?.code.orEmpty())) },
                                 Modifier.weight(0.8f), text = { it?.label ?: "—" }, dense = true)

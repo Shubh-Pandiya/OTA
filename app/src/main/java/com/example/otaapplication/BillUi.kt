@@ -80,7 +80,7 @@ private val PartlyPaidContainer = Color(0xFFFFE0B2)
 private val OnPartlyPaidContainer = Color(0xFF7A3E00)
 
 @Composable
-fun PaymentStatusPill(status: PaymentStatus, modifier: Modifier = Modifier) {
+fun PaymentStatusPill(status: PaymentStatus, modifier: Modifier = Modifier, label: String = status.label) {
     val (bg, fg, icon) = when (status) {
         PaymentStatus.PAID -> Triple(BillReceivedContainer, OnBillReceivedContainer, Icons.Default.TaskAlt)
         PaymentStatus.PARTLY_PAID -> Triple(PartlyPaidContainer, OnPartlyPaidContainer, Icons.Default.Timelapse)
@@ -92,7 +92,7 @@ fun PaymentStatusPill(status: PaymentStatus, modifier: Modifier = Modifier) {
     ) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = fg)
         Spacer(Modifier.width(4.dp))
-        Text(status.label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = fg)
+        Text(label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = fg)
     }
 }
 

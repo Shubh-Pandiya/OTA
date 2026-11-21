@@ -99,6 +99,11 @@ fun OrderHistoryScreen(
     orders: OrderRepository,
     paymentDeps: PaymentDeps,
     remoteChanges: Int = 0,
+    /** Opens this order's detail on arrival (e.g. from a party's page). */
+    openOrder: OrderSummary? = null,
+    onOrderOpened: () -> Unit = {},
+    /** Called when the detail opened through [openOrder] closes. */
+    onOpenedOrderClosed: () -> Unit = {},
     onOrderFocused: (OrderFormData, String?) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -152,6 +157,20 @@ fun OrderHistoryScreen(
     }
 
     BackHandler(enabled = detail == null && selection.isNotEmpty()) { selection = emptySet() }
+    var openedFromOutside by remember { mutableStateOf(false) }
+    LaunchedEffect(openOrder) {
+        if (openOrder != null) {
+            detail = openOrder
+            openedFromOutside = true
+            onOrderOpened()
+        }
+    }
+    LaunchedEffect(detail) {
+        if (detail == null && openedFromOutside) {
+            openedFromOutside = false
+            onOpenedOrderClosed()
+        }
+    }
     BackHandler(enabled = detail != null) { detail = null }
 
     AnimatedContent(

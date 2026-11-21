@@ -117,6 +117,9 @@ class Navigator {
     var target by mutableStateOf<Target?>(null)
         private set
 
+    /** The buyer or supplier open in Buyers & Suppliers; kept while its records are opened elsewhere. */
+    var party by mutableStateOf<com.example.otaapplication.data.Party?>(null)
+
     fun go(section: Section, target: Target? = null) {
         this.target = target
         this.section = section

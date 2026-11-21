@@ -51,6 +51,13 @@ private val gstinPattern = Regex("^[0-9A-Z]{15}$")
 @Composable
 fun CatalogScreen() {
     val app = LocalApp.current
+    val nav = LocalNav.current
+    nav.party?.let { open ->
+        androidx.compose.runtime.key(open.id) {
+            PartyDetail(open, onBack = { nav.party = null }, onChanged = { nav.party = it })
+        }
+        return
+    }
     var type by rememberSaveable { mutableStateOf(PartyType.BUYER) }
     var query by rememberSaveable { mutableStateOf("") }
     var editing by remember { mutableStateOf<Party?>(null) }
@@ -75,7 +82,7 @@ fun CatalogScreen() {
                 if (parties.isEmpty()) Empty(if (query.isBlank()) "No ${type.pluralLabel.lowercase()} yet" else "Nothing matches \"$query\"")
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(parties, key = { it.id }) { p ->
-                        TableRow(editing?.id == p.id, { editing = p }) {
+                        TableRow(editing?.id == p.id, { editing = null; nav.party = p }) {
                             Cell(p.name, 2f, bold = true)
                             Cell(p.city, 1f)
                             Cell(p.phone, 1f)
@@ -86,15 +93,17 @@ fun CatalogScreen() {
             }
             Box(Modifier.weight(1f).fillMaxHeight()) {
                 val e = editing
-                if (e == null) Panel(Modifier.fillMaxSize()) { Empty("Select an entry to edit it, or add a new one") }
-                else androidx.compose.runtime.key(e.id, e.type) { PartyForm(e, onDone = { editing = it }) }
+                if (e == null) Panel(Modifier.fillMaxSize()) {
+                    Empty("Select a ${type.label.lowercase()} to see its orders, bills, payment advices and what is due, or add a new one")
+                }
+                else androidx.compose.runtime.key(e.id, e.type) { PartyForm(e, onDone = { editing = null; if (it != null) nav.party = it }) }
             }
         }
     }
 }
 
 @Composable
-private fun PartyForm(initial: Party, onDone: (Party?) -> Unit) {
+internal fun PartyForm(initial: Party, onDone: (Party?) -> Unit, onDeleted: () -> Unit = { onDone(null) }) {
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
@@ -177,6 +186,6 @@ private fun PartyForm(initial: Party, onDone: (Party?) -> Unit) {
         onDismiss = { confirmDelete = false }
     ) {
         confirmDelete = false
-        scope.launch { withContext(Dispatchers.IO) { app.catalog.delete(initial.type, initial.id) }; toast("${initial.name} deleted"); onDone(null) }
+        scope.launch { withContext(Dispatchers.IO) { app.catalog.delete(initial.type, initial.id) }; toast("${initial.name} deleted"); onDeleted() }
     }
 }

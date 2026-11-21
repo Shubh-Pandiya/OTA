@@ -84,6 +84,7 @@ import com.example.otaapplication.data.OrderQuery
 import com.example.otaapplication.data.LocalOrders
 import com.example.otaapplication.data.OrderJson
 import com.example.otaapplication.data.OrderRepository
+import com.example.otaapplication.data.OrderSummary
 import com.example.otaapplication.data.OtaDatabase
 import com.example.otaapplication.data.PaymentRepository
 import com.example.otaapplication.ui.theme.OTAApplicationTheme
@@ -326,6 +327,16 @@ class MainActivity : ComponentActivity() {
         var currentScreen by rememberSaveable { mutableStateOf(Screen.Home) }
         // A bill or advice tapped on Home, opened once its section is showing.
         var pendingPage by remember { mutableStateOf<PaymentPage?>(null) }
+        // Party detail open in Buyers & Suppliers, and an order opened from it (Back returns to the party).
+        var catalogParty by remember { mutableStateOf<com.example.otaapplication.data.Party?>(null) }
+        var orderFromParty by remember { mutableStateOf<OrderSummary?>(null) }
+        var returnToParty by remember { mutableStateOf(false) }
+        LaunchedEffect(currentScreen) {
+            if (currentScreen != Screen.Catalog && !(currentScreen == Screen.OrderHistory && returnToParty)) {
+                catalogParty = null
+                returnToParty = false
+            }
+        }
 
         var formData by remember { mutableStateOf(OrderFormData()) }
         var focusedOrderState by remember { mutableStateOf<OrderFormData?>(null) }
@@ -501,6 +512,12 @@ class MainActivity : ComponentActivity() {
                             orders = orderRepository,
                             paymentDeps = paymentDeps,
                             remoteChanges = remoteOrderChanges,
+                            openOrder = orderFromParty,
+                            onOrderOpened = { orderFromParty = null },
+                            onOpenedOrderClosed = {
+                                if (returnToParty && currentScreen == Screen.OrderHistory) currentScreen = Screen.Catalog
+                                returnToParty = false
+                            },
                             onOrderFocused = { selected, uuid ->
                                 focusedOrderState = Units.splitLegacy(selected)
                                 focusedUuid = uuid
@@ -519,7 +536,16 @@ class MainActivity : ComponentActivity() {
                             catalog = catalogRepository,
                             cloudStatus = cloudStatus,
                             remoteChanges = remoteCatalogChanges,
-                            onOpenCloudSettings = { currentScreen = Screen.SyncSettings }
+                            onOpenCloudSettings = { currentScreen = Screen.SyncSettings },
+                            paymentDeps = paymentDeps,
+                            viewing = catalogParty,
+                            onViewingChange = { catalogParty = it },
+                            remoteOrderChanges = remoteOrderChanges,
+                            onOpenOrder = { order ->
+                                orderFromParty = order
+                                returnToParty = true
+                                currentScreen = Screen.OrderHistory
+                            }
                         )
                         Screen.SyncSettings -> {
                             val totalOrders by produceState<Int?>(initialValue = null) {

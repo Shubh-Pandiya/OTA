@@ -222,7 +222,7 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
             d.items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }.forEach { item ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Cell(item.serialNo, 0.3f, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Cell(item.particulars, 2f, maxLines = 3)
+                    Cell(item.particulars, 2f, maxLines = 8)
                     Cell(Units.display(item), 1f, TextAlign.End)
                     Cell(item.rate, 0.8f, TextAlign.End)
                 }
@@ -275,7 +275,7 @@ private fun OrderDetail(row: OrderRow, onEdit: () -> Unit, onDeleted: () -> Unit
 // ------------------------------------------------------------------------------------ editor
 
 @Composable
-private fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
+internal fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
@@ -337,7 +337,7 @@ private fun OrderEditor(row: OrderRow?, onDone: (String?) -> Unit) {
                     androidx.compose.runtime.key(item.key) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).animateContentSize(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(item.serialNo, Modifier.weight(0.25f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            CellField(item.particulars, { setItem(i, item.copy(particulars = it)) }, Modifier.weight(3f), "Description")
+                            CellField(item.particulars, { setItem(i, item.copy(particulars = it)) }, Modifier.weight(3f), "Description (Enter for a new line)", singleLine = false)
                             CellField(item.quantity, { setItem(i, item.copy(quantity = it)) }, Modifier.weight(0.8f), "0", TextAlign.End)
                             Select("Unit", listOf<QtyUnit?>(null) + QtyUnit.entries, QtyUnit.ofCode(item.unit), { setItem(i, item.copy(unit = it?.code.orEmpty())) },
                                 Modifier.weight(0.7f), text = { it?.label ?: "—" }, dense = true)

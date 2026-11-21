@@ -291,7 +291,7 @@ private fun PartiesLine(buyer: String, supplier: String) {
 }
 
 @Composable
-private fun AdviceCard(advice: AdviceSummary, onClick: () -> Unit, modifier: Modifier) {
+internal fun AdviceCard(advice: AdviceSummary, onClick: () -> Unit, modifier: Modifier) {
     ListCard(onClick, modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(AdviceNumber.display(advice.adviceNo), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -319,7 +319,7 @@ private fun AdviceCard(advice: AdviceSummary, onClick: () -> Unit, modifier: Mod
 }
 
 @Composable
-private fun BillCard(item: BillListItem, onClick: () -> Unit, modifier: Modifier) {
+internal fun BillCard(item: BillListItem, onClick: () -> Unit, modifier: Modifier) {
     val bill = item.bill
     ListCard(onClick, modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {

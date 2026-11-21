@@ -12,6 +12,8 @@ import com.ota.desktop.ui.AccTab
 import com.ota.desktop.ui.LockScreen
 import java.time.LocalDate
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.unit.Density
@@ -132,6 +134,30 @@ fun main(args: Array<String>) {
     shot("06c-advice-with-two-bills", at(Section.ADVICES, Target.Advice(twoBillAdvice.id)))
     shot("07-advice-editor", at(Section.ADVICES, Target.NewAdvice(bill.id)))
     shot("08-buyers-suppliers", at(Section.CATALOG))
+    val raymondParty = app.catalog.list(com.example.otaapplication.data.PartyType.SUPPLIER, "Raymond").first()
+    val kapoor = app.catalog.list(com.example.otaapplication.data.PartyType.BUYER, "Kapoor").first()
+    shot("08b-supplier-detail", at(Section.CATALOG).apply { party = raymondParty }, height = 1250)
+    shot("08c-buyer-detail", at(Section.CATALOG).apply { party = kapoor }, height = 1250)
+    // Particulars over several lines (design / colour numbers), in the editor, the detail and the PDF.
+    val multi = demo.orders.list().first { it.billNos.isEmpty() }.let { row ->
+        val items = row.data.items.mapIndexed { i, item ->
+            if (i == 0) item.copy(particulars = "Terry-rayon suiting\nDesign 4521 - colours 3, 7, 12\nDesign 4528 - colour 5") else item
+        } + com.example.otaapplication.OrderItem("${row.data.items.size + 1}", "Cotton shirting\nD.No 88 / shade 14", "120", "185", "M")
+        val data = row.data.copy(items = items, remarks = "Particulars over several lines")
+        demo.orders.update(row.id, data)
+        demo.orders.list().first { it.id == row.id }
+    }
+    shot("04c-order-multiline-detail", at(Section.ORDERS, Target.Order(multi.id)))
+    shot("04d-order-multiline-entry", height = 1100) {
+        androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.padding(24.dp)) { com.ota.desktop.ui.OrderEditor(multi) {} }
+    }
+    if (only.isEmpty() || "04e-order-multiline-pdf" in only) {
+        val pdf = com.ota.desktop.pdf.OrderPdf.write(multi.data, File(out, "04e-order-multiline.pdf"))
+        org.apache.pdfbox.Loader.loadPDF(pdf).use { doc ->
+            javax.imageio.ImageIO.write(org.apache.pdfbox.rendering.PDFRenderer(doc).renderImageWithDPI(0, 110f), "png", File(out, "04e-order-multiline-pdf.png"))
+        }
+        println("wrote 04e-order-multiline-pdf.png")
+    }
     shot("09-sync-cloud", at(Section.SYNC))
     shot("10-export", at(Section.EXPORT))
 
