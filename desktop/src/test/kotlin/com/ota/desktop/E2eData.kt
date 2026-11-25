@@ -28,8 +28,8 @@ fun main(args: Array<String>) {
                 "seed" -> {
                     // This build's code reads columns that later migrations add; the old schema gets
                     // them only while seeding (all left empty) and loses them again afterwards.
-                    val added = NEWER_COLUMNS.filter { (t, col) -> !hasColumn(db, t, col) }
-                    added.forEach { (t, col) -> db.read { c -> c.createStatement().use { it.execute("alter table $t add column $col numeric") } } }
+                    val added = NEWER_COLUMNS.filter { (t, col, _) -> !hasColumn(db, t, col) }
+                    added.forEach { (t, col, type) -> db.read { c -> c.createStatement().use { it.execute("alter table $t add column $col $type") } } }
                     val demo = DemoData(db).seed()
                     demo.orders.create(demo.orders.list().first().data.copy(remarks = "Saved offline, waiting for its number"), "")
                     db.read { c ->
@@ -44,7 +44,7 @@ fun main(args: Array<String>) {
                             }
                         }
                     }
-                    added.forEach { (t, col) -> db.read { c -> c.createStatement().use { it.execute("alter table $t drop column $col") } } }
+                    added.forEach { (t, col, _) -> db.read { c -> c.createStatement().use { it.execute("alter table $t drop column $col") } } }
                     println("seeded: " + DataSnapshot.take(db).filterKeys { it != "kv" })
                 }
                 "seed-accounts" -> {
@@ -83,7 +83,7 @@ fun main(args: Array<String>) {
 
 /** Repeated ids or numbers across the synced tables and, on 1.4.0+ data, the local books. */
 /** (table, column) added by migrations after 1.11.x, all nullable. */
-private val NEWER_COLUMNS = listOf("bills" to "gst_percent")
+private val NEWER_COLUMNS = listOf(Triple("bills", "gst_percent", "numeric"), Triple("bills", "discounts", "jsonb"))
 
 private fun hasColumn(db: Db, table: String, column: String): Boolean = db.read { c ->
     c.one("select count(*) from information_schema.columns where table_schema = 'public' and table_name = ? and column_name = ?", table, column) { it.getInt(1) }!! > 0
