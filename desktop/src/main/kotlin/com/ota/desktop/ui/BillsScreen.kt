@@ -1,6 +1,8 @@
 package com.ota.desktop.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -161,6 +163,7 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
     val orders by rememberLoad(emptyList<OrderRow>(), b.id) { app.orders.ordersForBill(b.id) }
     val payments by rememberLoad(emptyList<BillPayment>(), b.id) { app.payments.advicesForBill(b.id) }
     var edit by remember { mutableStateOf(false) }
+    var editRemark by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Panel(Modifier.fillMaxSize()) {
@@ -192,6 +195,14 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
                     LabelValue("C.D. at payment", listOfNotNull(b.cdPercent?.let { "${PaymentMath.plain(it)}%" }, b.cdAmount?.let(::moneyFull)).joinToString(" · "), Modifier.weight(1f))
                 } else Spacer(Modifier.weight(1f))
             }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Remark", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = { editRemark = true }) { IconText(Icons.Default.Edit, if (b.localRemark.isBlank()) "Add remark" else "Edit remark") }
+            }
+            if (b.localRemark.isBlank()) Text("No remark.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            else Text(b.localRemark, Modifier.fillMaxWidth().background(Brand.SaffronTint, RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 8.dp))
+            Text(LOCAL_REMARK_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (b.discounts.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 Text("Discounts (before GST)", style = MaterialTheme.typography.titleSmall)
@@ -257,6 +268,24 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
         }
     }
     if (edit) BillEditorDialog(b, onDismiss = { edit = false }) { edit = false }
+    if (editRemark) {
+        var text by remember { mutableStateOf(b.localRemark) }
+        AlertDialog(
+            onDismissRequest = { editRemark = false }, containerColor = Color.White,
+            title = { Text("Remark on bill ${b.billNo}") },
+            text = { Column(Modifier.width(460.dp)) { BillRemarkField(text, { text = it }) } },
+            confirmButton = {
+                Button(onClick = {
+                    editRemark = false
+                    scope.launch {
+                        runCatching { withContext(Dispatchers.IO) { app.orders.setBillRemark(b.id, text) } }
+                            .onFailure { toast(it.message ?: "Could not save the remark") }
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { editRemark = false }) { Text("Cancel") } }
+        )
+    }
     if (confirmDelete) {
         if (b.adviceCount > 0) {
             AlertDialog(
@@ -306,6 +335,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, maxBodyHeight: androidx
     var items by remember { mutableStateOf(bill?.items?.map(Units::splitLegacy).orEmpty()) }
     var discounts by remember { mutableStateOf(bill?.discounts?.map(DiscountDraft::of).orEmpty()) }
     var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
+    var remark by remember { mutableStateOf(bill?.localRemark.orEmpty()) }
     // New bills include the agency's GST %; a saved bill keeps its own (null = entered before GST was recorded).
     val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
     fun autoTotal(lines: Double?, less: List<DiscountDraft> = discounts) = PaymentMath.billTotal(lines, DiscountDraft.total(less), gst)
@@ -430,6 +460,8 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, maxBodyHeight: androidx
                     "Enter the bill amount including GST ${GstSetting.text(gst)}; commission is worked out on the value before GST.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(4.dp))
+                BillRemarkField(remark, { remark = it })
                 error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
             }
         },
@@ -456,7 +488,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, maxBodyHeight: androidx
                 val details = BillDetails(
                     day, PaymentMath.parse(amount), lr.trim(), if (keepCd) PaymentMath.parse(cdPct) else null, if (keepCd) PaymentMath.parse(cdAmt) else null, lines,
                     if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier),
-                    transport.trim(), gst, less
+                    transport.trim(), gst, less, localRemark = remark.trim()
                 )
                 busy = true
                 scope.launch {
@@ -522,6 +554,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
     var lr by remember { mutableStateOf(bill?.lrNo.orEmpty()) }
     var transport by remember { mutableStateOf(bill?.transport.orEmpty()) }
     var discounts by remember { mutableStateOf(bill?.discounts?.map(DiscountDraft::of).orEmpty()) }
+    var remark by remember { mutableStateOf(bill?.localRemark.orEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
@@ -549,6 +582,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                     "Enter the bill amount after these discounts" + (gst?.let { ", including GST ${GstSetting.text(it)}" } ?: "") + ".",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                BillRemarkField(remark, { remark = it })
                 error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
             }
         },
@@ -567,7 +601,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                     runCatching {
                         onSave(number.trim(), BillDetails(
                             day, PaymentMath.parse(amount), lr.trim(), transport = transport.trim(), gstPercent = gst,
-                            discounts = discounts.mapNotNull { it.toDiscount() }
+                            discounts = discounts.mapNotNull { it.toDiscount() }, localRemark = remark.trim()
                         ))
                     }.onFailure { error = it.message; busy = false }
                 }
@@ -575,6 +609,17 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+private const val LOCAL_REMARK_NOTE = "Kept on this laptop only: not synced to the cloud or printed."
+
+/** A comment on the whole bill, kept on this laptop only. */
+@Composable
+private fun BillRemarkField(value: String, onChange: (String) -> Unit) {
+    Column {
+        Field(value, onChange, "Remark on this bill", Modifier.fillMaxWidth(), singleLine = false, minLines = 2)
+        Text(LOCAL_REMARK_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 /** "items ₹10,000 − discounts ₹200 + GST 5% ₹490 = ₹10,290"; null without an items total. */

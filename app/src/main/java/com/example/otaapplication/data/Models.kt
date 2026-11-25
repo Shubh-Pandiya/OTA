@@ -100,7 +100,9 @@ data class Bill(
     /** GST % included in [amount]; null = entered before GST was recorded (amount taken as it is). */
     val gstPercent: Double? = null,
     /** Discounts taken off the items total before GST (already out of [amount]). */
-    val discounts: List<BillDiscount> = emptyList()
+    val discounts: List<BillDiscount> = emptyList(),
+    /** Comment on the whole bill, kept only on this device: never synced to the cloud or printed. */
+    val localRemark: String = ""
 ) {
     /** Sum of the item lines (qty × rate), or null when no line has both. */
     val linesTotal: Double? get() = PaymentMath.linesTotal(items)
@@ -131,7 +133,9 @@ data class BillDetails(
     /** GST % included in the amount; null = not recorded. */
     val gstPercent: Double? = null,
     /** Discounts taken off the items total before GST. */
-    val discounts: List<BillDiscount> = emptyList()
+    val discounts: List<BillDiscount> = emptyList(),
+    /** This device's own remark on the bill (see [Bill.localRemark]); null = leave it as it is. */
+    val localRemark: String? = null
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

@@ -187,6 +187,9 @@ Staff then open the app, sign in on the first screen, and everything syncs.
   discounts, before GST. Older bills keep their cash discount (% and ₹), now shown as "C.D. at payment". Its **balance** is the amount minus everything settled against it
   (paid + cash discount + goods return + rate difference over all advices), shown as Unpaid /
   Partly paid / Paid. Tap a bill on an order to see its advices and edit its details.
+  A bill can also carry a **remark** (on entry, or *Add remark* on its detail). The remark stays on
+  the phone or laptop where it was typed: it is not synced to the cloud or printed, and a phone loses
+  it on sign-out or account switch (desktop backups keep it).
 - A **payment advice** (`PA{staff digit}{YYYYMMDD}{001…}`, own daily counter, same rules as order
   numbers) records one buyer paying one supplier: payment date, mode (cheque no / online txn id /
   cash), one line per bill (paid, CD, goods return, rate difference) and the Dr/Cr balance. The app

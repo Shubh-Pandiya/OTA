@@ -141,6 +141,9 @@ fun main(args: Array<String>) {
     ), emptyList())
     shot("05e-bill-discounts", at(Section.BILLS, Target.Bill(discounted.id)), height = 1150)
     shot("05f-bill-discounts-entry", height = 1600) { com.ota.desktop.ui.BillEditorDialog(demo.orders.bill(discounted.id), {}, 1300.dp) {} }
+    demo.orders.setBillRemark(discounted.id, "Supplier promised credit note for the short length.\nFollow up before next order.")
+    shot("05g-bill-remark", at(Section.BILLS, Target.Bill(discounted.id)), height = 1300)
+    shot("05h-bill-remark-entry", height = 1750) { com.ota.desktop.ui.BillEditorDialog(demo.orders.bill(discounted.id), {}, 1450.dp) {} }
     shot("06-payment-advices", at(Section.ADVICES, Target.Advice(advice.id)))
     shot("06b-advice-with-claim", at(Section.ADVICES, Target.Advice(claimAdvice.id)))
     shot("06c-advice-with-two-bills", at(Section.ADVICES, Target.Advice(twoBillAdvice.id)))

@@ -51,6 +51,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         hardDeletes(db)
         addBillGst(db)
         addBillDiscounts(db)
+        addBillRemark(db)
     }
 
     /** Orders index, bills and their links (as of v4; later versions add columns). */
@@ -131,6 +132,11 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         for (table in listOf("payment_advices", "bills", "orders") + PartyType.entries.map { it.table }) {
             db.execSQL("DELETE FROM $table WHERE is_deleted = 1")
         }
+    }
+
+    /** v11: a remark on the whole bill that stays on this phone (never synced or printed). */
+    private fun addBillRemark(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE bills ADD COLUMN local_remark TEXT")
     }
 
     /** v10: discount lines taken off a bill's items total before GST (compact JSON, null = none). */
@@ -237,6 +243,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
         if (oldVersion < 8) hardDeletes(db)
         if (oldVersion < 9) addBillGst(db)
         if (oldVersion < 10) addBillDiscounts(db)
+        if (oldVersion < 11) addBillRemark(db)
     }
 
     /**
@@ -296,7 +303,7 @@ class OtaDatabase(context: Context, name: String? = DB_NAME) :
 
     companion object {
         const val DB_NAME = "ota_local.db"
-        const val VERSION = 10
+        const val VERSION = 11
         val BANK_COLUMN_NAMES = listOf(
             "bank_account_name", "bank_name", "bank_account_no", "bank_ifsc", "bank_branch", "bank_upi"
         )

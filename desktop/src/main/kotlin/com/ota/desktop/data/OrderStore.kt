@@ -49,7 +49,7 @@ object BillSql {
     private const val LINE_SETTLED = "l.paid + coalesce(l.cd_amount, 0) + coalesce(l.goods_return, 0) + coalesce(l.rate_diff, 0) + coalesce(l.claim, 0)"
     private const val LIVE_LINES = "from advice_lines l join payment_advices a on a.id = l.advice_id where l.bill_id = b.id and not l.deleted and not a.deleted"
 
-    const val COLUMNS = """b.id, b.bill_no, b.bill_date, b.amount, b.lr_no, b.cd_percent, b.cd_amount, b.items, b.buyer, b.supplier, b.transport, b.gst_percent, b.discounts,
+    const val COLUMNS = """b.id, b.bill_no, b.bill_date, b.amount, b.lr_no, b.cd_percent, b.cd_amount, b.items, b.buyer, b.supplier, b.transport, b.gst_percent, b.discounts, b.local_remark,
         (select count(*) from order_bills x join orders xo on xo.id = x.order_id where x.bill_id = b.id and not x.deleted and not xo.deleted) as order_count,
         (select coalesce(sum($LINE_SETTLED), 0) $LIVE_LINES) as settled,
         (select count(*) $LIVE_LINES) as advice_count"""
@@ -62,14 +62,15 @@ object BillSql {
         orderCount = getInt("order_count"), lrNo = str("lr_no"), cdPercent = dbl("cd_percent"), cdAmount = dbl("cd_amount"),
         settled = PaymentMath.round2(dbl("settled") ?: 0.0), adviceCount = getInt("advice_count"),
         items = LocalSyncTable.readItems(this), buyer = str("buyer"), supplier = str("supplier"), transport = str("transport"),
-        gstPercent = dbl("gst_percent"), discounts = LocalSyncTable.readDiscounts(this)
+        gstPercent = dbl("gst_percent"), discounts = LocalSyncTable.readDiscounts(this),
+        localRemark = getString("local_remark").orEmpty()
     )
 
     fun byId(c: Connection, id: String): Bill? = c.one("select $COLUMNS from bills b where b.id = ?::uuid", id) { it.toBill() }
 }
 
 /** Orders, their bills and bill links. */
-class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
+class OrderStore(private val db: Db, private val onChange: () -> Unit = {}, private val onLocalChange: () -> Unit = onChange) {
 
     fun list(filter: OrderFilter = OrderFilter(), limit: Int = 5000): List<OrderRow> {
         val where = StringBuilder("not o.deleted")
@@ -374,8 +375,19 @@ class OrderStore(private val db: Db, private val onChange: () -> Unit = {}) {
         put("supplier", d.supplier.trim(), d.supplier.isNotBlank())
         put("gst_percent", d.gstPercent, d.gstPercent != null)
         put("discounts", BillDiscount.toText(d.discounts)?.let(::Json), d.discounts.isNotEmpty())
+        // Local only: never pushed, and a pulled bill doesn't touch it.
+        d.localRemark?.let { put("local_remark", it.trim().ifEmpty { null }, it.isNotBlank()) }
         if (sets.isEmpty()) return
         c.update("update bills set ${sets.joinToString(", ")} where id = ?::uuid", *args.toTypedArray(), billId)
+    }
+
+    /**
+     * Sets this laptop's remark on a bill. It never leaves the laptop, so the bill is not queued for
+     * upload and its edit time stays as it is.
+     */
+    fun setBillRemark(billId: String, remark: String) {
+        db.tx { c -> c.update("update bills set local_remark = ? where id = ?::uuid", remark.trim().ifEmpty { null }, billId) }
+        onLocalChange()
     }
 
     fun pendingCount(): Int = db.read { c -> LocalSyncTable.ALL.sumOf { it.pendingCount(c) } }

@@ -172,6 +172,10 @@ a payment advice doesn't pre-fill the same discount as C.D. again; older bills k
 `cd_percent`/`cd_amount` (a C.D. taken at payment). Apps before phone 2.0.8 / desktop 1.15.0 don't
 send `discounts`, so their edits leave it untouched.
 
+Both apps also keep a per-bill `local_remark` column in their local database only. It is never
+sent, has no cloud column, and pulls only update the synced columns, so it survives every pull.
+Changing only the remark doesn't queue the bill for upload.
+
 A bill can be added on its own from the Bills section, with zero or more orders. Its `buyer` and
 `supplier` are then stored on the bill and are required when no order is linked. When they are
 null, the parties come from the bill's orders (and a bill whose orders disagree is "mixed").

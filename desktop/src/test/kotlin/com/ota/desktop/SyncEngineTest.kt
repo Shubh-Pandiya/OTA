@@ -176,6 +176,27 @@ class SyncEngineTest {
     }
 
     @Test
+    fun billRemarkStaysOnThisLaptop() = runBlocking {
+        val bill = orders.saveBill(null, "R-1", BillDetails(amount = 100.0, buyer = "Ram Traders", supplier = "Shiv Mills", localRemark = " Ask about lot 7 "), emptyList())
+        assertNull(engine.sync().error)
+        assertTrue(!cloud.table("bills")[bill.id]!!.has("local_remark"), "the remark is never uploaded")
+        // A newer edit from another device updates the synced fields and keeps the remark.
+        val newer = JSONObject(cloud.table("bills")[bill.id]!!.toString()).put("amount", 120.0).put("client_updated_at", System.currentTimeMillis() + 60_000)
+        cloud.put("bills", newer)
+        assertNull(engine.sync().error)
+        assertEquals(120.0, orders.bill(bill.id)!!.amount)
+        assertEquals("Ask about lot 7", orders.bill(bill.id)!!.localRemark)
+        // Changing only the remark doesn't queue the bill for upload; a blank remark clears it.
+        orders.setBillRemark(bill.id, "Credit note asked")
+        assertEquals(0, orders.pendingCount())
+        assertEquals("Credit note asked", orders.bill(bill.id)!!.localRemark)
+        orders.attachBill(listOf(orders.create(order(), engine.allocateOrderNo(day)!!).id), "R-1", BillDetails(localRemark = ""))
+        assertEquals("Credit note asked", orders.bill(bill.id)!!.localRemark, "attaching without a remark keeps it")
+        orders.saveBill(bill.id, "R-1", BillDetails(amount = 120.0, buyer = "Ram Traders", supplier = "Shiv Mills", localRemark = ""), emptyList())
+        assertEquals("", orders.bill(bill.id)!!.localRemark)
+    }
+
+    @Test
     fun billGstSyncsAndTheRateComesFromTheCloud() = runBlocking {
         orders.saveBill(null, "G-1", BillDetails(amount = 1050.0, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
         orders.saveBill(null, "OLD-1", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())

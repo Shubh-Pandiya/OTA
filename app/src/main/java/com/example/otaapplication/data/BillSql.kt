@@ -24,10 +24,10 @@ internal object BillSql {
         b.lr_no, b.cd_percent, b.cd_amount,
         (SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES) AS settled,
         (SELECT COUNT(*) $LIVE_LINES) AS advice_count,
-        b.items, b.buyer, b.supplier, b.transport, b.gst_percent, b.discounts"""
+        b.items, b.buyer, b.supplier, b.transport, b.gst_percent, b.discounts, b.local_remark"""
 
     /** Number of columns in [COLUMNS]; extra select columns start at this index. */
-    const val COUNT = 16
+    const val COUNT = 17
 
     /** Settled amount as a SQL expression, for filtering by payment status. */
     const val SETTLED_EXPR = "(SELECT COALESCE(SUM($LINE_SETTLED), 0) $LIVE_LINES)"
@@ -57,7 +57,8 @@ internal object BillSql {
         supplier = stringOrNull(12).orEmpty(),
         transport = stringOrNull(13).orEmpty(),
         gstPercent = doubleOrNull(14),
-        discounts = BillDiscount.fromText(stringOrNull(15))
+        discounts = BillDiscount.fromText(stringOrNull(15)),
+        localRemark = stringOrNull(16).orEmpty()
     )
 
     /** Bill item lines as stored in bills.items: the compact JSON arrays used for order items. */

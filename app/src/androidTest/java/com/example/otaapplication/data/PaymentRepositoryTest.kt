@@ -49,6 +49,31 @@ class PaymentRepositoryTest {
         db.readableDatabase.rawQuery("SELECT sync_pending FROM $table WHERE id = ?", arrayOf(id)).use { it.moveToFirst(); it.getInt(0) }
 
     @Test
+    fun billRemarkStaysOnThisPhone() {
+        val bill = orders.attachBill(listOf("a"), "INV R", BillDetails(day, 1_000.0, localRemark = " Check rate on lot 7 "))
+        assertEquals("Check rate on lot 7", orders.bill(bill.id)!!.localRemark)
+        val pushed = orders.pendingBills(10).single { it.id == bill.id }
+        orders.markSynced("bills", listOf(pushed.id to pushed.updatedAt))
+
+        // A pulled (newer) version of the bill updates its synced fields and keeps the remark.
+        now = 9_000
+        val value = pushed.value.copy(amount = 1_050.0, lrNo = "LR 9")
+        assertEquals(1, orders.applyRemoteBills(listOf(RemoteRow(bill.id, value, false, 8_000, "t1"))))
+        assertEquals(1_050.0, orders.bill(bill.id)!!.amount!!, 0.0)
+        assertEquals("Check rate on lot 7", orders.bill(bill.id)!!.localRemark)
+
+        // Editing only the remark doesn't queue the bill for upload; a blank remark clears it.
+        orders.setBillRemark(bill.id, "Party asked for a credit note")
+        assertEquals(0, pending("bills", bill.id))
+        assertEquals("Party asked for a credit note", orders.bill(bill.id)!!.localRemark)
+        // Attaching the bill again without a remark keeps it.
+        orders.attachBill(listOf("b"), "INV R", BillDetails())
+        assertEquals("Party asked for a credit note", orders.bill(bill.id)!!.localRemark)
+        orders.saveBill(bill.id, "INV R", BillDetails(day, 1_050.0, localRemark = ""), listOf("a", "b"))
+        assertEquals("", orders.bill(bill.id)!!.localRemark)
+    }
+
+    @Test
     fun balancesStatusAndLinksBothWays() {
         val inv1 = orders.attachBill(listOf("a", "b"), "INV 1", BillDetails(day, 10_000.0, lrNo = "LR 77", cdPercent = 2.0, cdAmount = 200.0))
         val inv2 = orders.attachBill(listOf("a"), "INV 2", BillDetails(day, 5_000.0))

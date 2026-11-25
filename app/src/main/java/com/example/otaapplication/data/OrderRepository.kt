@@ -348,6 +348,16 @@ class OrderRepository(
         if (!onlyGiven || d.transport.isNotBlank()) put("transport", d.transport.trim())
         if (!onlyGiven || d.gstPercent != null) put("gst_percent", d.gstPercent)
         if (!onlyGiven || d.discounts.isNotEmpty()) put("discounts", BillDiscount.toText(d.discounts))
+        // Local only: not part of what syncs, and a pulled bill never touches it.
+        d.localRemark?.let { if (!onlyGiven || it.isNotBlank()) put("local_remark", it.trim().ifEmpty { null }) }
+    }
+
+    /**
+     * Sets this phone's remark on a bill. It never leaves the phone, so the bill is not queued
+     * for upload and its edit time stays as it is.
+     */
+    fun setBillRemark(billId: String, remark: String) {
+        helper.writableDatabase.update("bills", ContentValues().apply { put("local_remark", remark.trim().ifEmpty { null }) }, "id = ?", arrayOf(billId))
     }
 
     /** Removes a (wrong) bill link from an order. A bill left with no orders is retired too. */

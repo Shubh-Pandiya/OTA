@@ -66,7 +66,7 @@ class AppContext internal constructor(
 
     val numbers = Numbers(db, kv)
     val catalog = CatalogStore(db, ::changed)
-    val orders = OrderStore(db, ::changed)
+    val orders = OrderStore(db, ::changed, ::localChanged)
     val payments = PaymentStore(db, ::changed)
     val analytics = Analytics(db, orders, payments)
     val export = DataExport(orders, payments, catalog, analytics)

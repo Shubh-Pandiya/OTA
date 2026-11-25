@@ -185,7 +185,8 @@ class BillFieldsState(
     items: List<OrderItem> = emptyList(),
     transport: String = "",
     gstPercent: Double? = GstSetting.percent,
-    discounts: List<BillDiscount> = emptyList()
+    discounts: List<BillDiscount> = emptyList(),
+    remark: String = ""
 ) {
     var gstPercent by mutableStateOf(gstPercent)
         private set
@@ -196,6 +197,8 @@ class BillFieldsState(
     var transport by mutableStateOf(transport)
     var cdPercent by mutableStateOf(cdPercent)
     var cdAmount by mutableStateOf(cdAmount)
+    /** Remark on the whole bill, kept on this phone only. */
+    var remark by mutableStateOf(remark)
     val items = mutableStateListOf<OrderItem>().apply { addAll(items) }
     val discounts = mutableStateListOf<DiscountDraft>().apply { addAll(discounts.map(DiscountDraft::of)) }
 
@@ -269,7 +272,8 @@ class BillFieldsState(
             gstPercent = gstPercent,
             items = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
                 .mapIndexed { i, item -> item.copy(serialNo = (i + 1).toString(), particulars = item.particulars.trim(), quantity = item.quantity.trim(), rate = item.rate.trim()) },
-            discounts = lines
+            discounts = lines,
+            localRemark = remark.trim()
         )
     }
 
@@ -285,12 +289,13 @@ class BillFieldsState(
         if (transport.isBlank()) transport = bill.transport
         if (cdPercent.isBlank()) cdPercent = PaymentMath.plain(bill.cdPercent)
         if (cdAmount.isBlank()) cdAmount = PaymentMath.plain(bill.cdAmount)
+        if (remark.isBlank()) remark = bill.localRemark
     }
 
     companion object {
         fun of(bill: Bill) = BillFieldsState(
             bill.billDate?.toEpochDay(), PaymentMath.plain(bill.amount), bill.lrNo, PaymentMath.plain(bill.cdPercent),
-            PaymentMath.plain(bill.cdAmount), bill.items, bill.transport, bill.gstPercent, bill.discounts
+            PaymentMath.plain(bill.cdAmount), bill.items, bill.transport, bill.gstPercent, bill.discounts, bill.localRemark
         )
     }
 }
@@ -349,6 +354,24 @@ fun BillFields(
             modifier = Modifier.weight(1f)
         )
     }
+    BillRemarkField(state.remark, { state.remark = it })
+}
+
+/** Remark on the whole bill: stays on this phone (not synced, not printed). */
+@Composable
+private fun BillRemarkField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier.fillMaxWidth()) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text("Remark on this bill") },
+        leadingIcon = { Icon(Icons.Default.EditNote, contentDescription = null, modifier = Modifier.size(20.dp)) },
+        supportingText = { Text("Only on this phone: not synced or printed") },
+        minLines = 2,
+        maxLines = 6,
+        shape = MaterialTheme.shapes.small,
+        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+        modifier = modifier
+    )
 }
 
 /** Transport company the goods came by, with type-ahead from transports used on earlier bills. */
@@ -725,7 +748,9 @@ private fun BillDetailPage(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val data by produceState<BillPageData?>(null, billId, version) {
+    var remarkVersion by remember { mutableIntStateOf(0) }
+    var editRemark by remember { mutableStateOf(false) }
+    val data by produceState<BillPageData?>(null, billId, version, remarkVersion) {
         value = withContext(Dispatchers.IO) {
             BillPageData(deps.orders.bill(billId), deps.orders.ordersForBill(billId), deps.payments.advicesForBill(billId))
         }
@@ -781,6 +806,22 @@ private fun BillDetailPage(
                             billTotalText(bill.linesTotal, bill.discountsTotal, bill.gstPercent, bill.amount)?.let { DetailRow("Worked out", it) }
                         }
                         if (bill.cdPercent != null || bill.cdAmount != null) DetailRow("C.D. at payment", cashDiscountText(bill.cdPercent, bill.cdAmount))
+                    }
+                }
+                FormSection(
+                    title = "Remark",
+                    icon = Icons.Default.EditNote,
+                    trailing = {
+                        TextButton(onClick = { editRemark = true }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            Text(if (bill.localRemark.isBlank()) "Add" else "Edit")
+                        }
+                    }
+                ) {
+                    if (bill.localRemark.isBlank()) {
+                        Text("No remark. A remark stays on this phone only.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        Text(bill.localRemark, style = MaterialTheme.typography.bodyMedium)
+                        Text("Only on this phone: not synced or printed", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (bill.items.isNotEmpty()) {
@@ -843,6 +884,24 @@ private fun BillDetailPage(
                 }
             }
         }
+    }
+    if (editRemark && bill != null) {
+        var text by remember { mutableStateOf(bill.localRemark) }
+        AlertDialog(
+            onDismissRequest = { editRemark = false },
+            title = { Text("Remark on bill ${bill.billNo}") },
+            text = { BillRemarkField(text, { text = it }) },
+            confirmButton = {
+                TextButton(onClick = {
+                    editRemark = false
+                    scope.launch {
+                        withContext(Dispatchers.IO) { deps.orders.setBillRemark(billId, text) }
+                        remarkVersion++
+                    }
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { editRemark = false }) { Text("Cancel") } }
+        )
     }
     if (confirmDelete && bill != null) {
         DeleteBillDialog(bill, onDismiss = { confirmDelete = false }) {

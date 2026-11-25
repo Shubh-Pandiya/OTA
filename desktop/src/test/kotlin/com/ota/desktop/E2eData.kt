@@ -83,7 +83,7 @@ fun main(args: Array<String>) {
 
 /** Repeated ids or numbers across the synced tables and, on 1.4.0+ data, the local books. */
 /** (table, column) added by migrations after 1.11.x, all nullable. */
-private val NEWER_COLUMNS = listOf(Triple("bills", "gst_percent", "numeric"), Triple("bills", "discounts", "jsonb"))
+private val NEWER_COLUMNS = listOf(Triple("bills", "gst_percent", "numeric"), Triple("bills", "discounts", "jsonb"), Triple("bills", "local_remark", "text"))
 
 private fun hasColumn(db: Db, table: String, column: String): Boolean = db.read { c ->
     c.one("select count(*) from information_schema.columns where table_schema = 'public' and table_name = ? and column_name = ?", table, column) { it.getInt(1) }!! > 0
