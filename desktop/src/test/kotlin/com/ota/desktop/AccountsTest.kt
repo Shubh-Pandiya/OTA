@@ -89,6 +89,21 @@ class AccountsTest {
     }
 
     @Test
+    fun commissionIsOnTheValueAfterDiscounts() {
+        val items = listOf(OrderItem(particulars = "Shirting", quantity = "200", rate = "50"))
+        val less = listOf(
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.CASH, 2.0, 200.0, ""),
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.OTHER, null, 800.0, "Festival offer")
+        )
+        // (₹10,000 - ₹1,000) + GST 5% = ₹9,450: commission on ₹9,000.
+        val b = orders.saveBill(null, "D-1", BillDetails(billDate = day, amount = 9_450.0, items = items, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0, discounts = less), emptyList())
+        books.reconcileCommission(day)
+        books.setCommission(supplier("Shiv Mills").id, 2.5)
+        assertEquals(22_500, books.voucherForBill(b.id)!!.total)
+        assertEquals(less, orders.bill(b.id)!!.discounts)
+    }
+
+    @Test
     fun commissionIsOnTheValueBeforeGst() {
         val items = listOf(OrderItem(particulars = "Shirting", quantity = "200", rate = "50"))
         // Items ₹10,000 + GST 5% = ₹10,500; a typed-over amount still uses the items total.

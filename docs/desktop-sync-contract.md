@@ -74,7 +74,7 @@ for older app versions but is always `false`.
 |---|---|
 | `buyers`, `suppliers` | name, address, city, phone, gstin, bank fields (see the catalog migration) |
 | `orders` | order_no, order_date (`dd-MM-yyyy` text, as printed), buyer, supplier (text as printed), items (`[[s.no, particulars, qty, rate, unit?], …]`, see *Item units* below), remarks, delivery_ready, transport_to, cash_payment, less_disc, side, created_by, archived_at |
-| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), items (`jsonb`, same arrays as order items, null = no lines), buyer, supplier (text, null = take them from the bill's orders), transport (transport company the goods came by, null = none; migration `20261115000000_bill_transport.sql`), archived_at |
+| `bills` | bill_no, bill_date (`date`), amount (`numeric(14,2)`), lr_no (LR / bilty no, `''` if none), cd_percent (`numeric(6,3)`), cd_amount (`numeric(14,2)`), items (`jsonb`, same arrays as order items, null = no lines), buyer, supplier (text, null = take them from the bill's orders), transport (transport company the goods came by, null = none; migration `20261115000000_bill_transport.sql`), gst_percent (`numeric(5,2)`, GST % included in the amount, null = entered before GST was recorded), discounts (`jsonb`, null = none; see *Bills*; migration `20261125000000_bill_discounts.sql`), archived_at |
 | `order_bills` | order_id, bill_id, archived_at. Many-to-many. **No foreign keys**, see below. |
 | `payment_advices` | advice_no, pay_date (`date`), buyer (paid by), supplier (paid to), mode (`CHEQUE`/`ONLINE`/`CASH`), reference (cheque no / txn id), balance (`numeric(14,2)`, Dr/Cr balance as entered), balance_side (`DR`/`CR`/null), remarks, created_by, archived_at |
 | `advice_lines` | advice_id, bill_id, paid, cd_percent, cd_amount, goods_return, rate_diff, claim (`numeric(14,2)`, claim / defect deduction), claim_note (reason, `''` if none), archived_at. Advice ↔ bill is many-to-many. **No foreign keys.** |
@@ -162,6 +162,15 @@ otherwise Partly paid (a bill without an amount is Partly paid once it has a lin
 A bill records what the supplier actually billed, which can differ from the orders (24 m ordered,
 25 m sent; a different variety). `items` holds its own lines; `amount` defaults to their total but
 can be overridden. Old bills without lines have `items = null`.
+
+`discounts` lists the discounts taken off the items **before GST**, e.g.
+`[{"k":"cd","p":2,"a":200},{"k":"o","a":100,"r":"Short length"}]`: `k` is `cd` (cash discount) or `o`
+(other, with `r` = what it was given for), `p` the % of the items total (optional) and `a` the rupees
+taken off. The amount defaults to `(items − Σa) + gst_percent` of that, rounded to 2 decimals, and
+commission is on `items − Σa`. A bill with discount lines saves `cd_percent`/`cd_amount` as null, so
+a payment advice doesn't pre-fill the same discount as C.D. again; older bills keep their
+`cd_percent`/`cd_amount` (a C.D. taken at payment). Apps before phone 2.0.8 / desktop 1.15.0 don't
+send `discounts`, so their edits leave it untouched.
 
 A bill can be added on its own from the Bills section, with zero or more orders. Its `buyer` and
 `supplier` are then stored on the bill and are required when no order is linked. When they are

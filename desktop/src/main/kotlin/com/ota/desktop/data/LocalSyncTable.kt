@@ -1,5 +1,6 @@
 package com.ota.desktop.data
 
+import com.example.otaapplication.data.BillDiscount
 import com.example.otaapplication.cloud.OrderTable
 import com.example.otaapplication.data.AdviceLineValue
 import com.example.otaapplication.data.AdviceValue
@@ -129,21 +130,25 @@ class LocalSyncTable<T>(
 
         val BILLS = LocalSyncTable(
             OrderTable.BILLS, "bills",
-            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount", "items", "buyer", "supplier", "transport", "gst_percent"),
+            listOf("bill_no", "bill_key", "bill_date", "amount", "lr_no", "cd_percent", "cd_amount", "items", "buyer", "supplier", "transport", "gst_percent", "discounts"),
             { b ->
                 listOf(
                     b.billNo, SearchText.billKey(b.billNo), date(b.billDate), b.amount, b.lrNo, b.cdPercent, b.cdAmount,
-                    Json(OrderTable.itemsToJson(b.items).toString()), b.buyer, b.supplier, b.transport, b.gstPercent
+                    Json(OrderTable.itemsToJson(b.items).toString()), b.buyer, b.supplier, b.transport, b.gstPercent,
+                    BillDiscount.toText(b.discounts)?.let(::Json)
                 )
             },
-            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount, items, buyer, supplier, transport, gst_percent",
+            "bill_no, bill_date, amount, lr_no, cd_percent, cd_amount, items, buyer, supplier, transport, gst_percent, discounts",
             { rs ->
                 BillValue(
                     rs.str("bill_no"), rs.date("bill_date")?.toString(), rs.dbl("amount"), rs.str("lr_no"), rs.dbl("cd_percent"), rs.dbl("cd_amount"),
-                    readItems(rs), rs.str("buyer"), rs.str("supplier"), rs.str("transport"), rs.dbl("gst_percent")
+                    readItems(rs), rs.str("buyer"), rs.str("supplier"), rs.str("transport"), rs.dbl("gst_percent"),
+                    readDiscounts(rs)
                 )
             }
         )
+
+        fun readDiscounts(rs: ResultSet, column: String = "discounts") = BillDiscount.fromText(rs.getString(column))
 
         fun readItems(rs: ResultSet, column: String = "items") = OrderTable.itemsFromJson(org.json.JSONArray(rs.getString(column) ?: "[]"))
 

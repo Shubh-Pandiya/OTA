@@ -349,14 +349,17 @@ class AccountsStore(
         val party = """from order_bills pl join orders po on po.id = pl.order_id
             where pl.bill_id = b.id and not pl.deleted and not po.deleted order by po.order_day nulls last, po.order_no limit 1"""
         return c.query(
-            "select b.id, b.bill_no, b.bill_date, b.amount, b.gst_percent, b.items, b.buyer, b.supplier, (select po.buyer $party) as p_buyer, (select po.supplier $party) as p_supplier " +
+            "select b.id, b.bill_no, b.bill_date, b.amount, b.gst_percent, b.items, b.discounts, b.buyer, b.supplier, (select po.buyer $party) as p_buyer, (select po.supplier $party) as p_supplier " +
                 "from bills b where not b.deleted order by b.bill_date nulls last, b.bill_no, b.id"
         ) {
             val own = it.str("buyer").isNotBlank() && it.str("supplier").isNotBlank()
             val amount = it.getBigDecimal("amount")
             val gst = it.dbl("gst_percent")
             val taxable = if (gst == null) amount else
-                PaymentMath.taxableValue(amount?.toDouble(), gst, PaymentMath.linesTotal(LocalSyncTable.readItems(it)))?.let(BigDecimal::valueOf)
+                PaymentMath.taxableValue(
+                    amount?.toDouble(), gst, PaymentMath.linesTotal(LocalSyncTable.readItems(it)),
+                    PaymentMath.discountsTotal(LocalSyncTable.readDiscounts(it))
+                )?.let(BigDecimal::valueOf)
             BookBill(
                 it.id(), it.str("bill_no"), it.date("bill_date"), amount?.let(Paise::of),
                 if (own) it.str("buyer") else it.str("p_buyer"), if (own) it.str("supplier") else it.str("p_supplier"),

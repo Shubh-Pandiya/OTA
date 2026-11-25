@@ -1,6 +1,8 @@
 package com.example.otaapplication.data
 
 import com.example.otaapplication.OrderItem
+import org.json.JSONArray
+import org.json.JSONObject
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
@@ -173,14 +175,26 @@ object PaymentMath {
 
     /**
      * Value before GST (the commission base) of a bill of [amount] that includes [gstPercent]: its
-     * item total when known, else worked back from the amount. Bills without a GST % (entered before
-     * GST was recorded) use the amount as it is.
+     * item total less the bill's [discounts] when the items are known, else worked back from the
+     * amount. Bills without a GST % (entered before GST was recorded) use the amount as it is.
      */
-    fun taxableValue(amount: Double?, gstPercent: Double?, linesTotal: Double?): Double? = when {
+    fun taxableValue(amount: Double?, gstPercent: Double?, linesTotal: Double?, discounts: Double = 0.0): Double? = when {
         gstPercent == null -> amount
-        linesTotal != null -> linesTotal
+        linesTotal != null -> round2(linesTotal - discounts)
         amount == null -> null
         else -> round2(amount * 100.0 / (100.0 + gstPercent))
+    }
+
+    /** Sum of a bill's discount lines. */
+    fun discountsTotal(discounts: List<BillDiscount>): Double = round2(discounts.sumOf { it.amount })
+
+    /**
+     * What a bill's amount follows: items total less [discounts], plus [gstPercent] GST on that
+     * (none when null, for bills entered before GST was recorded). Null without an items total.
+     */
+    fun billTotal(linesTotal: Double?, discounts: Double, gstPercent: Double?): Double? = linesTotal?.let {
+        val net = round2(it - discounts)
+        if (gstPercent == null) net else withGst(net, gstPercent)
     }
 
     fun round2(value: Double): Double = BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).toDouble()
@@ -231,6 +245,108 @@ object PaymentMath {
     fun plain(value: Double?): String = value?.let {
         BigDecimal.valueOf(round2(it)).stripTrailingZeros().toPlainString()
     }.orEmpty()
+}
+
+enum class DiscountKind(val code: String, val label: String) {
+    CASH("cd", "Cash discount"),
+    OTHER("o", "Other");
+
+    companion object {
+        fun of(code: String?): DiscountKind = if (code == OTHER.code) OTHER else CASH
+    }
+}
+
+/**
+ * A discount on a bill, taken off the items total before GST is added. [percent], when given, is of
+ * the items total and [amount] is its rupee value; [remark] says what an [DiscountKind.OTHER]
+ * discount was given for.
+ */
+data class BillDiscount(
+    val kind: DiscountKind = DiscountKind.CASH,
+    val percent: Double? = null,
+    val amount: Double = 0.0,
+    val remark: String = ""
+) {
+    /** "Cash discount 2%", "Other (festival offer)". */
+    val label: String
+        get() = when (kind) {
+            DiscountKind.CASH -> kind.label
+            DiscountKind.OTHER -> if (remark.isBlank()) "Other discount" else "Other (${remark.trim()})"
+        } + (percent?.let { " ${PaymentMath.plain(it)}%" } ?: "")
+
+    companion object {
+        /** Compact JSON stored in bills.discounts, e.g. [{"k":"cd","p":2,"a":200},{"k":"o","a":50,"r":"Festival"}]; null when none. */
+        fun toJson(discounts: List<BillDiscount>): JSONArray? = discounts.takeIf { it.isNotEmpty() }?.let { list ->
+            JSONArray().apply {
+                list.forEach { d ->
+                    put(JSONObject().apply {
+                        put("k", d.kind.code)
+                        d.percent?.let { put("p", it) }
+                        put("a", PaymentMath.round2(d.amount))
+                        if (d.kind == DiscountKind.OTHER && d.remark.isNotBlank()) put("r", d.remark.trim())
+                    })
+                }
+            }
+        }
+
+        fun fromJson(array: JSONArray?): List<BillDiscount> {
+            if (array == null) return emptyList()
+            return (0 until array.length()).mapNotNull { i ->
+                val o = array.optJSONObject(i) ?: return@mapNotNull null
+                BillDiscount(
+                    kind = DiscountKind.of(o.optString("k")),
+                    percent = if (o.has("p") && !o.isNull("p")) o.optDouble("p").takeIf { it.isFinite() } else null,
+                    amount = o.optDouble("a", 0.0).takeIf { it.isFinite() } ?: 0.0,
+                    remark = o.optString("r", "")
+                )
+            }
+        }
+
+        fun toText(discounts: List<BillDiscount>): String? = toJson(discounts)?.toString()
+
+        fun fromText(text: String?): List<BillDiscount> =
+            if (text.isNullOrBlank()) emptyList() else runCatching { fromJson(JSONArray(text)) }.getOrDefault(emptyList())
+    }
+}
+
+/** A discount line as typed in a bill editor. A typed % fills the ₹ from the items total. */
+data class DiscountDraft(
+    val kind: DiscountKind = DiscountKind.CASH,
+    val percent: String = "",
+    val amount: String = "",
+    val remark: String = "",
+    val key: Long = nextKey()
+) {
+    private fun ok(text: String) = text.isBlank() || (PaymentMath.parse(text) ?: -1.0) >= 0
+    val valid: Boolean get() = ok(percent) && ok(amount)
+
+    /** Null for an empty line. */
+    fun toDiscount(): BillDiscount? {
+        val p = PaymentMath.parse(percent)
+        val a = PaymentMath.parse(amount)
+        if (a == null && p == null) return null
+        return BillDiscount(kind, p, PaymentMath.round2(a ?: 0.0), if (kind == DiscountKind.OTHER) remark.trim() else "")
+    }
+
+    /** Typing the %: the ₹ follows it on [linesTotal] (left as typed while there is no items total). */
+    fun withPercent(text: String, linesTotal: Double?) =
+        copy(percent = text, amount = PaymentMath.percentOf(linesTotal, PaymentMath.parse(text))?.let(PaymentMath::plain) ?: amount)
+
+    /** Typing the ₹ clears a % it no longer matches. */
+    fun withAmount(text: String) = copy(amount = text, percent = "")
+
+    companion object {
+        private var counter = 0L
+        @Synchronized private fun nextKey() = ++counter
+
+        fun of(d: BillDiscount) = DiscountDraft(d.kind, PaymentMath.plain(d.percent), PaymentMath.plain(d.amount), d.remark)
+
+        /** Re-prices %-based lines after the items total changed. */
+        fun reprice(drafts: List<DiscountDraft>, linesTotal: Double?): List<DiscountDraft> =
+            drafts.map { if (PaymentMath.parse(it.percent) != null && linesTotal != null) it.withPercent(it.percent, linesTotal) else it }
+
+        fun total(drafts: List<DiscountDraft>): Double = PaymentMath.discountsTotal(drafts.mapNotNull { it.toDiscount() })
+    }
 }
 
 /**

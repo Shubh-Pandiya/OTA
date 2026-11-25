@@ -180,8 +180,11 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 
 ### Bills and payment advices
 
-- A **bill** has its number, date, amount, LR (bilty) number and cash discount (% and ₹), and is
-  linked to one or more orders. Its **balance** is the amount minus everything settled against it
+- A **bill** has its number, date, amount, LR (bilty) number and discounts, and is
+  linked to one or more orders. Discounts (**+ Add discount**: *Cash discount*, or *Other* with what
+  it was given for; a % of the items total or rupees) come off the items total **before GST**:
+  items ₹10,000, cash discount 2% → ₹9,800, + 5% GST = ₹10,290. Commission is on the value after
+  discounts, before GST. Older bills keep their cash discount (% and ₹), now shown as "C.D. at payment". Its **balance** is the amount minus everything settled against it
   (paid + cash discount + goods return + rate difference over all advices), shown as Unpaid /
   Partly paid / Paid. Tap a bill on an order to see its advices and edit its details.
 - A **payment advice** (`PA{staff digit}{YYYYMMDD}{001…}`, own daily counter, same rules as order

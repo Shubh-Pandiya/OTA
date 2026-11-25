@@ -290,6 +290,14 @@ class StoresTest {
         assertEquals(5.0, t.pending(db, 10).single().value.gstPercent)
         t.markPushed(db, t.pending(db, 10))
 
+        // Discount lines travel both ways too.
+        val less = listOf(com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.OTHER, null, 2.0, "Short length"))
+        assertEquals(1, t.applyPulled(db, listOf(RemoteRow(id, BillValue("X1", "2026-11-01", 20.0, gstPercent = 5.0, discounts = less), false, System.currentTimeMillis(), "2026-11-10T11:20:00+00:00"))))
+        assertEquals(less, orders.bill(id)!!.discounts)
+        orders.saveBill(id, "X1", BillDetails(amount = 20.0, buyer = "B", supplier = "S", gstPercent = 5.0, discounts = less), emptyList())
+        assertEquals(less, t.pending(db, 10).single().value.discounts)
+        t.markPushed(db, t.pending(db, 10))
+
         // A deleted row from an app before hard deletes removes the local row; an older one does not.
         val stale = v1.copy(deleted = true, clientUpdatedAt = 1, serverUpdatedAt = "2026-11-10T11:30:00+00:00")
         assertEquals(0, t.applyPulled(db, listOf(stale)))

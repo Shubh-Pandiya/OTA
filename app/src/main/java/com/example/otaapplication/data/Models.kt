@@ -81,7 +81,10 @@ data class Bill(
     val orderCount: Int = 0,
     /** LR (bilty) number of the consignment. */
     val lrNo: String = "",
-    /** Agreed cash discount, as a percentage and/or in rupees. */
+    /**
+     * Cash discount agreed on older bills, taken at payment (it pre-fills the advice's C.D.).
+     * Newer bills put discounts in [discounts] instead, before GST.
+     */
     val cdPercent: Double? = null,
     val cdAmount: Double? = null,
     /** Transport company the goods actually came by (may differ from the order's). */
@@ -95,13 +98,17 @@ data class Bill(
     val buyer: String = "",
     val supplier: String = "",
     /** GST % included in [amount]; null = entered before GST was recorded (amount taken as it is). */
-    val gstPercent: Double? = null
+    val gstPercent: Double? = null,
+    /** Discounts taken off the items total before GST (already out of [amount]). */
+    val discounts: List<BillDiscount> = emptyList()
 ) {
     /** Sum of the item lines (qty × rate), or null when no line has both. */
     val linesTotal: Double? get() = PaymentMath.linesTotal(items)
 
-    /** Value before GST, the base for commission. */
-    val taxableValue: Double? get() = PaymentMath.taxableValue(amount, gstPercent, linesTotal)
+    val discountsTotal: Double get() = PaymentMath.discountsTotal(discounts)
+
+    /** Value before GST, after discounts: the base for commission. */
+    val taxableValue: Double? get() = PaymentMath.taxableValue(amount, gstPercent, linesTotal, discountsTotal)
 
     /** Amount still due; null when the bill amount isn't known. */
     val balance: Double? get() = PaymentMath.balance(amount, settled)
@@ -122,7 +129,9 @@ data class BillDetails(
     val supplier: String = "",
     val transport: String = "",
     /** GST % included in the amount; null = not recorded. */
-    val gstPercent: Double? = null
+    val gstPercent: Double? = null,
+    /** Discounts taken off the items total before GST. */
+    val discounts: List<BillDiscount> = emptyList()
 )
 
 enum class BillStatusFilter { ALL, PENDING, RECEIVED }

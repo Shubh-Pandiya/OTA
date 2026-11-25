@@ -6,6 +6,7 @@ import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.OrderNumber
 import com.example.otaapplication.data.AdviceLineValue
 import com.example.otaapplication.data.AdviceValue
+import com.example.otaapplication.data.BillDiscount
 import com.example.otaapplication.data.BillValue
 import com.example.otaapplication.data.Deletion
 import com.example.otaapplication.data.LineAmounts
@@ -82,7 +83,7 @@ class OrderTable<T>(
 
         val BILLS = OrderTable<BillValue>(
             name = "bills",
-            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,transport,gst_percent,deleted,updated_at,client_updated_at",
+            columns = "id,bill_no,bill_date,amount,lr_no,cd_percent,cd_amount,items,buyer,supplier,transport,gst_percent,discounts,deleted,updated_at,client_updated_at",
             toJson = { row ->
                 JSONObject()
                     .put("id", row.id)
@@ -98,6 +99,7 @@ class OrderTable<T>(
                     .put("supplier", row.value.supplier.ifBlank { null } ?: JSONObject.NULL)
                     .put("transport", row.value.transport.ifBlank { null } ?: JSONObject.NULL)
                     .put("gst_percent", row.value.gstPercent ?: JSONObject.NULL)
+                    .put("discounts", BillDiscount.toJson(row.value.discounts) ?: JSONObject.NULL)
                     .put("deleted", row.deleted)
                     .put("client_updated_at", row.updatedAt)
             },
@@ -113,7 +115,8 @@ class OrderTable<T>(
                     buyer = json.text("buyer"),
                     supplier = json.text("supplier"),
                     transport = json.text("transport"),
-                    gstPercent = json.number("gst_percent")
+                    gstPercent = json.number("gst_percent"),
+                    discounts = BillDiscount.fromJson(json.optJSONArray("discounts"))
                 ))
             }
         )

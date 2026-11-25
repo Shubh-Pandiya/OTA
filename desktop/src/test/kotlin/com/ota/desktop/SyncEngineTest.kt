@@ -160,6 +160,22 @@ class SyncEngineTest {
     }
 
     @Test
+    fun billDiscountsSyncAsCompactJson() = runBlocking {
+        val less = listOf(
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.CASH, 2.0, 20.0, ""),
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.OTHER, null, 5.0, "Rate diff")
+        )
+        orders.saveBill(null, "D-1", BillDetails(amount = 1023.75, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0, discounts = less), emptyList())
+        orders.saveBill(null, "P-1", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())
+        assertNull(engine.sync().error)
+        val bills = cloud.table("bills").values
+        val row = bills.single { it.getString("bill_no") == "D-1" }.getJSONArray("discounts")
+        assertEquals(less, com.example.otaapplication.data.BillDiscount.fromJson(row))
+        assertEquals(setOf("k", "a", "r"), row.getJSONObject(1).keySet())
+        assertTrue(bills.single { it.getString("bill_no") == "P-1" }.isNull("discounts"))
+    }
+
+    @Test
     fun billGstSyncsAndTheRateComesFromTheCloud() = runBlocking {
         orders.saveBill(null, "G-1", BillDetails(amount = 1050.0, buyer = "Ram Traders", supplier = "Shiv Mills", gstPercent = 5.0), emptyList())
         orders.saveBill(null, "OLD-1", BillDetails(amount = 50.0, buyer = "Ram Traders", supplier = "Shiv Mills"), emptyList())

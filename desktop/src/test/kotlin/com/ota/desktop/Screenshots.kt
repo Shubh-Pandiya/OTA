@@ -129,6 +129,18 @@ fun main(args: Array<String>) {
     shot("05b-bill-entered-by-hand", at(Section.BILLS, Target.Bill(handBill.id)))
     shot("05c-add-bill", at(Section.BILLS, Target.NewBill))
     shot("05d-bill-in-two-advices", at(Section.BILLS, Target.Bill(splitBill.id)), height = 1250)
+    // Discounts taken off the items before GST: a cash discount and an "other" one with its remark.
+    val discounted = demo.orders.saveBill(null, "RL/8830", com.example.otaapplication.data.BillDetails(
+        billDate = handBill.billDate, amount = 10_185.0, lrNo = "LR 5512", transport = "VRL Logistics", gstPercent = 5.0,
+        items = listOf(com.example.otaapplication.OrderItem("1", "Terry-rayon suiting\nDesign 4521", "100", "100", "M")),
+        buyer = handBill.buyer.orEmpty(), supplier = handBill.supplier.orEmpty(),
+        discounts = listOf(
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.CASH, 2.0, 200.0, ""),
+            com.example.otaapplication.data.BillDiscount(com.example.otaapplication.data.DiscountKind.OTHER, null, 100.0, "Short length in 2 thans")
+        )
+    ), emptyList())
+    shot("05e-bill-discounts", at(Section.BILLS, Target.Bill(discounted.id)), height = 1150)
+    shot("05f-bill-discounts-entry", height = 1600) { com.ota.desktop.ui.BillEditorDialog(demo.orders.bill(discounted.id), {}, 1300.dp) {} }
     shot("06-payment-advices", at(Section.ADVICES, Target.Advice(advice.id)))
     shot("06b-advice-with-claim", at(Section.ADVICES, Target.Advice(claimAdvice.id)))
     shot("06c-advice-with-two-bills", at(Section.ADVICES, Target.Advice(twoBillAdvice.id)))

@@ -66,14 +66,15 @@ class DataExport(
     fun bills(rows: List<BillListItem>) = SheetTable(
         "Bills",
         listOf("Bill no", "Bill date", "Buyer", "Supplier", "Bill amount", "LR no", "Transport", "C.D. %", "C.D. amount", "Settled", "Balance", "Status", "Orders",
-            "Advices", "Bill items", "Item lines"),
+            "Advices", "Bill items", "Item lines", "Discounts", "Discount details"),
         rows.map { (b, buyer, supplier) ->
             val items = b.items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
             listOf(b.billNo, b.billDate, buyer, supplier, b.amount, b.lrNo, b.transport, b.cdPercent, b.cdAmount, b.settled, b.balance, b.status.label, b.orderCount, b.adviceCount,
                 Units.totals(items).orEmpty(),
-                items.joinToString("; ") { listOf(it.particulars, Units.display(it), it.rate.takeIf(String::isNotBlank)?.let { r -> "@ $r" }).filter { s -> !s.isNullOrBlank() }.joinToString(" ") })
+                items.joinToString("; ") { listOf(it.particulars, Units.display(it), it.rate.takeIf(String::isNotBlank)?.let { r -> "@ $r" }).filter { s -> !s.isNullOrBlank() }.joinToString(" ") },
+                b.discountsTotal.takeIf { b.discounts.isNotEmpty() }, b.discounts.joinToString("; ") { "${it.label} ${com.example.otaapplication.data.PaymentMath.plain(it.amount)}" })
         },
-        moneyColumns = setOf(4, 8, 9, 10)
+        moneyColumns = setOf(4, 8, 9, 10, 16)
     )
 
     fun advices(rows: List<AdviceSummary>, lines: List<PaymentLine> = analytics.paymentLines()): SheetTable {

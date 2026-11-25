@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import com.example.otaapplication.AdviceNumber
 import com.example.otaapplication.data.Bill
 import com.example.otaapplication.data.BillDetails
+import com.example.otaapplication.data.DiscountDraft
+import com.example.otaapplication.data.DiscountKind
 import com.example.otaapplication.data.BillPayment
 import com.example.otaapplication.data.GstSetting
 import com.example.otaapplication.data.PaymentMath
@@ -186,7 +188,23 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 LabelValue("LR (bilty) no", b.lrNo, Modifier.weight(1f))
                 LabelValue("Transport", b.transport, Modifier.weight(1f))
-                LabelValue("Cash discount", listOfNotNull(b.cdPercent?.let { "${PaymentMath.plain(it)}%" }, b.cdAmount?.let(::moneyFull)).joinToString(" · "), Modifier.weight(1f))
+                if (b.cdPercent != null || b.cdAmount != null) {
+                    LabelValue("C.D. at payment", listOfNotNull(b.cdPercent?.let { "${PaymentMath.plain(it)}%" }, b.cdAmount?.let(::moneyFull)).joinToString(" · "), Modifier.weight(1f))
+                } else Spacer(Modifier.weight(1f))
+            }
+            if (b.discounts.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("Discounts (before GST)", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                b.discounts.forEach { d ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Text(d.label, Modifier.weight(1f))
+                        Text("− ${moneyFull(d.amount)}", textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium.merge(Numeric))
+                    }
+                }
+                billBreakdown(b.linesTotal, b.discountsTotal, b.gstPercent)?.let {
+                    Text(it, Modifier.fillMaxWidth().padding(top = 4.dp, end = 12.dp), textAlign = TextAlign.End, fontWeight = FontWeight.SemiBold)
+                }
             }
             if (b.items.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
@@ -269,7 +287,7 @@ private fun BillDetail(item: BillListItem, onDeleted: () -> Unit) {
  * Linking an order fills blank parties from it; a bill without orders needs both parties.
  */
 @Composable
-fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit) {
+fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, maxBodyHeight: androidx.compose.ui.unit.Dp = 640.dp, onSaved: (Bill) -> Unit) {
     val app = LocalApp.current
     val toast = LocalToast.current
     val scope = rememberCoroutineScope()
@@ -283,13 +301,16 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
     var transport by remember { mutableStateOf(bill?.transport.orEmpty()) }
     var cdPct by remember { mutableStateOf(PaymentMath.plain(bill?.cdPercent)) }
     var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
+    // An older bill's cash discount taken at payment stays editable on that bill only.
+    val legacyCd = remember { bill?.cdPercent != null || bill?.cdAmount != null }
     var items by remember { mutableStateOf(bill?.items?.map(Units::splitLegacy).orEmpty()) }
+    var discounts by remember { mutableStateOf(bill?.discounts?.map(DiscountDraft::of).orEmpty()) }
     var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
     // New bills include the agency's GST %; a saved bill keeps its own (null = entered before GST was recorded).
     val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
-    fun autoTotal(lines: Double?) = lines?.let { if (gst == null) it else PaymentMath.withGst(it, gst) }
-    // The amount follows the lines' total (+ GST) until typed over (an old bill keeps its typed amount).
-    var amountAuto by remember { mutableStateOf(bill?.amount == null || bill.amount == autoTotal(bill.linesTotal)) }
+    fun autoTotal(lines: Double?, less: List<DiscountDraft> = discounts) = PaymentMath.billTotal(lines, DiscountDraft.total(less), gst)
+    // The amount follows (lines - discounts) + GST until typed over (an old bill keeps its typed amount).
+    var amountAuto by remember { mutableStateOf(bill?.amount == null || bill.amount == PaymentMath.billTotal(bill.linesTotal, bill.discountsTotal, gst)) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -306,6 +327,11 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
 
     fun setItems(next: List<OrderItem>) {
         items = next.mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
+        discounts = DiscountDraft.reprice(discounts, PaymentMath.linesTotal(items))
+        if (amountAuto) amount = PaymentMath.plain(autoTotal(PaymentMath.linesTotal(items)))
+    }
+    fun setDiscounts(next: List<DiscountDraft>) {
+        discounts = next
         if (amountAuto) amount = PaymentMath.plain(autoTotal(PaymentMath.linesTotal(items)))
     }
     fun bad(text: String) = text.isNotBlank() && (PaymentMath.parse(text) ?: -1.0) < 0
@@ -316,7 +342,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
         title = { Text(if (bill == null) "Add bill" else "Edit bill ${bill.billNo}") },
         containerColor = Color.White,
         text = {
-            Column(Modifier.width(820.dp).heightIn(max = 640.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.width(820.dp).heightIn(max = maxBodyHeight).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Field(
                         number, { number = it }, "Bill / invoice number", Modifier.weight(1f), enabled = bill == null,
@@ -379,25 +405,26 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                             .filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() }.map { it.copy(key = OrderItem().key) })
                     }) { IconText(Icons.Default.Refresh, "Copy lines from orders") }
                 }
+                Spacer(Modifier.height(6.dp))
+                DiscountLines(discounts, linesTotal, ::setDiscounts)
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Field(amount, { amount = it; amountAuto = it.isBlank() && linesTotal == null }, if (gst == null) "Bill amount (₹)" else "Bill amount incl. GST (₹)", Modifier.weight(1f), number = true,
                         error = if (bad(amount)) "Invalid" else null)
-                    Field(cdPct, {
+                    if (legacyCd) Field(cdPct, {
                         cdPct = it
                         PaymentMath.percentOf(PaymentMath.parse(amount), PaymentMath.parse(it))?.let { v -> cdAmt = PaymentMath.plain(v) }
-                    }, "CD %", Modifier.weight(0.7f), number = true, error = if (bad(cdPct)) "Invalid" else null)
-                    Field(cdAmt, { cdAmt = it }, "CD ₹", Modifier.weight(0.7f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
+                    }, "C.D. at payment %", Modifier.weight(0.7f), number = true, error = if (bad(cdPct)) "Invalid" else null)
+                    if (legacyCd) Field(cdAmt, { cdAmt = it }, "C.D. at payment ₹", Modifier.weight(0.7f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
                 }
                 if (linesTotal != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                    val total = if (gst == null) "lines total ${moneyFull(linesTotal)}"
-                        else "items ${moneyFull(linesTotal)} + GST ${GstSetting.text(gst)} ${moneyFull(PaymentMath.gstOf(linesTotal, gst))} = ${moneyFull(PaymentMath.withGst(linesTotal, gst))}"
+                    val total = billBreakdown(linesTotal, DiscountDraft.total(discounts), gst).orEmpty()
                     Text(
-                        if (amountAuto) "Amount = $total" else "${total.replaceFirstChar { it.uppercase() }} · amount typed over",
+                        if (amountAuto) "Amount = $total" else "$total · amount typed over",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f)
                     )
                     if (!amountAuto) TextButton(onClick = { amountAuto = true; amount = PaymentMath.plain(autoTotal(linesTotal)) }) {
-                        Text(if (gst == null) "Use lines total" else "Use items + GST")
+                        Text(if (gst == null) "Use lines total" else "Use items − discounts + GST")
                     }
                 } else if (gst != null) Text(
                     "Enter the bill amount including GST ${GstSetting.text(gst)}; commission is worked out on the value before GST.",
@@ -413,7 +440,7 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                     bill == null && number.isBlank() -> "Enter the bill number from the supplier's bill"
                     linked.isEmpty() && (buyer.isBlank() || supplier.isBlank()) -> "Enter the buyer and supplier, or link an order"
                     date.isNotBlank() && day == null -> "Bill date must be dd-mm-yyyy"
-                    bad(amount) || bad(cdPct) || bad(cdAmt) || items.any { bad(it.quantity) || bad(it.rate) } -> "Amounts must be numbers"
+                    bad(amount) || bad(cdPct) || bad(cdAmt) || items.any { bad(it.quantity) || bad(it.rate) } || discounts.any { !it.valid } -> "Amounts must be numbers"
                     else -> null
                 }
                 if (error != null) return@Button
@@ -423,10 +450,13 @@ fun BillEditorDialog(bill: Bill?, onDismiss: () -> Unit, onSaved: (Bill) -> Unit
                 }
                 val lines = items.filter { it.particulars.isNotBlank() || it.quantity.isNotBlank() || it.rate.isNotBlank() }
                     .mapIndexed { i, it -> it.copy(serialNo = (i + 1).toString()) }
+                val less = discounts.mapNotNull { it.toDiscount() }
+                // Discount lines are already out of the amount: a payment-time C.D. would count them twice.
+                val keepCd = less.isEmpty()
                 val details = BillDetails(
-                    day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), lines,
+                    day, PaymentMath.parse(amount), lr.trim(), if (keepCd) PaymentMath.parse(cdPct) else null, if (keepCd) PaymentMath.parse(cdAmt) else null, lines,
                     if (fromOrders) "" else SearchText.firstLine(buyer), if (fromOrders) "" else SearchText.firstLine(supplier),
-                    transport.trim(), gst
+                    transport.trim(), gst, less
                 )
                 busy = true
                 scope.launch {
@@ -481,7 +511,7 @@ private fun LinkedOrders(linked: MutableList<OrderRow>, onLink: (OrderRow) -> Un
     if (searchedFor != null && searchedFor == query && shown.isEmpty()) Text("No matching order", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
-/** Quick "bill received" from an order: bill number, date, amount, LR number and cash discount. */
+/** Quick "bill received" from an order: bill number, date, amount, LR number and discounts. */
 @Composable
 fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspend (String, BillDetails) -> Unit) {
     val app = LocalApp.current
@@ -491,8 +521,7 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
     var amount by remember { mutableStateOf(PaymentMath.plain(bill?.amount)) }
     var lr by remember { mutableStateOf(bill?.lrNo.orEmpty()) }
     var transport by remember { mutableStateOf(bill?.transport.orEmpty()) }
-    var cdPct by remember { mutableStateOf(PaymentMath.plain(bill?.cdPercent)) }
-    var cdAmt by remember { mutableStateOf(PaymentMath.plain(bill?.cdAmount)) }
+    var discounts by remember { mutableStateOf(bill?.discounts?.map(DiscountDraft::of).orEmpty()) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val gst = remember { if (bill == null) GstSetting.percent else bill.gstPercent }
@@ -515,13 +544,11 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                     Field(lr, { lr = it }, "LR (bilty) number", Modifier.weight(1f))
                     SuggestField(transport, { transport = it }, "Transport", Modifier.weight(1f)) { app.orders.transports(it) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Field(cdPct, {
-                        cdPct = it
-                        PaymentMath.percentOf(PaymentMath.parse(amount), PaymentMath.parse(it))?.let { v -> cdAmt = PaymentMath.plain(v) }
-                    }, "CD %", Modifier.weight(1f), number = true, error = if (bad(cdPct)) "Invalid" else null)
-                    Field(cdAmt, { cdAmt = it }, "CD ₹", Modifier.weight(1f), number = true, error = if (bad(cdAmt)) "Invalid" else null)
-                }
+                DiscountLines(discounts, null, { discounts = it }, compact = true)
+                if (discounts.isNotEmpty()) Text(
+                    "Enter the bill amount after these discounts" + (gst?.let { ", including GST ${GstSetting.text(it)}" } ?: "") + ".",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 error?.let { Text(it, color = Brand.Red, style = MaterialTheme.typography.bodySmall) }
             }
         },
@@ -531,18 +558,76 @@ fun BillDialog(title: String, bill: Bill?, onDismiss: () -> Unit, onSave: suspen
                 error = when {
                     bill == null && number.isBlank() -> "Enter the bill number"
                     date.isNotBlank() && day == null -> "Bill date must be dd-mm-yyyy"
-                    bad(amount) || bad(cdPct) || bad(cdAmt) -> "Amounts must be numbers"
+                    bad(amount) || discounts.any { !it.valid } -> "Amounts must be numbers"
                     else -> null
                 }
                 if (error != null) return@Button
                 busy = true
                 scope.launch {
                     runCatching {
-                        onSave(number.trim(), BillDetails(day, PaymentMath.parse(amount), lr.trim(), PaymentMath.parse(cdPct), PaymentMath.parse(cdAmt), transport = transport.trim(), gstPercent = gst))
+                        onSave(number.trim(), BillDetails(
+                            day, PaymentMath.parse(amount), lr.trim(), transport = transport.trim(), gstPercent = gst,
+                            discounts = discounts.mapNotNull { it.toDiscount() }
+                        ))
                     }.onFailure { error = it.message; busy = false }
                 }
             }) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+/** "items ₹10,000 − discounts ₹200 + GST 5% ₹490 = ₹10,290"; null without an items total. */
+internal fun billBreakdown(lines: Double?, discounts: Double, gst: Double?): String? {
+    if (lines == null) return null
+    val net = PaymentMath.round2(lines - discounts)
+    val less = if (discounts > 0.0) " − discounts ${moneyFull(discounts)}" else ""
+    return if (gst == null) "lines ${moneyFull(lines)}$less = ${moneyFull(net)}"
+    else "items ${moneyFull(lines)}$less + GST ${GstSetting.text(gst)} ${moneyFull(PaymentMath.gstOf(net, gst))} = ${moneyFull(PaymentMath.withGst(net, gst))}"
+}
+
+/**
+ * Discount lines of a bill, taken off the items total before GST: type (cash discount or other,
+ * with what it was given for), % of the items total and/or rupees. [linesTotal] null = no items,
+ * so only rupees (a typed % stays as a note).
+ */
+@Composable
+internal fun DiscountLines(discounts: List<DiscountDraft>, linesTotal: Double?, onChange: (List<DiscountDraft>) -> Unit, compact: Boolean = false) {
+    fun set(i: Int, d: DiscountDraft) = onChange(discounts.toMutableList().also { it[i] = d })
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Discounts (before GST)", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            val total = DiscountDraft.total(discounts)
+            if (total > 0.0) Pill("− ${moneyFull(total)}", Brand.SaffronDark)
+        }
+        if (discounts.isEmpty()) Text(
+            "Cash discount or any other discount, taken off the items total before GST is added.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        ) else Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Type" to 1.1f, "Given for (Other)" to (if (compact) 1.4f else 2.6f), "% of items" to 0.8f, "₹" to 0.8f, "" to 0.3f).forEach { (t, w) ->
+                Text(t, Modifier.weight(w), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        discounts.forEachIndexed { i, d ->
+            key(d.key) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Select("Type", DiscountKind.entries, d.kind, { set(i, d.copy(kind = it)) }, Modifier.weight(1.1f), text = { it.label }, dense = true)
+                    Box(Modifier.weight(if (compact) 1.4f else 2.6f)) {
+                        if (d.kind == DiscountKind.OTHER) CellField(d.remark, { set(i, d.copy(remark = it)) }, Modifier.fillMaxWidth(), "e.g. Festival offer")
+                        else Text("—", color = MaterialTheme.colorScheme.outline)
+                    }
+                    CellField(d.percent, { set(i, d.withPercent(it, linesTotal)) }, Modifier.weight(0.8f), "0", TextAlign.End,
+                        error = PaymentMath.parse(d.percent).let { d.percent.isNotBlank() && (it == null || it < 0) })
+                    CellField(d.amount, { set(i, d.withAmount(it)) }, Modifier.weight(0.8f), "0", TextAlign.End,
+                        error = PaymentMath.parse(d.amount).let { d.amount.isNotBlank() && (it == null || it < 0) })
+                    Box(Modifier.weight(0.3f), contentAlignment = Alignment.Center) {
+                        IconButton(onClick = { onChange(discounts.filterIndexed { j, _ -> j != i }) }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Default.Delete, "Remove discount", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+        OutlinedButton(onClick = { onChange(discounts + DiscountDraft()) }) { IconText(Icons.Default.Add, "Add discount") }
+    }
 }
