@@ -65,8 +65,8 @@ fun main(args: Array<String>) {
         this["auth.session"] = session("shubham@ota.com")
         this["sync.last"] = System.currentTimeMillis().minus(4 * 60_000).toString()
         this["maintenance.last"] = System.currentTimeMillis().minus(3 * 3_600_000).toString()
-        this["maintenance.summary"] = "Archived 38 rows, purged 21 orders and 9 advices older than 30 days"
-        this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 30, 12.2).toJson()
+        this["maintenance.summary"] = "Archived 38 rows, purged 21 settled orders and 9 advices"
+        this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 12.2).toJson()
         // A fixed city with a fresh forecast, so Home renders the weather without the network.
         val surat = Place("Surat, Gujarat", 21.17, 72.83)
         this["weather.city"] = surat.toJson().toString()
@@ -238,7 +238,7 @@ fun main(args: Array<String>) {
         this["data.mode"] = "test"
         this["auth.session"] = session("testuser1@ota.com")
         this["sync.last"] = System.currentTimeMillis().minus(2 * 60_000).toString()
-        this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 30, 12.2).toJson()
+        this["cloud.usage"] = CloudUsage(61L * 1_048_576, 500, 80, 12.2).toJson()
     }
     val testApp = AppContext(TestDb.server, testDb, shotHome)
     shot("32-test-user-sync", at(Section.SYNC), ctx = testApp, height = 1350)

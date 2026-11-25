@@ -108,7 +108,7 @@ Done once by the owner.
    tick **Auto Confirm User** → **Create user**. Repeat for each staff member. Deleting a user here
    signs that phone out within the hour (when its sign-in token next refreshes).
    Then give each person their order-number digit (1–9, unique) in the **SQL Editor**. The admins
-   who may change cloud retention and archive/purge (desktop app) are fixed by email in
+   who may change cloud settings and archive/purge (desktop app) are fixed by email in
    `ota_is_admin()`: varun@ota.com and shubham@ota.com. `is_admin` is kept in step for display only:
 
    ```sql
@@ -198,8 +198,8 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 ### Admins and the test account
 
 - **Admins** are varun@ota.com and shubham@ota.com. Only they may archive or purge the cloud or
-  change retention (the test account archives and purges only its own test tables), and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
-  clean-up and the retention settings. **Accounts** is shown to the admins and to the test account.
+  change cloud settings (the test account archives and purges only its own test tables), and the cloud itself refuses anyone else. On the desktop only an admin sees cloud
+  clean-up and the cloud settings. **Accounts** is shown to the admins and to the test account.
 - **Test account** testuser1@ota.com uses the same Supabase project but its own tables
   (`test_buyers`, `test_orders`, `test_bills`, … `test_ota_deletions`, `test_order_counters`), added by
   `20261120000000_test_tables.sql`. RLS lets only the test login use them and keeps it out of the real
@@ -218,11 +218,12 @@ Staff then open the app, sign in on the first screen, and everything syncs.
 
 See [docs/desktop-sync-contract.md](docs/desktop-sync-contract.md#test-account) for the details.
 
-### Cloud retention (desktop app)
+### What the cloud keeps (desktop app)
 
 The cloud keeps open items however old they are: bills not yet fully paid (after paid, cash discount,
 goods return, rate difference and claim), orders never billed, and every order, bill and payment
-advice linked to them. Settled ones are removed once settled longer than `retention_days` (default 30).
+advice linked to them. Settled ones are removed 7 days after settling (fixed; there is no setting, see
+`20261124000000_fixed_retention.sql`).
 The desktop app keeps everything: it pulls all orders, marks the stored ones archived, and then purges
 settled archived groups. Rows that were never archived, or changed after archiving, are never purged.
 After updating to 1.11.0 the desktop uploads, once, the open items that earlier date-based purges removed.
@@ -322,7 +323,7 @@ On a Mac the update downloads the DMG and verifies it the same way. After the ap
     - The test login exports only its test books; real exports never include test data.
   - Accounts never sync and are never archived or purged. They live in the local database, so they are in every update backup.
 - Excel export (`.xlsx`): all data (one sheet per table), the dashboard numbers, the current filtered view of any list, and per-area workbooks.
-- Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges archived rows older than the retention period, on connect and every 6 hours. The admin can change the retention days and storage limit under *Sync & Cloud*. Nothing is purged until this laptop holds it.
+- Cloud upkeep: syncs in the background every 5 minutes (and a few seconds after each edit). On the admin's laptop it also archives every row it has stored and purges settled archived rows 7 days after settling, on connect and every 6 hours. The admin can change the storage limit, warning level and GST % under *Sync & Cloud*. Nothing is purged until this laptop holds it.
 
 PDFs are saved to `Documents\OTA Orders`. Logs are in `%LOCALAPPDATA%\OTA Business Data\logs`.
 

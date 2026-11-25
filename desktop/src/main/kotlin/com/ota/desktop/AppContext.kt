@@ -84,7 +84,7 @@ class AppContext internal constructor(
     val accountReports = AccountReports(db, accounts, payments)
     val accountsExporter = com.ota.desktop.accounts.AccountsExporter(accountReports, accounts)
 
-    /** Admin (cloud clean-up, retention): varun@ / shubham@, by sign-in email like the cloud's check. */
+    /** Admin (cloud clean-up, cloud settings): varun@ / shubham@, by sign-in email like the cloud's check. */
     val admin: StateFlow<Boolean> = auth.session.map { OtaAccounts.isAdmin(it?.email) }
         .stateIn(scope, SharingStarted.Eagerly, OtaAccounts.isAdmin(auth.session.value?.email))
 

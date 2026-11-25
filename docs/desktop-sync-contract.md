@@ -22,9 +22,9 @@ The admins are fixed by sign-in email: **varun@ota.com** and **shubham@ota.com**
 `staff.is_admin` is only kept in step for display and can't grant anything.
 
 - Only an admin may archive (`ota_mark_archived`), purge (`ota_purge_archived_orders`) or change
-  `app_settings` (retention days, storage limit); the test login may archive and purge its own `test_`
+  `app_settings` (storage limit, warning level, GST %); the test login may archive and purge its own `test_`
   tables. The cloud refuses everyone else, whatever the app shows.
-- The desktop follows the same rule: cloud clean-up, retention settings and the **Accounts** section
+- The desktop follows the same rule: cloud clean-up, cloud settings and the **Accounts** section
   appear only when an admin is signed in. Any staff login can still use the rest of the desktop app.
 
 ### Test account
@@ -82,7 +82,7 @@ for older app versions but is always `false`.
 | `order_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_order_no`; clients never read or write it. |
 | `advice_counters` | fy (`'2627'`), last_serial. Written only by `ota_allocate_advice_no` (migration `20261116000000_fy_advice_numbers.sql`); separate from the order counter. |
 | `ota_deletions` | tombstones: id, tbl, client_updated_at (delete time on the device), updated_at. Read-only for clients; written by `ota_delete_rows`. See *Deleting*. |
-| `app_settings` | single row (`id = true`): retention_days (30), storage_limit_mb (500), warn_percent (80) |
+| `app_settings` | single row (`id = true`): storage_limit_mb (500), warn_percent (80), gst_percent (5); retention_days is pinned to 7 by a trigger (`20261124000000_fixed_retention.sql`) and no longer a setting |
 
 Bill and link ids are deterministic, so the same bill typed on two devices is one row:
 
@@ -247,7 +247,7 @@ keeps the stored row when an incoming update has an older `client_updated_at`. N
 `updated_at`, `archived_at` or `created_by`; the server sets them. A `23505` error on `orders`
 or `payment_advices` means that order / advice number is already taken.
 
-## Archive, then purge (retention)
+## Archive, then purge
 
 1. **Pull** everything (as above) and commit it to the desktop database.
 2. **Mark the stored versions as archived**, per table, in batches:
@@ -266,13 +266,13 @@ or `payment_advices` means that order / advice number is already taken.
    - An order is open while it has no bill link (never billed).
    - Everything linked to an open item stays: an order with all its bills, a bill with all its
      orders and advices, an advice with all its bills (and the links and lines between them).
-   - A row edited recently (its `updated_at`, IST date, is within `retention_days`), never archived
+   - A row edited recently (its `updated_at`, IST date, is within the fixed 7 days), never archived
      or changed after archiving also stays, and so does everything linked to it.
    - The rest (settled orders, bills, links, advices and lines) are deleted, as are archived
      unchanged lines and links whose other side is already gone.
 
    It returns `{"orders": n, "order_bills": n, "payment_advices": n, "advice_lines": n, "bills": n,
-   "cutoff": "yyyy-mm-dd", "retention_days": n, "rule": "open_items"}`.
+   "cutoff": "yyyy-mm-dd", "retention_days": 7, "rule": "open_items"}`.
    **A row that isn't archived is never deleted.** Buyers and suppliers are never purged.
    Run by an admin it purges the production tables; run by the test login, the `test_` tables.
 4. **Upload open items once** (desktop 1.11.0+). Purges before 20261122000000_keep_open_items.sql
@@ -283,15 +283,10 @@ or `payment_advices` means that order / advice number is already taken.
 
 Run steps 1–3 every time the desktop connects, and on a timer while it runs.
 
-### Changing retention
+### Freeing space
 
-An admin updates the single settings row:
-
-```
-PATCH /rest/v1/app_settings?id=eq.true   {"retention_days": 15}
-```
-
-Then run steps 1–3 to free the space straight away. Postgres reuses the freed space automatically;
+The 7-day wait is fixed (an older app that still sends `retention_days` is accepted, but the value
+stays 7). To free space, run steps 1–3 straight away. Postgres reuses the freed space automatically;
 the reported database size may only drop after autovacuum.
 
 ### Late edits and late bills
@@ -313,10 +308,10 @@ the reported database size may only drop after autovacuum.
 ## Storage monitoring
 
 `POST /rest/v1/rpc/ota_cloud_status` with `{}` returns
-`{"used_bytes", "limit_mb", "warn_percent", "retention_days", "percent"}`, where `used_bytes` comes
+`{"used_bytes", "limit_mb", "warn_percent", "retention_days" (always 7), "gst_percent", "percent"}`, where `used_bytes` comes
 from `pg_database_size`. Phones call it on every sync. When `percent >= warn_percent` they show a
 notification and a banner saying to open the desktop app and archive orders. The desktop should
-do the same and offer to lower retention.
+do the same and offer to run clean-up.
 
 Supabase Free plan limits:
 

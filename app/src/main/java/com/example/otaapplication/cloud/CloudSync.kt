@@ -56,7 +56,7 @@ data class CloudStatus(
     val pending: Int = 0,
     /** Something from the last order sync the user should know (e.g. an order got a new number). */
     val notice: String? = null,
-    /** Cloud database use and retention days from the last successful check. */
+    /** Cloud database use and the GST % from the last successful check. */
     val usage: CloudUsage? = null,
     /** The cloud refused writes because it is out of space; edits stay pending on the phone. */
     val storageFull: Boolean = false
@@ -438,7 +438,7 @@ class CloudSync private constructor(private val context: Context) {
     fun dismissNotice() = _status.update { it.copy(notice = null) }
 
     /**
-     * Reads storage use and retention and raises or clears the alert. The small RPC runs when this
+     * Reads storage use and the GST % and raises or clears the alert. The small RPC runs when this
      * round uploaded something, the cloud is (nearly) full, or it hasn't run for [USAGE_RECHECK_MS];
      * otherwise the last reading stands (only uploads grow the database).
      */

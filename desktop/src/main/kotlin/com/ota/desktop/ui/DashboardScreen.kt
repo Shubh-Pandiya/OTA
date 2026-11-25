@@ -227,7 +227,7 @@ fun DashboardScreen() {
                     Gauge(u.percent, u.warnPercent, "${"%.1f".format(u.usedMb)} of ${u.limitMb} MB", Modifier.fillMaxWidth().height(130.dp))
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Open bills stay in the cloud; settled ones leave after ${u.retentionDays} days and live on this laptop.",
+                        "Open bills stay in the cloud; settled ones leave 7 days after settling and live on this laptop.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
                     )

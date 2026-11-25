@@ -293,14 +293,16 @@ class SyncEngineTest {
     }
 
     @Test
-    fun onlyAdminsChangeRetention() = runBlocking {
+    fun onlyAdminsChangeCloudSettings() = runBlocking {
         val settings = CloudSettings(config, auth)
-        settings.update(15, 500, 80, 12.0)
-        assertEquals(15, cloud.settings.getInt("retention_days"))
+        settings.update(400, 70, 12.0)
+        assertEquals(400, cloud.settings.getInt("storage_limit_mb"))
         assertEquals(12.0, cloud.settings.getDouble("gst_percent"))
+        // Retention is fixed in the cloud now: the desktop no longer sends it.
+        assertEquals(30, cloud.settings.getInt("retention_days"))
         cloud.staff = JSONObject().put("code", 4).put("is_admin", false)
-        assertFailsWith<CloudException> { settings.update(7, 500, 80, 5.0) }
-        assertEquals(15, cloud.settings.getInt("retention_days"))
+        assertFailsWith<CloudException> { settings.update(500, 80, 5.0) }
+        assertEquals(12.0, cloud.settings.getDouble("gst_percent"))
     }
 
     @Test

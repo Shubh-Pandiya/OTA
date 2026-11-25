@@ -64,7 +64,7 @@ data class SyncStatus(
  * Desktop sync, following docs/desktop-sync-contract.md:
  * - a round pulls every table (delta, paged, by the server updated_at cursor) and pushes local edits;
  * - maintenance (admins only) also marks the exact cloud versions stored here as archived and then
- *   asks the cloud to purge archived rows older than the retention window. A row is never archived
+ *   asks the cloud to purge archived, settled rows 7 days after settling. A row is never archived
  *   unless its current cloud version is committed in the local database.
  */
 class SyncEngine(
@@ -104,7 +104,7 @@ class SyncEngine(
         return StaffProfile(code, kv[KEY_STAFF_NAME].orEmpty(), isAdmin())
     }
 
-    /** Admins (archive, purge, retention, Accounts) are fixed by sign-in email, the same rule the cloud enforces. */
+    /** Admins (archive, purge, cloud settings, Accounts) are fixed by sign-in email, the same rule the cloud enforces. */
     fun isAdmin(): Boolean = OtaAccounts.isAdmin(auth.session.value?.email)
 
     /** Which data set is in use (the last login's); installs from before 1.5.0 hold real data. */
@@ -655,7 +655,7 @@ class SyncEngine(
         /** Set once the open items earlier purges removed were uploaded again (per data set). */
         private const val KEY_OPEN_RESTORED = "open_items.restored"
         const val STORAGE_FULL = "Cloud storage is full. Changes are kept on this laptop and upload once space is freed " +
-            "(lower the retention days or run cloud clean-up)."
+            "(run cloud clean-up)."
         private const val KEY_STAFF_CODE = "staff.code"
         private const val KEY_STAFF_NAME = "staff.name"
         private const val KEY_STAFF_ADMIN = "staff.admin"

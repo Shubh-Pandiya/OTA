@@ -241,12 +241,11 @@ class OrderTable<T>(
     }
 }
 
-/** Cloud database size against the plan quota, plus how long the cloud keeps orders. */
+/** Cloud database size against the plan quota, plus the agency-wide GST %. */
 data class CloudUsage(
     val usedBytes: Long,
     val limitMb: Int,
     val warnPercent: Int,
-    val retentionDays: Int,
     val percent: Double,
     /** Agency-wide GST % added to new bills (app_settings). */
     val gstPercent: Double = PaymentMath.DEFAULT_GST_PERCENT
@@ -256,7 +255,7 @@ data class CloudUsage(
 
     fun toJson(): String = JSONObject()
         .put("used_bytes", usedBytes).put("limit_mb", limitMb).put("warn_percent", warnPercent)
-        .put("retention_days", retentionDays).put("percent", percent).put("gst_percent", gstPercent).toString()
+        .put("percent", percent).put("gst_percent", gstPercent).toString()
 
     companion object {
         fun parse(text: String?): CloudUsage? {
@@ -266,7 +265,6 @@ data class CloudUsage(
                 usedBytes = json.optLong("used_bytes"),
                 limitMb = json.optInt("limit_mb", 500),
                 warnPercent = json.optInt("warn_percent", 80),
-                retentionDays = json.optInt("retention_days", 30),
                 percent = json.optDouble("percent", 0.0),
                 gstPercent = json.optDouble("gst_percent", PaymentMath.DEFAULT_GST_PERCENT)
                     .takeIf { it.isFinite() && it in 0.0..100.0 } ?: PaymentMath.DEFAULT_GST_PERCENT
@@ -286,7 +284,7 @@ interface OrderCloudApi {
     /** The signed-in user's staff code, or null when the owner hasn't added one. */
     suspend fun staff(userId: String): StaffInfo?
 
-    /** Storage use and retention (ota_cloud_status); null when not available. */
+    /** Storage use and GST % (ota_cloud_status); null when not available. */
     suspend fun usage(): CloudUsage? = null
 
     /** Sets the agency-wide GST % for new bills (admins only; throws otherwise). */
